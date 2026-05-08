@@ -1,0 +1,37 @@
+Create 5 thumbnail concepts for a short-form football clip.
+
+Account positioning:
+America Discovers Football
+
+Clip angle:
+AURA
+
+Moment:
+Son looking frustrated while walking off or reacting to the substitution.
+
+Style:
+- emotional
+- cinematic
+- mythological
+- high contrast
+- clear subject
+- no clutter
+- readable on mobile
+
+Best thumbnail types:
+- screaming faces
+- tears
+- tunnel walk silhouettes
+- giant crowd shots
+- emotional closeups
+
+Avoid:
+- generic action shots
+- wide field views
+- cluttered graphics
+
+Return:
+1. Thumbnail title
+2. Frame to use
+3. Overlay text, max 4 words
+4. Why it will stop the scroll

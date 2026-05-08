@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+
+TRANSCRIPTS/
+MATCH_ANALYSIS/
+EXPORTS/
+POSTED/
+TOP_PERFORMERS/
+
+*.mp4
+*.mov
+*.m4a

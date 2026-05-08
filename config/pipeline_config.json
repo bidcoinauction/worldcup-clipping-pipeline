@@ -1,0 +1,40 @@
+{
+  "account_positioning": "America Discovers Football",
+  "leagues": [
+    "PREMIER_LEAGUE",
+    "UCL",
+    "MLS",
+    "LIGA_MX"
+  ],
+  "categories": [
+    "EMOTION",
+    "AURA",
+    "CHAOS",
+    "AMERICA"
+  ],
+  "platforms": [
+    "TikTok",
+    "Reels",
+    "Shorts"
+  ],
+  "daily_targets": {
+    "warmup_weeks_1_2": 2,
+    "warmup_weeks_3_4": 3,
+    "group_stage": "6-10",
+    "knockouts": "10-20"
+  },
+  "clip_rules": {
+    "min_seconds": 12,
+    "max_seconds": 28,
+    "first_2_seconds": "hard hook",
+    "final_2_seconds": "aftermath"
+  },
+  "scoring_weights": {
+    "completion_rate": 2.0,
+    "shares": 4.0,
+    "saves": 3.0,
+    "comments": 2.5,
+    "profile_visits": 1.5,
+    "views_per_1000": 1.0
+  }
+}

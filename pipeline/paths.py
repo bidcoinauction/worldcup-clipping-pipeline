@@ -1,0 +1,25 @@
+from .utils import ROOT
+
+PROJECT_DIRS = [
+    "MATCHES/PREMIER_LEAGUE",
+    "MATCHES/UCL",
+    "MATCHES/MLS",
+    "MATCHES/LIGA_MX",
+    "TRANSCRIPTS",
+    "MATCH_ANALYSIS",
+    "CLIP_MANIFESTS",
+    "CLIPS/EMOTION",
+    "CLIPS/AURA",
+    "CLIPS/CHAOS",
+    "CLIPS/AMERICA",
+    "THUMBNAILS",
+    "CAPTIONS",
+    "EXPORTS/TIKTOK",
+    "EXPORTS/REELS",
+    "EXPORTS/SHORTS",
+    "POSTED",
+    "TOP_PERFORMERS",
+    "TRACKING",
+    "PROMPTS",
+    "LOGS",
+]
