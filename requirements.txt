@@ -2,3 +2,5 @@ openai
 python-dotenv
 tqdm
 rich
+faster-whisper
+ffmpeg-python
