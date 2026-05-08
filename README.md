@@ -71,3 +71,20 @@ PYTHONPATH=. python scripts/export_clips_ffmpeg.py \
   --source-video "MATCHES/MLS/LAFC vs. Inter Miami CF.mp4" \
   --platform TIKTOK
 ```
+
+
+## Timestamped Transcription (faster-whisper)
+
+This pipeline now uses local `faster-whisper` for word-level timestamps and structured segments.
+
+```bash
+PYTHONPATH=. python scripts/transcribe_match.py \
+  --input "MATCHES/MLS/LAFC vs. Inter Miami CF.mp4" \
+  --league MLS \
+  --model large-v3 \
+  --device auto
+```
+
+Use `--dry-run` to validate paths/commands without running inference.
+
+See `docs_transcription_migration.md` for migration details.
