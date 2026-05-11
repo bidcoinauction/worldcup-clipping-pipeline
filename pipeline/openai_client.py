@@ -1,9 +1,39 @@
+from __future__ import annotations
+
 import os
 import json
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+def parse_json_response(raw: str):
+    """
+    Parse model output that should be JSON, tolerating common fenced-code wrappers.
+    """
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        candidates = [
+            (raw.find("["), raw.rfind("]")),
+            (raw.find("{"), raw.rfind("}")),
+        ]
+        for start, end in candidates:
+            if start >= 0 and end > start:
+                try:
+                    return json.loads(raw[start:end + 1])
+                except json.JSONDecodeError:
+                    continue
+        raise
 
 def run_gpt_detection(prompt_path: str | Path, output_path: str | Path) -> None:
     """
@@ -38,14 +68,9 @@ def run_gpt_detection(prompt_path: str | Path, output_path: str | Path) -> None:
     raw_path.write_text(raw, encoding="utf-8")
 
     try:
-        parsed = json.loads(raw)
+        parsed = parse_json_response(raw)
     except json.JSONDecodeError:
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start >= 0 and end > start:
-            parsed = json.loads(raw[start:end + 1])
-        else:
-            raise SystemExit(f"GPT returned non-JSON. Raw saved to {raw_path}")
+        raise SystemExit(f"GPT returned non-JSON. Raw saved to {raw_path}")
 
     output_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
     print(f"GPT JSON saved: {output_path}")

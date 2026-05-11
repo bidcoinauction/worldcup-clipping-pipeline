@@ -1,4 +1,7 @@
 .venv/
+.venv_py314_backup/
+.codex_tmp/
+.cache/
 __pycache__/
 *.pyc
 .env

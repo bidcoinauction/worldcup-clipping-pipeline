@@ -11,6 +11,7 @@ Goal:
 Train TikTok, Reels, and Shorts before the World Cup wave hits. We are not chasing generic highlights. We are identifying emotionally engaging, cinematic, mythological football moments.
 
 Analyze the transcript below and produce a JSON array of clip candidates.
+If ranked detection signals are provided, use them as timing evidence. They come from local audio spikes, transcript keywords, and scoreboard/OCR sampling. Prefer moments where multiple signals agree, but still use editorial judgment.
 
 Prioritize these categories:
 1. EMOTION: crowd eruption, anthem moments, crying fans, tunnel walks, national pride, heartbreak, pressure.
@@ -49,6 +50,11 @@ Rules:
 Match name:
 {match_name}
 
+Ranked detection signals:
+\"\"\"
+{signals}
+\"\"\"
+
 Transcript:
 \"\"\"
 {transcript}
@@ -59,11 +65,17 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Claude prompt from transcript.")
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--match-name", required=True)
+    parser.add_argument("--signals", default="")
     args = parser.parse_args()
 
     transcript_path = Path(args.transcript)
     transcript = transcript_path.read_text(encoding="utf-8")
-    prompt = PROMPT_TEMPLATE.format(match_name=args.match_name, transcript=transcript)
+    signals = ""
+    if args.signals:
+        signals_path = Path(args.signals)
+        if signals_path.exists():
+            signals = signals_path.read_text(encoding="utf-8")
+    prompt = PROMPT_TEMPLATE.format(match_name=args.match_name, signals=signals or "No ranked signals provided.", transcript=transcript)
 
     out_file = ROOT / "PROMPTS" / f"{slugify(args.match_name)}_claude_prompt.txt"
     out_file.parent.mkdir(exist_ok=True)
