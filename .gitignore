@@ -1,8 +1,14 @@
 .venv/
+venv/
+.venv_py314_backup/
+.cache/
+.codex_tmp/
 __pycache__/
 *.pyc
 .env
 .DS_Store
+secrets/
+*.session
 
 TRANSCRIPTS/
 MATCH_ANALYSIS/

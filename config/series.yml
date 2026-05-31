@@ -1,0 +1,18 @@
+series:
+  EMOTION:
+    promise: "Football as feeling under pressure."
+    edit_bias: "Hold aftermath, faces, silence, crowd release."
+  AURA:
+    promise: "Players who change the temperature of a match."
+    edit_bias: "Let body language and reactions sell status."
+  CHAOS:
+    promise: "The moment a match becomes unstable."
+    edit_bias: "Cut fast enough to preserve confusion, then land the consequence."
+  AMERICA:
+    promise: "A bridge for US viewers into global football mythology."
+    edit_bias: "Use simple hooks and concrete stakes without flattening the culture."
+arc_roles:
+  setup: "Why this match already feels loaded."
+  pressure: "The emotional or tactical force building underneath the play."
+  rupture: "The moment the match breaks open."
+  aftermath: "The human residue after the event."

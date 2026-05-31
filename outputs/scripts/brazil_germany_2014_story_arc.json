@@ -1,0 +1,16 @@
+{
+  "match_id": "brazil_germany_2014",
+  "arc_type": "Collapse Arc",
+  "hook": "Brazil 1-7 Germany: the match where national trauma became the story.",
+  "rising_action": "Start with normal match tension, then let the first cracks arrive faster than the viewer expects.",
+  "turning_point": "The moment the match stops feeling competitive and starts feeling historic.",
+  "aftermath": "Hold on faces, silence, stunned body language, and the crowd processing humiliation.",
+  "payoff": "This is not a loss. It is a national memory.",
+  "candidate_clip_ids": [
+    "brazil_germany_2014_opening_crack_001",
+    "brazil_germany_2014_record_silence_002",
+    "brazil_germany_2014_collapse_001",
+    "brazil_germany_2014_kroos_double_003",
+    "brazil_germany_2014_fifth_silence_004"
+  ]
+}

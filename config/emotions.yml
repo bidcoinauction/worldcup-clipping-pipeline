@@ -1,0 +1,39 @@
+categories:
+  EMOTION:
+    description: "Human stakes, heartbreak, release, fear, joy, pride."
+    signals:
+      - crowd eruption
+      - tears
+      - silence
+      - bench reaction
+      - family cutaway
+  AURA:
+    description: "Legacy, intimidation, star gravity, inevitability."
+    signals:
+      - tunnel presence
+      - cold celebration
+      - defender panic
+      - camera fixation
+      - reputation pressure
+  CHAOS:
+    description: "Controversy, collapse, disorder, disbelief."
+    signals:
+      - VAR
+      - red card
+      - confrontation
+      - missed sitter
+      - tactical meltdown
+  AMERICA:
+    description: "Entry points for US audiences learning why football feels global and mythic."
+    signals:
+      - culture shock
+      - MLS bridge
+      - national identity
+      - tournament stakes
+      - simple tactical context
+scores:
+  range: "0-10"
+  emotion: "How strongly the moment makes the viewer feel something."
+  pressure: "How much the match context compresses the players and crowd."
+  atmosphere: "How cinematic, loud, strange, or socially charged the environment feels."
+  memory: "How likely the moment is to be remembered or retold later."

@@ -1,0 +1,12 @@
+moment_id,match_id,match_minute,video_timestamp,title,event_type,emotion,narrative_function,importance_score,clip_start,clip_end,notes
+brazil_germany_2014_muller_opening_crack,brazil_germany_2014,11,00:10:55,Muller opens the wound,goal,Shock,setup,90,00:10:35,00:11:20,Opening goal changes the emotional temperature before the collapse accelerates.
+brazil_germany_2014_klose_record_silence,brazil_germany_2014,23,00:22:45,Klose turns history into humiliation,goal,Humiliation,turning_point,100,00:22:20,00:23:05,World Cup scoring record arrives inside Brazil's home collapse.
+brazil_germany_2014_collapse_ignition,brazil_germany_2014,23,00:23:20,Six minutes start breaking Brazil,sequence,Collapse,rupture,99,00:23:00,00:23:45,The second goal and immediate panic become the mythology hinge.
+brazil_germany_2014_kroos_double,brazil_germany_2014,26,00:24:15,Kroos makes disbelief repeat itself,goal_sequence,Disbelief,acceleration,98,00:23:55,00:24:40,Two fast goals make the semi-final stop feeling real.
+brazil_germany_2014_khedira_fifth,brazil_germany_2014,29,00:28:05,Khedira makes silence the main character,goal,National Trauma,aftermath,100,00:27:45,00:28:30,The fifth goal turns losing into public national memory.
+psg_arsenal_penalties_opening_pressure,psg_arsenal_full_penalties,,00:00:00,The shootout pressure begins,penalty_shootout,Penalty Pressure,setup,78,00:00:00,00:01:00,Starter research row for user-supplied PSG vs Arsenal penalties source.
+psg_arsenal_penalties_early_nerves,psg_arsenal_full_penalties,,00:01:00,Early penalty nerves settle in,penalty_shootout,Nerve,rising_action,76,00:01:00,00:02:15,First pressure stretch after the shootout begins.
+psg_arsenal_penalties_middle_swing,psg_arsenal_full_penalties,,00:03:00,The shootout starts to swing,penalty_shootout,Momentum,turning_point,80,00:03:00,00:04:15,Middle sequence for the first clear emotional swing.
+psg_arsenal_penalties_keeper_duel,psg_arsenal_full_penalties,,00:05:15,Keeper pressure takes over,penalty_shootout,Dread,pressure,82,00:05:15,00:06:30,Keeper body language and walk-up pressure become the clip focus.
+psg_arsenal_penalties_late_nerves,psg_arsenal_full_penalties,,00:08:15,Late shootout nerves,penalty_shootout,Dread,acceleration,84,00:08:15,00:09:30,The later kicks carry heavier consequence and tighter reactions.
+psg_arsenal_penalties_final_release,psg_arsenal_full_penalties,,00:10:30,Final release of the shootout,penalty_shootout,Release,payoff,86,00:10:30,00:12:20,Final stretch for celebration heartbreak and emotional release.

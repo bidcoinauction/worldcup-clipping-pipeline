@@ -1,0 +1,12 @@
+timeline_id,match_id,sequence_order,match_minute,video_timestamp,emotion,label,description
+brazil_germany_2014_timeline_001,brazil_germany_2014,1,0,00:00:00,Pressure,Home expectation,Brazil carries the emotional weight of a home World Cup semi-final without Neymar.
+brazil_germany_2014_timeline_002,brazil_germany_2014,2,11,00:10:55,Shock,First crack,Muller's opener turns pressure into visible anxiety.
+brazil_germany_2014_timeline_003,brazil_germany_2014,3,23,00:22:45,Humiliation,History against Brazil,Klose's record goal makes the collapse historical while the stadium goes quiet.
+brazil_germany_2014_timeline_004,brazil_germany_2014,4,26,00:24:15,Disbelief,Acceleration,Kroos scores twice and the match becomes emotionally unreal.
+brazil_germany_2014_timeline_005,brazil_germany_2014,5,29,00:28:05,National Trauma,The silence after five,Khedira's fifth goal turns the semi-final into a national memory.
+psg_arsenal_penalties_timeline_001,psg_arsenal_full_penalties,1,,00:00:00,Penalty Pressure,Shootout threshold,The clip begins inside penalty pressure where every pause and walk-up carries consequence.
+psg_arsenal_penalties_timeline_002,psg_arsenal_full_penalties,2,,00:01:00,Nerve,Early kicks,The first successful or missed kicks establish belief and fear.
+psg_arsenal_penalties_timeline_003,psg_arsenal_full_penalties,3,,00:03:00,Momentum,Middle swing,The shootout starts to reveal a direction and every reaction matters more.
+psg_arsenal_penalties_timeline_004,psg_arsenal_full_penalties,4,,00:05:15,Dread,Keeper duel,The goalkeeper and taker body language become the emotional center.
+psg_arsenal_penalties_timeline_005,psg_arsenal_full_penalties,5,,00:08:15,Late Pressure,No safe kick,Each walk-up feels like the match being decided in slow motion.
+psg_arsenal_penalties_timeline_006,psg_arsenal_full_penalties,6,,00:10:30,Release,Final consequence,The shootout pays off in celebration heartbreak and memory.

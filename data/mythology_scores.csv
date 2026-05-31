@@ -1,0 +1,12 @@
+match_id,stakes,crowd_emotion,historical_impact,narrative_arc,cultural_memory,total_score,tier
+brazil_germany_2014,20,20,20,20,19,99,S
+liverpool_milan_2005,20,19,20,20,19,98,S
+argentina_france_2022,20,20,20,20,20,100,S
+barcelona_psg_2017,19,20,19,20,19,97,S
+man_united_bayern_1999,19,19,20,19,19,96,S
+france_italy_2006,19,18,19,19,19,94,A
+portugal_netherlands_2006,18,19,18,18,18,91,A
+chelsea_bayern_2012,18,19,18,19,19,93,A
+italy_germany_2006,18,18,18,19,19,92,A
+netherlands_argentina_2022,18,18,18,18,18,90,A
+psg_arsenal_full_penalties,16,16,14,16,16,78,B
