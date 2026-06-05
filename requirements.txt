@@ -4,3 +4,4 @@ tqdm
 rich
 pytest
 faster-whisper
+requests
