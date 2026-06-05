@@ -714,7 +714,7 @@ def execute_ffmpeg_commands(commands: Iterable[str]) -> None:
         if output_path and "-n" in shlex.split(command) and Path(output_path).exists():
             print(f"Skipping existing clip: {output_path}")
             continue
-        subprocess.run(command, shell=True, check=True)
+        subprocess.run(shlex.split(command), check=True)
 
 
 def ensure_clip_output_dir() -> None:
