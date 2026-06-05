@@ -51,6 +51,8 @@ def main():
     parser.add_argument("--input", required=True, help="Path to match video/audio file")
     parser.add_argument("--league", required=True, choices=["PREMIER_LEAGUE", "UCL", "MLS", "LIGA_MX"])
     parser.add_argument("--model", default=os.getenv("DEFAULT_TRANSCRIBE_MODEL", "gpt-4o-transcribe"))
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print actions without executing.")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -64,29 +66,37 @@ def main():
     audio_path = out_dir / f"{match_slug}_audio.m4a"
 
     print(f"Extracting audio with ffmpeg: {audio_path}")
-    extract_audio(input_path, audio_path)
+    if not args.dry_run:
+        extract_audio(input_path, audio_path)
+    else:
+        print(f"[dry-run] Would extract audio")
 
     print(f"Transcribing with OpenAI model: {args.model}")
-    transcript, segments = transcribe_with_openai(audio_path, args.model)
+    transcript, segments = "", []
+    if not args.dry_run:
+        transcript, segments = transcribe_with_openai(audio_path, args.model)
 
     transcript_txt = out_dir / "transcript.txt"
-    transcript_txt.write_text(transcript.strip(), encoding="utf-8")
-
     timestamps_json = out_dir / "timestamps.json"
-    timestamps_json.write_text(json.dumps(segments, indent=2), encoding="utf-8")
-
     meta_json = out_dir / "metadata.json"
-    meta_json.write_text(json.dumps({
-        "input": str(input_path),
-        "audio": str(audio_path),
-        "league": args.league,
-        "match_slug": match_slug,
-        "model": args.model,
-        "created_at": datetime.utcnow().isoformat() + "Z"
-    }, indent=2), encoding="utf-8")
 
-    print(f"Transcript written: {transcript_txt}")
-    print(f"Timestamps written: {timestamps_json} ({len(segments)} segments)")
+    if not args.dry_run:
+        transcript_txt.write_text(transcript.strip(), encoding="utf-8")
+        timestamps_json.write_text(json.dumps(segments, indent=2), encoding="utf-8")
+        meta_json.write_text(json.dumps({
+            "input": str(input_path),
+            "audio": str(audio_path),
+            "league": args.league,
+            "match_slug": match_slug,
+            "model": args.model,
+            "created_at": datetime.utcnow().isoformat() + "Z"
+        }, indent=2), encoding="utf-8")
+        print(f"Transcript written: {transcript_txt}")
+        print(f"Timestamps written: {timestamps_json} ({len(segments)} segments)")
+    else:
+        print(f"[dry-run] Would write: {transcript_txt}")
+        print(f"[dry-run] Would write: {timestamps_json}")
+        print(f"[dry-run] Would write: {meta_json}")
 
 if __name__ == "__main__":
     main()

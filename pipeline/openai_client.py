@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def run_gpt_detection(prompt_path: str | Path, output_path: str | Path) -> None:
+def run_gpt_detection(prompt_path: str | Path, output_path: str | Path, *, dry_run: bool = False) -> None:
     """
     Calls OpenAI directly if OPENAI_API_KEY is set.
     Writes raw text and attempts to parse JSON into output_path.
@@ -14,6 +14,12 @@ def run_gpt_detection(prompt_path: str | Path, output_path: str | Path) -> None:
 
     model = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4.1")
     prompt = Path(prompt_path).read_text(encoding="utf-8")
+
+    if dry_run:
+        print(f"[dry-run] Would call {model} with prompt from {prompt_path}")
+        print(f"[dry-run] Would write: {output_path}")
+        print(f"[dry-run] Would write: {output_path.with_suffix('.raw.txt')}")
+        return
 
     client = make_openai_client()
     response = client.responses.create(

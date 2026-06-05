@@ -32,6 +32,8 @@ def main():
     parser.add_argument("--source-video", required=True)
     parser.add_argument("--platform", default="TIKTOK", choices=["TIKTOK", "REELS", "SHORTS"])
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print actions without executing.")
     args = parser.parse_args()
 
     with Path(args.manifest).open("r", encoding="utf-8") as f:
@@ -46,8 +48,11 @@ def main():
         clip_id = row["clip_id"]
         category = str(row.get("category", "UNSORTED")).upper()
         output = ROOT / "EXPORTS" / args.platform / category / f"{clip_id}_{args.platform.lower()}.mp4"
-        print(f"Exporting {clip_id} -> {output}")
-        export_clip(source, row["start_time"], row["end_time"], output)
+        if not args.dry_run:
+            print(f"Exporting {clip_id} -> {output}")
+            export_clip(source, row["start_time"], row["end_time"], output)
+        else:
+            print(f"[dry-run] Would export: {clip_id} -> {output}")
 
     print("Exports complete.")
 
