@@ -36,5 +36,12 @@
     "comments": 2.5,
     "profile_visits": 1.5,
     "views_per_1000": 1.0
+  },
+  "models": {
+    "detection": "gpt-4.1",
+    "transcription": "gpt-4o-transcribe"
+  },
+  "paths": {
+    "thumbnail_template": "prompts/thumbnail_prompt_template.txt"
   }
 }

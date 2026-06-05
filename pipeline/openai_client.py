@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
+from .config import get_model as _get_model
+
 load_dotenv()
 
 def run_gpt_detection(prompt_path: str | Path, output_path: str | Path, *, dry_run: bool = False) -> None:
@@ -12,7 +14,7 @@ def run_gpt_detection(prompt_path: str | Path, output_path: str | Path, *, dry_r
     """
     from .api import make_openai_client
 
-    model = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4.1")
+    model = os.getenv("DEFAULT_OPENAI_MODEL") or _get_model("detection")
     prompt = Path(prompt_path).read_text(encoding="utf-8")
 
     if dry_run:

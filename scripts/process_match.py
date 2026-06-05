@@ -1,6 +1,7 @@
 import argparse
 import subprocess
 from pathlib import Path
+from pipeline.config import get_leagues
 from pipeline.utils import ROOT, slugify
 
 def run(cmd):
@@ -10,7 +11,7 @@ def run(cmd):
 def main():
     parser = argparse.ArgumentParser(description="One-command match processing pipeline.")
     parser.add_argument("--input", required=True)
-    parser.add_argument("--league", required=True, choices=["PREMIER_LEAGUE", "UCL", "MLS", "LIGA_MX"])
+    parser.add_argument("--league", required=True, choices=get_leagues())
     parser.add_argument("--match-name", required=True)
     parser.add_argument("--model", default="medium")
     parser.add_argument("--run-gpt", action="store_true", help="Requires OPENAI_API_KEY")

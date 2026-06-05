@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 from pipeline.api import make_openai_client
+from pipeline.config import get_leagues, get_model as _get_model
 from pipeline.utils import ROOT, slugify
 
 load_dotenv()
@@ -49,8 +50,8 @@ def transcribe_with_openai(audio_path: Path, model: str) -> tuple[str, list[dict
 def main():
     parser = argparse.ArgumentParser(description="Transcribe a match using OpenAI API.")
     parser.add_argument("--input", required=True, help="Path to match video/audio file")
-    parser.add_argument("--league", required=True, choices=["PREMIER_LEAGUE", "UCL", "MLS", "LIGA_MX"])
-    parser.add_argument("--model", default=os.getenv("DEFAULT_TRANSCRIBE_MODEL", "gpt-4o-transcribe"))
+    parser.add_argument("--league", required=True, choices=get_leagues())
+    parser.add_argument("--model", default=os.getenv("DEFAULT_TRANSCRIBE_MODEL") or _get_model("transcription"))
     parser.add_argument("--dry-run", action="store_true",
                         help="Print actions without executing.")
     args = parser.parse_args()

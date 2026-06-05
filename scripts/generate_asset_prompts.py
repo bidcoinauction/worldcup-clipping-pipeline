@@ -1,9 +1,11 @@
 import argparse
 import csv
 from pathlib import Path
+from pipeline.config import get_path
 from pipeline.utils import ROOT
 
-THUMB_TEMPLATE = (ROOT / "prompts/thumbnail_prompt_template.txt").read_text(encoding="utf-8")
+_THUMB_TEMPLATE_PATH = ROOT / get_path("thumbnail_template")
+THUMB_TEMPLATE = _THUMB_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 def main():
     parser = argparse.ArgumentParser(description="Generate thumbnail and caption prompt files from manifest.")
