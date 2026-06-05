@@ -16,6 +16,7 @@ def run_gpt_detection(prompt_path: str | Path, output_path: str | Path, *, dry_r
 
     model = os.getenv("DEFAULT_OPENAI_MODEL") or _get_model("detection")
     prompt = Path(prompt_path).read_text(encoding="utf-8")
+    output_path = Path(output_path)
 
     if dry_run:
         print(f"[dry-run] Would call {model} with prompt from {prompt_path}")
@@ -32,7 +33,6 @@ def run_gpt_detection(prompt_path: str | Path, output_path: str | Path, *, dry_r
 
     raw = response.output_text
 
-    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     raw_path = output_path.with_suffix(".raw.txt")
