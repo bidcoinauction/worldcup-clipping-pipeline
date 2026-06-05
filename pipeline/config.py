@@ -25,6 +25,10 @@ def get_path(name: str) -> str:
     return load_config()["paths"][name]
 
 
+def get_provider(name: str) -> str:
+    return load_config()["providers"][name]
+
+
 def reload_config() -> dict:
     global _config
     _config = None

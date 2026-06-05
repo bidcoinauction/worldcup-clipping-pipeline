@@ -1,4 +1,4 @@
-from pipeline.config import load_config, reload_config, get_leagues, get_model, get_path
+from pipeline.config import load_config, reload_config, get_leagues, get_model, get_path, get_provider
 
 
 def _clear():
@@ -39,4 +39,12 @@ def test_get_path_returns_string():
     val = get_path("thumbnail_template")
     assert isinstance(val, str)
     assert val.endswith(".txt")
+    _clear()
+
+
+def test_get_provider_returns_string():
+    for name in ("transcription", "detection"):
+        val = get_provider(name)
+        assert isinstance(val, str)
+        assert val in ("openai", "faster-whisper")
     _clear()

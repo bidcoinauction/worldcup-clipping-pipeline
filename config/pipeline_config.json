@@ -43,5 +43,9 @@
   },
   "paths": {
     "thumbnail_template": "prompts/thumbnail_prompt_template.txt"
+  },
+  "providers": {
+    "transcription": "openai",
+    "detection": "openai"
   }
 }

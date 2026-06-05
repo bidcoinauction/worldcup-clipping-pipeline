@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 from pipeline.api import make_openai_client
-from pipeline.config import get_leagues, get_model as _get_model
+from pipeline.config import get_leagues, get_model as _get_model, get_provider
 from pipeline.utils import ROOT, slugify
 
 load_dotenv()
@@ -47,10 +47,18 @@ def transcribe_with_openai(audio_path: Path, model: str) -> tuple[str, list[dict
 
     return transcript, segments
 
+
+def transcribe_with_whisper(audio_path: Path, model_size: str) -> tuple[str, list[dict]]:
+    from pipeline.whisper_transcriber import transcribe
+    return transcribe(audio_path, model_size)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Transcribe a match using OpenAI API.")
+    parser = argparse.ArgumentParser(description="Transcribe a match using OpenAI API or local faster-whisper.")
     parser.add_argument("--input", required=True, help="Path to match video/audio file")
     parser.add_argument("--league", required=True, choices=get_leagues())
+    parser.add_argument("--provider", default=get_provider("transcription"),
+                        choices=["openai", "faster-whisper"])
     parser.add_argument("--model", default=os.getenv("DEFAULT_TRANSCRIBE_MODEL") or _get_model("transcription"))
     parser.add_argument("--dry-run", action="store_true",
                         help="Print actions without executing.")
@@ -72,10 +80,13 @@ def main():
     else:
         print(f"[dry-run] Would extract audio")
 
-    print(f"Transcribing with OpenAI model: {args.model}")
+    print(f"Transcribing with {args.provider} model: {args.model}")
     transcript, segments = "", []
     if not args.dry_run:
-        transcript, segments = transcribe_with_openai(audio_path, args.model)
+        if args.provider == "openai":
+            transcript, segments = transcribe_with_openai(audio_path, args.model)
+        else:
+            transcript, segments = transcribe_with_whisper(audio_path, args.model)
 
     transcript_txt = out_dir / "transcript.txt"
     timestamps_json = out_dir / "timestamps.json"

@@ -3,3 +3,4 @@ python-dotenv
 tqdm
 rich
 pytest
+faster-whisper
