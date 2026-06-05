@@ -10,19 +10,12 @@ def run_gpt_detection(prompt_path: str | Path, output_path: str | Path) -> None:
     Calls OpenAI directly if OPENAI_API_KEY is set.
     Writes raw text and attempts to parse JSON into output_path.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise SystemExit("OPENAI_API_KEY missing. Add it to .env or use manual ChatGPT copy/paste.")
-
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise SystemExit("Missing dependency. Run: pip install openai")
+    from .api import make_openai_client
 
     model = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4.1")
     prompt = Path(prompt_path).read_text(encoding="utf-8")
 
-    client = OpenAI(api_key=api_key)
+    client = make_openai_client()
     response = client.responses.create(
         model=model,
         input=prompt,

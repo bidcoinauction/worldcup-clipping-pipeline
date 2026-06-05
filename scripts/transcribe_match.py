@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
-from openai import OpenAI
+from pipeline.api import make_openai_client
 from pipeline.utils import ROOT, slugify
 
 load_dotenv()
@@ -13,28 +13,38 @@ load_dotenv()
 def extract_audio(video_path: Path, out_audio: Path) -> Path:
     out_audio.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "afconvert",
-        str(video_path),
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vn",
+        "-acodec", "aac",
+        "-b:a", "192k",
         str(out_audio),
-        "-f", "mp4f",
-        "-d", "aac"
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, capture_output=True, check=True)
     return out_audio
 
-def transcribe_with_openai(audio_path: Path, model: str) -> str:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    if not os.getenv("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY missing. Add it to .env first.")
+def transcribe_with_openai(audio_path: Path, model: str) -> tuple[str, list[dict]]:
+    client = make_openai_client()
 
     with audio_path.open("rb") as f:
         result = client.audio.transcriptions.create(
             model=model,
             file=f,
-            response_format="text",
+            response_format="verbose_json",
         )
 
-    return str(result)
+    transcript = str(result.text)
+
+    segments = []
+    if hasattr(result, "segments") and result.segments:
+        for seg in result.segments:
+            segments.append({
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+            })
+
+    return transcript, segments
 
 def main():
     parser = argparse.ArgumentParser(description="Transcribe a match using OpenAI API.")
@@ -53,18 +63,17 @@ def main():
 
     audio_path = out_dir / f"{match_slug}_audio.m4a"
 
-    print(f"Extracting audio with macOS afconvert: {audio_path}")
+    print(f"Extracting audio with ffmpeg: {audio_path}")
     extract_audio(input_path, audio_path)
 
     print(f"Transcribing with OpenAI model: {args.model}")
-    transcript = transcribe_with_openai(audio_path, args.model)
+    transcript, segments = transcribe_with_openai(audio_path, args.model)
 
     transcript_txt = out_dir / "transcript.txt"
     transcript_txt.write_text(transcript.strip(), encoding="utf-8")
 
-    # Timestamp placeholder. OpenAI text mode does not return segment timestamps.
     timestamps_json = out_dir / "timestamps.json"
-    timestamps_json.write_text(json.dumps([], indent=2), encoding="utf-8")
+    timestamps_json.write_text(json.dumps(segments, indent=2), encoding="utf-8")
 
     meta_json = out_dir / "metadata.json"
     meta_json.write_text(json.dumps({
@@ -77,7 +86,7 @@ def main():
     }, indent=2), encoding="utf-8")
 
     print(f"Transcript written: {transcript_txt}")
-    print("Note: This API transcription mode creates transcript text, not segment-level timestamps.")
+    print(f"Timestamps written: {timestamps_json} ({len(segments)} segments)")
 
 if __name__ == "__main__":
     main()
