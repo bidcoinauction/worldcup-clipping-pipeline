@@ -1,7 +1,7 @@
 import argparse
 import subprocess
 from pathlib import Path
-from pipeline.config import get_leagues
+from pipeline.config import get_leagues, get_model
 from pipeline.utils import ROOT, slugify
 
 def run(cmd):
@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--league", required=True, choices=get_leagues())
     parser.add_argument("--match-name", required=True)
-    parser.add_argument("--model", default="medium")
+    parser.add_argument("--model", default=get_model("transcription"))
     parser.add_argument("--run-detection", action="store_true", help="Run clip detection (uses provider from config)")
     args = parser.parse_args()
 
