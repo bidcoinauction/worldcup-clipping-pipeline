@@ -40,13 +40,13 @@
   },
   "models": {
     "detection": "gpt-4.1",
-    "transcription": "gpt-4o-transcribe"
+    "transcription": "base"
   },
   "paths": {
     "thumbnail_template": "prompts/thumbnail_prompt_template.txt"
   },
   "providers": {
-    "transcription": "openai",
-    "detection": "openai"
+    "transcription": "faster-whisper",
+    "detection": "ollama"
   }
 }

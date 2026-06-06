@@ -140,7 +140,7 @@ def test_main_openai_still_works(mock_openai, mock_extract, tmp_path):
 
     with patch("sys.argv", [
         "transcribe_match", "--input", str(input_video),
-        "--league", "PREMIER_LEAGUE",
+        "--league", "PREMIER_LEAGUE", "--provider", "openai",
     ]):
         from scripts.transcribe_match import main
         main()

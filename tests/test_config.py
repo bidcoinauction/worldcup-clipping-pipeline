@@ -46,5 +46,5 @@ def test_get_provider_returns_string():
     for name in ("transcription", "detection"):
         val = get_provider(name)
         assert isinstance(val, str)
-        assert val in ("openai", "faster-whisper")
+        assert val in ("openai", "faster-whisper", "ollama")
     _clear()
