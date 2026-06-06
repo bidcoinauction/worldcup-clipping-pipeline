@@ -39,7 +39,7 @@
     "views_per_1000": 1.0
   },
   "models": {
-    "detection": "gpt-4.1",
+    "detection": "qwen2.5:3b",
     "transcription": "base"
   },
   "paths": {

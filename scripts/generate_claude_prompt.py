@@ -43,8 +43,11 @@ Rules:
 - Avoid generic sports commentary.
 - Think like a cinematic storyteller.
 - Hook must be understandable to Americans who are still learning global football.
-- Keep clip length between 12 and 28 seconds unless the moment needs longer.
-- Return valid JSON only.
+- Keep clip length between 8 and 45 seconds.
+- Return exactly 3-5 clips.
+- Return JSON array only. No markdown. No explanation.
+- Use timestamps from transcript only.
+- Do not invent moments, VAR reviews, goals, cards, or reactions not present in the transcript.
 
 Match name:
 {match_name}
