@@ -220,3 +220,37 @@ def test_micro_mode_skips_out_of_bounds_row(mock_open, mock_slice, tmp_path, cap
     captured = capsys.readouterr()
     assert "[skip] clip_002" in captured.out
     assert "[clamp] clip_003" in captured.out
+
+
+@patch("scripts.export_clips_ffmpeg._micro_slice")
+@patch("scripts.export_clips_ffmpeg.Path.open")
+def test_micro_mode_no_false_positive_clamp(mock_open, mock_slice, tmp_path, capsys):
+    """Raw-number timestamps within bounds should NOT trigger [clamp]."""
+    from scripts.export_clips_ffmpeg import main
+    import io
+
+    manifest_csv = (
+        "clip_id,category,start_time,end_time\n"
+        "clip_001,EMOTION,67,72\n"
+    )
+    mock_open.return_value.__enter__.return_value = io.StringIO(manifest_csv)
+    mock_slice.return_value = ("00:01:07", "00:01:12")
+
+    ffprobe_mock = MagicMock()
+    ffprobe_mock.stdout = '{"format": {"duration": "120.0"}}'
+    ffprobe_mock.returncode = 0
+
+    with patch(
+        "scripts.export_clips_ffmpeg.Path.open",
+        return_value=io.StringIO(manifest_csv),
+    ), patch("pipeline.utils.subprocess.run", return_value=ffprobe_mock):
+        with patch(
+            "sys.argv",
+            ["export_clips_ffmpeg", "--manifest", "dummy.csv",
+             "--source-video", "/v/m.mp4", "--mode", "micro", "--dry-run"],
+        ):
+            main()
+
+    mock_slice.assert_called_once()
+    captured = capsys.readouterr()
+    assert "[clamp]" not in captured.out

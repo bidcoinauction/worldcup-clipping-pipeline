@@ -87,7 +87,7 @@ def main():
                 print(f"[skip] {clip_id}: start_time {start} >= video duration {video_duration:.1f}s")
                 continue
             clamped_start, clamped_end = clamped
-            if clamped_end != end:
+            if timestamp_to_seconds(end) > video_duration:
                 print(f"[clamp] {clip_id}: end_time {end} > video duration {video_duration:.1f}s")
             start, end = _micro_slice(clamped_start, clamped_end, max_seconds)
 
