@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--mode", default=None, choices=("story", "micro"),
                         help="Clip mode (default: config value)")
     parser.add_argument("--run-detection", action="store_true", help="Run clip detection (uses provider from config)")
+    parser.add_argument("--research", default=None,
+                        help="Path to match_research.json with known events")
     args = parser.parse_args()
 
     match_slug = slugify(Path(args.input).stem)
@@ -25,9 +27,14 @@ def main():
     run(["python", "scripts/transcribe_match.py", "--input", args.input, "--league", args.league, "--model", args.model])
 
     transcript = ROOT / "TRANSCRIPTS" / args.league / match_slug / "transcript.txt"
+    research = args.research or ROOT / "MATCH_RESEARCH" / args.league / match_slug / "match_research.json"
+    research = research if Path(research).exists() else None
+
     prompt_args = ["python", "scripts/generate_claude_prompt.py", "--transcript", transcript, "--match-name", args.match_name]
     if args.mode:
         prompt_args += ["--mode", args.mode]
+    if research:
+        prompt_args += ["--research", str(research)]
     run(prompt_args)
 
     prompt = ROOT / "PROMPTS" / f"{name_slug}_claude_prompt.txt"

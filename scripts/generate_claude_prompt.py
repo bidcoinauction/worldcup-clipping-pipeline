@@ -44,9 +44,52 @@ def _build_rules_block(mode: str, duration_seconds: int) -> str:
     raise ValueError(msg)
 
 
+EVENT_TYPE_LABELS = {
+    "goal": "GOAL",
+    "penalty": "PENALTY",
+    "penalty_miss": "PENALTY MISS",
+    "penalty_save": "PENALTY SAVE",
+    "yellow_card": "YELLOW CARD",
+    "red_card": "RED CARD",
+    "substitution": "SUBSTITUTION",
+    "injury": "INJURY",
+    "var_review": "VAR REVIEW",
+    "trophy_lift": "TROPHY LIFT",
+    "shootout_goal": "SHOOTOUT GOAL",
+    "shootout_miss": "SHOOTOUT MISS",
+    "shootout_save": "SHOOTOUT SAVE",
+    "celebration": "CELEBRATION",
+    "controversy": "CONTROVERSY",
+    "half_time": "HALF TIME",
+    "full_time": "FULL TIME",
+}
+
 GOAL_STORY = """Train TikTok, Reels, and Shorts before the World Cup wave hits. We are not chasing generic highlights. We are identifying emotionally engaging, cinematic, mythological football moments."""
 
 GOAL_MICRO = """Train TikTok, Reels, and Shorts before the World Cup wave hits. We are identifying micro-moments: the fragments within football that can be transformed, reused, and compiled into new narratives without relying on long broadcast sequences."""
+
+
+def _build_research_block(research_path: Path | None) -> str:
+    if research_path is None or not research_path.exists():
+        return ""
+    data = json.loads(research_path.read_text(encoding="utf-8"))
+    events = data.get("events", [])
+    if not events:
+        return ""
+    header = (
+        "Match events (research anchors -- use them to look for nearby moments, "
+        "but only generate clips supported by the transcript/timestamps):"
+    )
+    lines = [header]
+    for ev in events:
+        minute = ev.get("minute_raw", "")
+        ev_type = ev.get("type", "").lower()
+        label = EVENT_TYPE_LABELS.get(ev_type, ev_type.upper())
+        desc = ev.get("description", "")
+        player = ev.get("player", "")
+        suffix = f" ({player})" if player else ""
+        lines.append(f"- [{minute}' {label}] {desc}{suffix}")
+    return "\n".join(lines) + "\n"
 
 
 PROMPT_TEMPLATE = """You are an elite short-form football clipping strategist for a US-targeted 2026 World Cup account.
@@ -87,7 +130,7 @@ For each clip candidate return:
 
 {rules_block}
 
-Match name:
+{research_block}Match name:
 {match_name}
 
 Timestamped transcript (video duration: {duration_seconds}s):
@@ -117,6 +160,8 @@ def main():
     parser.add_argument("--match-name", required=True)
     parser.add_argument("--mode", default=None, choices=("story", "micro"),
                         help="Clip mode (default: config value)")
+    parser.add_argument("--research", default=None,
+                        help="Path to match_research.json with known events")
     args = parser.parse_args()
 
     mode = args.mode or get_default_clip_mode()
@@ -124,12 +169,15 @@ def main():
     timestamped_transcript, duration = _build_timestamped_transcript(transcript_path)
     rules_block = _build_rules_block(mode, duration)
     goal = GOAL_MICRO if mode == "micro" else GOAL_STORY
+    research_path = Path(args.research) if args.research else None
+    research_block = _build_research_block(research_path)
     prompt = PROMPT_TEMPLATE.format(
         match_name=args.match_name,
         timestamped_transcript=timestamped_transcript,
         duration_seconds=duration,
         rules_block=rules_block,
         goal=goal,
+        research_block=research_block,
     )
 
     out_file = ROOT / "PROMPTS" / f"{slugify(args.match_name)}_claude_prompt.txt"
