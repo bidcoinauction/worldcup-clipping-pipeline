@@ -49,3 +49,20 @@ def test_mode_passed_when_specified(tmp_path):
     prompt_call = mock_run.call_args_list[1][0][0]
     mode_idx = prompt_call.index("--mode") + 1
     assert prompt_call[mode_idx] == "micro"
+
+
+def test_package_mode_accepted(tmp_path):
+    """process_match should accept --mode package."""
+    input_video = tmp_path / "match.mp4"
+    input_video.touch()
+
+    with patch("sys.argv", [
+        "process_match", "--input", str(input_video),
+        "--league", "WORLD_CUP", "--match-name", "Test Match",
+        "--mode", "package",
+    ]), patch("scripts.process_match.run") as mock_run:
+        main()
+
+    prompt_call = mock_run.call_args_list[1][0][0]
+    mode_idx = prompt_call.index("--mode") + 1
+    assert prompt_call[mode_idx] == "package"

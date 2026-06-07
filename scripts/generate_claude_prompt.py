@@ -40,6 +40,18 @@ def _build_rules_block(mode: str, duration_seconds: int) -> str:
 - Focus on facial reactions, crowd emotion, ball contact, referee gesture, celebration flash, or commentary spike.
 - Avoid full highlight sequences."""
 
+    if mode == "package":
+        return f"""Rules:
+{common}
+- Return {min_c}-{max_c} clips in narrative sequence order (001, 002, ..., N).
+- Clips should range from {min_s} to {max_s} seconds.
+- Group adjacent transcript segments into coherent clips.
+- You MUST include at least one crowd reaction clip.
+- You MUST include at least one manager/bench reaction clip.
+- Cover all major match events (goals, cards, penalties, saves) that appear in the transcript.
+- Distribute clips across narrative acts: setup (opening tension), pressure (rising stakes), rupture (decisive moments), aftermath (reactions, consequences).
+- Assign each clip a narrative_role from: "setup", "tension_builder", "climax", "reaction", "aftermath"."""
+
     msg = f"Unknown clip mode: {mode}"
     raise ValueError(msg)
 
@@ -67,6 +79,8 @@ EVENT_TYPE_LABELS = {
 GOAL_STORY = """Train TikTok, Reels, and Shorts before the World Cup wave hits. We are not chasing generic highlights. We are identifying emotionally engaging, cinematic, mythological football moments."""
 
 GOAL_MICRO = """Train TikTok, Reels, and Shorts before the World Cup wave hits. We are identifying micro-moments: the fragments within football that can be transformed, reused, and compiled into new narratives without relying on long broadcast sequences."""
+
+GOAL_PACKAGE = """Build a complete story package for this match. We need 8-15 clips that together tell the full emotional narrative — from the build-up to the aftermath. Each clip has a narrative role in the larger story."""
 
 
 def _build_research_block(research_path: Path | None) -> str:
@@ -105,6 +119,62 @@ CATEGORY_RULE_RESEARCH = (
 )
 
 
+def _build_story_targets_block(research_path: Path | None) -> str:
+    if research_path is None or not research_path.exists():
+        return ""
+    data = json.loads(research_path.read_text(encoding="utf-8"))
+    targets = data.get("story_targets", {})
+    if not targets:
+        return ""
+    lines = ["Story package targets:"]
+    arc_type = targets.get("arc_type", "")
+    if arc_type:
+        lines.append(f"  - Arc type: {arc_type}")
+    acts = targets.get("acts", [])
+    if acts:
+        lines.append(f"  - Acts to distribute across: {', '.join(acts)}")
+    coverage = targets.get("required_coverage", {})
+    types = coverage.get("types", [])
+    if types:
+        lines.append(f"  - Must cover event types: {', '.join(types)}")
+    diversity = coverage.get("diversity", [])
+    if diversity:
+        lines.append(f"  - Must include: {', '.join(diversity)}")
+    hook = targets.get("narrative_hook", "")
+    if hook:
+        lines.append(f"  - Narrative hook: {hook}")
+    return "\n".join(lines) + "\n\n"
+
+
+CLIP_SCHEMA_BASE = """  "clip_id": "001",
+  "category": "EMOTION | AURA | CHAOS | AMERICA",
+  "start_time": "SS",
+  "end_time": "SS",
+  "virality_score": 1-10,
+  "retention_reason": "why people keep watching",
+  "share_reason": "why people share it",
+  "hook_text": "0-2 sec hook",
+  "caption": "short caption",
+  "thumbnail_idea": "specific frame or visual idea",
+  "manual_scrub_note": "what visual moment to look for",
+  "platform_notes": {
+    "tiktok": "how to package",
+    "reels": "how to package",
+    "shorts": "how to package"
+  }"""
+
+
+def _build_clip_schema(mode: str) -> str:
+    extra = ""
+    if mode == "package":
+        extra = (
+            '  "sequence_order": 1,\n'
+            '  "narrative_role": "setup | tension_builder | climax | reaction | aftermath",\n'
+        )
+    schema = extra + CLIP_SCHEMA_BASE
+    return "For each clip candidate return:\n{\n" + schema + "\n}"
+
+
 def _build_category_rule(research_path: Path | None) -> str:
     if research_path is None or not research_path.exists():
         return ""
@@ -130,29 +200,11 @@ Prioritize these categories:
 3. CHAOS: VAR controversy, fights, red cards, meltdowns, tactical collapses.
 4. AMERICA: US audience entry point, MLS/Messi, football culture shock, why soccer feels different.
 
-{category_rule}For each clip candidate return:
-{{
-  "clip_id": "001",
-  "category": "EMOTION | AURA | CHAOS | AMERICA",
-  "start_time": "SS",
-  "end_time": "SS",
-  "virality_score": 1-10,
-  "retention_reason": "why people keep watching",
-  "share_reason": "why people share it",
-  "hook_text": "0-2 sec hook",
-  "caption": "short caption",
-  "thumbnail_idea": "specific frame or visual idea",
-  "manual_scrub_note": "what visual moment to look for",
-  "platform_notes": {{
-    "tiktok": "how to package",
-    "reels": "how to package",
-    "shorts": "how to package"
-  }}
-}}
+{category_rule}{clip_schema}
 
 {rules_block}
 
-{research_block}Match name:
+{story_targets_block}{research_block}Match name:
 {match_name}
 
 Timestamped transcript (video duration: {duration_seconds}s):
@@ -180,7 +232,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Claude prompt from transcript.")
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--match-name", required=True)
-    parser.add_argument("--mode", default=None, choices=("story", "micro"),
+    parser.add_argument("--mode", default=None, choices=("story", "micro", "package"),
                         help="Clip mode (default: config value)")
     parser.add_argument("--research", default=None,
                         help="Path to match_research.json with known events")
@@ -190,10 +242,17 @@ def main():
     transcript_path = Path(args.transcript)
     timestamped_transcript, duration = _build_timestamped_transcript(transcript_path)
     rules_block = _build_rules_block(mode, duration)
-    goal = GOAL_MICRO if mode == "micro" else GOAL_STORY
+    if mode == "package":
+        goal = GOAL_PACKAGE
+    elif mode == "micro":
+        goal = GOAL_MICRO
+    else:
+        goal = GOAL_STORY
     research_path = Path(args.research) if args.research else None
     research_block = _build_research_block(research_path)
     category_rule = _build_category_rule(research_path)
+    story_targets_block = _build_story_targets_block(research_path)
+    clip_schema = _build_clip_schema(mode)
     account_positioning = load_config().get("account_positioning", "America Discovers Football")
     prompt = PROMPT_TEMPLATE.format(
         match_name=args.match_name,
@@ -203,6 +262,8 @@ def main():
         goal=goal,
         research_block=research_block,
         category_rule=category_rule,
+        story_targets_block=story_targets_block,
+        clip_schema=clip_schema,
         account_positioning=account_positioning,
     )
 

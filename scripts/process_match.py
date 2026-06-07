@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--league", required=True, choices=get_leagues())
     parser.add_argument("--match-name", required=True)
     parser.add_argument("--model", default=get_model("transcription"))
-    parser.add_argument("--mode", default=None, choices=("story", "micro"),
+    parser.add_argument("--mode", default=None, choices=("story", "micro", "package"),
                         help="Clip mode (default: config value)")
     parser.add_argument("--run-detection", action="store_true", help="Run clip detection (uses provider from config)")
     parser.add_argument("--research", default=None,

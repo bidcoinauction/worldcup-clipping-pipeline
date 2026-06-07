@@ -39,6 +39,13 @@
       "min_clips": 5,
       "max_clips": 12,
       "description": "Ultra-short moments for copyright safety and heavy transformation"
+    },
+    "package": {
+      "min_seconds": 8,
+      "max_seconds": 45,
+      "min_clips": 8,
+      "max_clips": 15,
+      "description": "Full-match story package with narrative sequence and act coverage"
     }
   },
   "scoring_weights": {

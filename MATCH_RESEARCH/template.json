@@ -6,6 +6,16 @@
     "competition": "",
     "date": ""
   },
+  "story_targets": {
+    "_comment": "Optional. Used by --mode package to guide clip detection toward narrative coverage.",
+    "arc_type": "",
+    "acts": ["setup", "pressure", "rupture", "aftermath"],
+    "required_coverage": {
+      "types": [],
+      "diversity": []
+    },
+    "narrative_hook": ""
+  },
   "events": [
     {
       "minute_raw": "12",

@@ -1,0 +1,139 @@
+{
+  "match": {
+    "home_team": "Argentina",
+    "away_team": "France",
+    "competition": "FIFA World Cup 2022",
+    "date": "2022-12-18"
+  },
+  "story_targets": {
+    "arc_type": "Legacy Arc",
+    "acts": ["setup", "pressure", "rupture", "aftermath"],
+    "required_coverage": {
+      "types": ["goal", "penalty", "penalty_save", "celebration", "trophy_lift"],
+      "diversity": ["crowd_reaction", "manager_reaction", "player_celebration", "goal_moment"]
+    },
+    "narrative_hook": "The greatest World Cup final of all time: Messi's legacy finale vs Mbappe's hat-trick defiance"
+  },
+  "events": [
+    {
+      "minute_raw": "23",
+      "type": "penalty",
+      "description": "Messi scores penalty to put Argentina 1-0 up after Di Maria was fouled by Dembele",
+      "player": "Lionel Messi",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "36",
+      "type": "goal",
+      "description": "Di Maria finishes a sweeping team move to make it 2-0 Argentina. Mac Allister and Alvarez combine before Di Maria dinks it over Lloris",
+      "player": "Angel Di Maria",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "45+",
+      "type": "half_time",
+      "description": "Half time. Argentina 2-0 France. France yet to register a shot",
+      "importance": "low"
+    },
+    {
+      "minute_raw": "80",
+      "type": "penalty",
+      "description": "Mbappe scores penalty to pull one back for France after Otamendi fouls Kolo Muani",
+      "player": "Kylian Mbappe",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "81",
+      "type": "goal",
+      "description": "Mbappe scores a stunning volley 97 seconds later to equalise 2-2. Thuram provides the assist",
+      "player": "Kylian Mbappe",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "90",
+      "type": "full_time",
+      "description": "Full time. Argentina 2-2 France. Extra time to follow",
+      "importance": "low"
+    },
+    {
+      "minute_raw": "108",
+      "type": "goal",
+      "description": "Messi scores from close range after Martinez saves his initial shot to put Argentina 3-2 up. Lautaro Martinez provides the assist",
+      "player": "Lionel Messi",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "118",
+      "type": "penalty",
+      "description": "Mbappe scores his second penalty of the final to equalise 3-3 after a Montiel handball",
+      "player": "Kylian Mbappe",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120",
+      "type": "full_time",
+      "description": "Extra time full time. Argentina 3-3 France. Penalty shootout awaits",
+      "importance": "low"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Mbappe scores France's first penalty. France 1-0 in shootout",
+      "player": "Kylian Mbappe",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Messi scores Argentina's first penalty. Shootout tied 1-1",
+      "player": "Lionel Messi",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "penalty_save",
+      "description": "Martinez saves Coman's penalty. France 1-1 in shootout",
+      "player": "Emiliano Martinez",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Dybala scores Argentina's second penalty. Argentina 2-1 in shootout",
+      "player": "Paulo Dybala",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "penalty_save",
+      "description": "Martinez saves Kolo Muani's penalty. Argentina 2-1 in shootout",
+      "player": "Emiliano Martinez",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Montiel scores the winning penalty. Argentina win the World Cup 4-2 on penalties",
+      "player": "Gonzalo Montiel",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "trophy_lift",
+      "description": "Argentina lift the FIFA World Cup trophy for the first time since 1986. Messi lifts the trophy and celebrates with the squad",
+      "importance": "high"
+    }
+  ]
+}

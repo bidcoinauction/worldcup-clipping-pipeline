@@ -60,13 +60,15 @@ def _research_file(tmp_path, events=None):
     return path
 
 
-def _run_main(tmp_path, research_arg=None):
+def _run_main(tmp_path, research_arg=None, mode=None):
     transcript = _write_transcript(tmp_path)
     argv = [
         "prog",
         "--transcript", str(transcript),
         "--match-name", "psg_arsenal_2min",
     ]
+    if mode:
+        argv += ["--mode", mode]
     if research_arg:
         argv += ["--research", str(research_arg)]
     with patch("sys.argv", argv):
@@ -184,3 +186,127 @@ def test_no_research_omits_category_rule(tmp_path):
     content = out.read_text(encoding="utf-8")
     assert "concrete football events" not in content
     assert "Do not default to AMERICA" not in content
+
+
+def _research_file_with_story_targets(tmp_path):
+    d = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "psg_arsenal_2min"
+    d.mkdir(parents=True, exist_ok=True)
+    data = {
+        "events": [{"minute_raw": "12", "type": "goal", "description": "Messi scores", "importance": "high"}],
+        "story_targets": {
+            "arc_type": "Legacy Arc",
+            "acts": ["setup", "pressure", "rupture", "aftermath"],
+            "required_coverage": {
+                "types": ["goal", "penalty", "trophy_lift"],
+                "diversity": ["crowd_reaction", "manager_reaction"]
+            },
+            "narrative_hook": "The greatest World Cup final of all time"
+        },
+    }
+    path = d / "match_research.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def _research_file_no_story_targets(tmp_path):
+    d = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "psg_arsenal_2min"
+    d.mkdir(parents=True, exist_ok=True)
+    data = {"events": [{"minute_raw": "12", "type": "goal", "description": "Messi scores"}]}
+    path = d / "match_research.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_package_mode_uses_goal_package(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, mode="package")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "complete story package" in content
+    assert "full emotional narrative" in content
+
+
+def test_package_mode_clip_schema_includes_package_fields(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, mode="package")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "sequence_order" in content
+    assert "narrative_role" in content
+    assert "setup | tension_builder | climax | reaction | aftermath" in content
+
+
+def test_package_mode_rules_include_diversity(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, mode="package")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "crowd reaction" in content.lower()
+    assert "manager/bench reaction" in content.lower()
+    assert "setup" in content and "pressure" in content
+    assert "rupture" in content and "aftermath" in content
+
+
+def test_package_mode_with_story_targets_injects_block(tmp_path):
+    research = _research_file_with_story_targets(tmp_path)
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research, mode="package")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Story package targets:" in content
+    assert "Legacy Arc" in content
+    assert "setup, pressure, rupture, aftermath" in content
+    assert "goal, penalty, trophy_lift" in content
+    assert "crowd_reaction, manager_reaction" in content
+    assert "The greatest World Cup final of all time" in content
+
+
+def test_package_mode_research_no_story_targets_omitted(tmp_path):
+    research = _research_file_no_story_targets(tmp_path)
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research, mode="package")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Story package targets" not in content
+
+
+def test_package_mode_no_research_omits_story_targets(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, mode="package")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Story package targets" not in content
+
+
+def test_story_mode_no_package_fields(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, mode="story")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "sequence_order" not in content
+    assert "narrative_role" not in content
+
+
+def test_micro_mode_no_package_fields(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, mode="micro")
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "sequence_order" not in content
+    assert "narrative_role" not in content
