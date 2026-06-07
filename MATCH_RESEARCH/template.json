@@ -1,0 +1,41 @@
+{
+  "_template": "match_research.json — Copy this file to MATCH_RESEARCH/<LEAGUE>/<match_slug>/match_research.json",
+  "match": {
+    "home_team": "",
+    "away_team": "",
+    "competition": "",
+    "date": ""
+  },
+  "events": [
+    {
+      "minute_raw": "12",
+      "video_time_seconds": 345,
+      "type": "goal",
+      "description": "Messi scores a free kick from 25 yards",
+      "player": "Messi",
+      "team": "home",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "34",
+      "type": "yellow_card",
+      "description": "Saliba booked for tactical foul",
+      "player": "Saliba",
+      "team": "away",
+      "importance": "medium"
+    },
+    {
+      "minute_raw": "45+3",
+      "type": "penalty_save",
+      "description": "Ramsdale saves Mbappe's penalty",
+      "importance": "high"
+    }
+  ],
+  "accepted_types": [
+    "goal", "penalty", "penalty_miss", "penalty_save",
+    "yellow_card", "red_card", "substitution", "injury",
+    "var_review", "trophy_lift",
+    "shootout_goal", "shootout_miss", "shootout_save",
+    "celebration", "controversy", "half_time", "full_time"
+  ]
+}

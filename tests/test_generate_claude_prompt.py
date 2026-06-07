@@ -142,3 +142,45 @@ def test_research_partial_fields(tmp_path):
     assert "[90' GOAL] Last minute winner" in content
     assert "[120' SHOOTOUT MISS] Penalty saved" in content
     assert "Match events" in content
+
+
+def test_research_with_video_time_seconds(tmp_path):
+    events = [
+        {"minute_raw": "12", "video_time_seconds": 345, "type": "goal",
+         "description": "Messi scores", "player": "Messi"},
+        {"minute_raw": "45+3", "type": "penalty_save",
+         "description": "Ramsdale saves", "player": "Ramsdale"},
+    ]
+    research = _research_file(tmp_path, events=events)
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "[12' / 345s GOAL]" in content
+    assert "[45+3' PENALTY SAVE]" in content
+    assert "/ 345s" in content
+
+
+def test_research_adds_category_rule(tmp_path):
+    research = _research_file(tmp_path)
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "concrete football events" in content
+    assert "Do not default to AMERICA" in content
+
+
+def test_no_research_omits_category_rule(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "concrete football events" not in content
+    assert "Do not default to AMERICA" not in content
