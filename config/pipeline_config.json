@@ -58,6 +58,7 @@
   },
   "providers": {
     "transcription": "faster-whisper",
-    "detection": "ollama"
+    "detection": "ollama",
+    "timeout": 600
   }
 }

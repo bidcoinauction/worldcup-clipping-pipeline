@@ -1,6 +1,7 @@
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
+from pipeline.config import load_config
 from pipeline.ollama_detector import run_ollama_detection
 
 
@@ -72,3 +73,19 @@ def test_non_json_raises_system_exit(mock_post, tmp_path):
 
     with pytest.raises(SystemExit):
         run_ollama_detection(str(prompt_file), str(out_file), model="llama3.1")
+
+
+@patch("pipeline.ollama_detector.requests.post")
+@patch("pipeline.ollama_detector.load_config")
+def test_timeout_reads_from_config(mock_load_config, mock_post, tmp_path):
+    mock_load_config.return_value = {"providers": {"timeout": 999}}
+    mock_post.return_value.json.return_value = {"response": "[]"}
+
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("test", encoding="utf-8")
+    out_file = tmp_path / "out.json"
+
+    run_ollama_detection(str(prompt_file), str(out_file), model="llama3.1")
+
+    (_, kwargs) = mock_post.call_args
+    assert kwargs["timeout"] == 999

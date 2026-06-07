@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import requests
+from pipeline.config import load_config
 
 
 def run_ollama_detection(
@@ -30,7 +31,7 @@ def run_ollama_detection(
             "stream": False,
             "options": {"temperature": 0.2},
         },
-        timeout=300,
+        timeout=load_config()["providers"]["timeout"],
     )
     resp.raise_for_status()
     raw = resp.json()["response"]
