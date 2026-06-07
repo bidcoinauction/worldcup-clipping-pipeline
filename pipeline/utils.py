@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import json
+import subprocess
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,3 +41,13 @@ def seconds_to_timestamp(seconds: float) -> str:
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:05.2f}"
+
+
+def get_video_duration(path: Path) -> float:
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    info = json.loads(result.stdout)
+    return float(info["format"]["duration"])

@@ -1,8 +1,8 @@
-from unittest.mock import patch, call
+from unittest.mock import MagicMock, patch, call
 from pathlib import Path
 
-from pipeline.utils import timestamp_to_seconds
-from scripts.export_clips_ffmpeg import _micro_slice, export_clip
+from pipeline.utils import get_video_duration, timestamp_to_seconds
+from scripts.export_clips_ffmpeg import _micro_slice, _validate_and_clamp, export_clip
 
 
 @patch("scripts.export_clips_ffmpeg.subprocess.run")
@@ -112,10 +112,14 @@ def test_micro_mode_calls_slice(mock_open, mock_slice, tmp_path, capsys):
     mock_open.return_value.__enter__.return_value = io.StringIO(manifest_csv)
     mock_slice.return_value = ("00:00:15", "00:00:18.8")
 
+    ffprobe_mock = MagicMock()
+    ffprobe_mock.stdout = '{"format": {"duration": "120.0"}}'
+    ffprobe_mock.returncode = 0
+
     with patch(
         "scripts.export_clips_ffmpeg.Path.open",
         return_value=io.StringIO(manifest_csv),
-    ):
+    ), patch("pipeline.utils.subprocess.run", return_value=ffprobe_mock):
         with patch(
             "sys.argv",
             ["export_clips_ffmpeg", "--manifest", "dummy.csv",
@@ -123,7 +127,11 @@ def test_micro_mode_calls_slice(mock_open, mock_slice, tmp_path, capsys):
         ):
             main()
 
-    mock_slice.assert_called_once_with("00:00:10", "00:00:30", 3.8)
+    mock_slice.assert_called_once()
+    (called_start, called_end, called_max) = mock_slice.call_args[0]
+    assert abs(timestamp_to_seconds(called_start) - 10.0) < 0.01
+    assert abs(timestamp_to_seconds(called_end) - 30.0) < 0.01
+    assert called_max == 3.8
 
 
 @patch("scripts.export_clips_ffmpeg._micro_slice")
@@ -148,3 +156,67 @@ def test_story_mode_does_not_slice(mock_open, mock_slice, tmp_path, capsys):
             main()
 
     mock_slice.assert_not_called()
+
+
+def test_validate_clamp_skips_start_exceeds_duration():
+    result = _validate_and_clamp("125", "130", 120.0)
+    assert result is None
+
+
+def test_validate_clamp_clamps_end():
+    result = _validate_and_clamp("115", "130", 120.0)
+    assert result is not None
+    s, e = result
+    assert abs(timestamp_to_seconds(s) - 115.0) < 0.01
+    assert abs(timestamp_to_seconds(e) - 120.0) < 0.01
+
+
+def test_validate_clamp_within_bounds():
+    result = _validate_and_clamp("00:00:10", "00:00:20", 120.0)
+    assert result is not None
+    s, e = result
+    assert abs(timestamp_to_seconds(s) - 10.0) < 0.01
+    assert abs(timestamp_to_seconds(e) - 20.0) < 0.01
+
+
+def test_get_video_duration_returns_float():
+    dur = get_video_duration(Path("FootballArchive/SAMPLES/psg_arsenal_2min.mp4"))
+    assert isinstance(dur, float)
+    assert dur > 0
+    assert abs(dur - 120.0) < 1.0
+
+
+@patch("scripts.export_clips_ffmpeg._micro_slice")
+@patch("scripts.export_clips_ffmpeg.Path.open")
+def test_micro_mode_skips_out_of_bounds_row(mock_open, mock_slice, tmp_path, capsys):
+    from scripts.export_clips_ffmpeg import main
+    import io
+
+    manifest_csv = (
+        "clip_id,category,start_time,end_time\n"
+        "clip_001,EMOTION,00:00:10,00:00:20\n"
+        "clip_002,EMOTION,125,130\n"
+        "clip_003,EMOTION,115,130\n"
+    )
+    mock_open.return_value.__enter__.return_value = io.StringIO(manifest_csv)
+    mock_slice.return_value = ("00:00:14", "00:00:17.8")
+
+    ffprobe_mock = MagicMock()
+    ffprobe_mock.stdout = '{"format": {"duration": "120.0"}}'
+    ffprobe_mock.returncode = 0
+
+    with patch(
+        "scripts.export_clips_ffmpeg.Path.open",
+        return_value=io.StringIO(manifest_csv),
+    ), patch("pipeline.utils.subprocess.run", return_value=ffprobe_mock):
+        with patch(
+            "sys.argv",
+            ["export_clips_ffmpeg", "--manifest", "dummy.csv",
+             "--source-video", "/v/m.mp4", "--mode", "micro", "--dry-run"],
+        ):
+            main()
+
+    assert mock_slice.call_count == 2
+    captured = capsys.readouterr()
+    assert "[skip] clip_002" in captured.out
+    assert "[clamp] clip_003" in captured.out
