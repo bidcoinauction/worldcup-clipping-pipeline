@@ -19,3 +19,10 @@ TOP_PERFORMERS/
 *.mp4
 *.mov
 *.m4a
+
+# Generated pipeline artifacts
+PROMPTS/*.txt
+DETECTION/
+DETECTIONS/
+CLIP_MANIFESTS/*.csv
+MATCH_RESEARCH/WORLD_CUP/psg_arsenal_2min/
