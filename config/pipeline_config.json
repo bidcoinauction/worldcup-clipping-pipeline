@@ -24,11 +24,22 @@
     "group_stage": "6-10",
     "knockouts": "10-20"
   },
-  "clip_rules": {
-    "min_seconds": 12,
-    "max_seconds": 28,
-    "first_2_seconds": "hard hook",
-    "final_2_seconds": "aftermath"
+  "default_clip_mode": "story",
+  "clip_modes": {
+    "story": {
+      "min_seconds": 8,
+      "max_seconds": 45,
+      "min_clips": 3,
+      "max_clips": 5,
+      "description": "Full highlight sequences for narrative storytelling"
+    },
+    "micro": {
+      "min_seconds": 1.5,
+      "max_seconds": 3.8,
+      "min_clips": 5,
+      "max_clips": 12,
+      "description": "Ultra-short moments for copyright safety and heavy transformation"
+    }
   },
   "scoring_weights": {
     "completion_rate": 2.0,

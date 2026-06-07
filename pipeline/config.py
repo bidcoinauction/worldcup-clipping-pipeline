@@ -29,6 +29,14 @@ def get_provider(name: str) -> str:
     return load_config()["providers"][name]
 
 
+def get_clip_mode(name: str) -> dict:
+    return load_config()["clip_modes"][name]
+
+
+def get_default_clip_mode() -> str:
+    return load_config()["default_clip_mode"]
+
+
 def reload_config() -> dict:
     global _config
     _config = None

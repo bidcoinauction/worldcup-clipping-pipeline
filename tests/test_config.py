@@ -1,4 +1,13 @@
-from pipeline.config import load_config, reload_config, get_leagues, get_model, get_path, get_provider
+from pipeline.config import (
+    get_clip_mode,
+    get_default_clip_mode,
+    get_leagues,
+    get_model,
+    get_path,
+    get_provider,
+    load_config,
+    reload_config,
+)
 
 
 def _clear():
@@ -47,4 +56,31 @@ def test_get_provider_returns_string():
         val = get_provider(name)
         assert isinstance(val, str)
         assert val in ("openai", "faster-whisper", "ollama")
+    _clear()
+
+
+def test_get_clip_mode_story_returns_dict():
+    mode = get_clip_mode("story")
+    assert isinstance(mode, dict)
+    assert mode["min_seconds"] == 8
+    assert mode["max_seconds"] == 45
+    assert mode["min_clips"] == 3
+    assert mode["max_clips"] == 5
+    _clear()
+
+
+def test_get_clip_mode_micro_returns_dict():
+    mode = get_clip_mode("micro")
+    assert isinstance(mode, dict)
+    assert mode["min_seconds"] == 1.5
+    assert mode["max_seconds"] == 3.8
+    assert mode["min_clips"] == 5
+    assert mode["max_clips"] == 12
+    _clear()
+
+
+def test_get_default_clip_mode_returns_story():
+    val = get_default_clip_mode()
+    assert isinstance(val, str)
+    assert val == "story"
     _clear()
