@@ -739,3 +739,156 @@ def planned_match_rows_from_config(config_path: Path) -> list[dict[str, Any]]:
     for item in matches:
         rows.append({field: item.get(field, "") for field in MATCH_FIELDS})
     return rows
+
+
+NARRATIVE_ROLES = {"setup", "tension_builder", "climax", "reaction", "aftermath"}
+
+CROWD_KEYWORDS = [
+    "crowd", "supporter", "supporters", "fan", "fans", "stands",
+    "cheer", "cheering", "silence", "audience", "stadium",
+]
+
+MANAGER_KEYWORDS = [
+    "manager", "coach", "bench", "sideline", "head coach",
+]
+
+
+def _search_text(clip: dict[str, Any], keywords: list[str]) -> bool:
+    haystack = " ".join(
+        str(v) for v in [
+            clip.get("description", ""),
+            clip.get("caption", ""),
+            clip.get("hook_text", ""),
+            clip.get("manual_scrub_note", ""),
+        ]
+    ).lower()
+    return any(kw in haystack for kw in keywords)
+
+
+def validate_package(clips: list[dict], *, min_clips: int = 8, max_clips: int = 15) -> dict[str, Any]:
+    if not clips:
+        return {
+            "valid": False,
+            "warnings": ["No clips to validate"],
+            "clip_count": 0,
+            "clip_count_ok": False,
+            "overlaps": [],
+            "overlap_count": 0,
+            "has_crowd_reaction": False,
+            "has_manager_reaction": False,
+            "has_aftermath": False,
+            "category_concentration": {
+                "counts": {},
+                "dominant": "",
+                "percentage": 0.0,
+                "overused": False,
+            },
+            "narrative_roles": {"counts": {}, "missing": list(NARRATIVE_ROLES)},
+        }
+
+    warnings: list[str] = []
+
+    # --- clip count ---
+    count = len(clips)
+    count_ok = min_clips <= count <= max_clips
+    if count < min_clips:
+        warnings.append(f"Clip count {count} is below minimum {min_clips}")
+    elif count > max_clips:
+        warnings.append(f"Clip count {count} exceeds maximum {max_clips}")
+
+    # --- overlap detection ---
+    sorted_clips = sorted(clips, key=lambda c: int(c.get("sequence_order", 0)))
+    overlaps: list[dict[str, Any]] = []
+    for i in range(len(sorted_clips) - 1):
+        a, b = sorted_clips[i], sorted_clips[i + 1]
+        a_id = a.get("clip_id", f"index_{i}")
+        b_id = b.get("clip_id", f"index_{i + 1}")
+        a_start = int(a.get("start_time", 0))
+        a_end = int(a.get("end_time", 0))
+        b_start = int(b.get("start_time", 0))
+        b_end = int(b.get("end_time", 0))
+        if b_start < a_end:
+            overlaps.append({
+                "clip_a": a_id,
+                "clip_b": b_id,
+                "a_range": f"{a_start}s-{a_end}s",
+                "b_range": f"{b_start}s-{b_end}s",
+                "overlap_seconds": a_end - b_start,
+            })
+    if overlaps:
+        for o in overlaps:
+            warnings.append(
+                f"Overlap: {o['clip_a']} ({o['a_range']}) overlaps "
+                f"with {o['clip_b']} ({o['b_range']}) by {o['overlap_seconds']}s"
+            )
+
+    # --- crowd reaction ---
+    has_crowd = any(
+        clip.get("narrative_role") in ("reaction", "aftermath")
+        and _search_text(clip, CROWD_KEYWORDS)
+        for clip in clips
+    )
+    if not has_crowd:
+        warnings.append("No crowd reaction clip found (role=reaction/aftermath with crowd keyword)")
+
+    # --- manager reaction ---
+    has_manager = any(
+        clip.get("narrative_role") in ("reaction", "aftermath")
+        and _search_text(clip, MANAGER_KEYWORDS)
+        for clip in clips
+    )
+    if not has_manager:
+        warnings.append("No manager/bench reaction clip found (role=reaction/aftermath with manager keyword)")
+
+    # --- aftermath ---
+    has_aftermath = any(clip.get("narrative_role") == "aftermath" for clip in clips)
+    if not has_aftermath:
+        warnings.append("No aftermath clip found (narrative_role=aftermath)")
+
+    # --- category concentration ---
+    cat_counts: dict[str, int] = {}
+    for clip in clips:
+        cat = clip.get("category", "UNSORTED")
+        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+    dominant = max(cat_counts, key=cat_counts.get) if cat_counts else ""
+    pct = (cat_counts.get(dominant, 0) / count) * 100 if count else 0
+    overused = pct > 50
+    if overused:
+        warnings.append(
+            f"Category {dominant} dominates ({pct:.0f}%) — "
+            f"consider balancing across available categories"
+        )
+
+    # --- narrative_role coverage ---
+    role_counts: dict[str, int] = {}
+    for clip in clips:
+        role = clip.get("narrative_role", "")
+        if role:
+            role_counts[role] = role_counts.get(role, 0) + 1
+    missing_roles = sorted(NARRATIVE_ROLES - set(role_counts.keys()))
+    if missing_roles:
+        warnings.append(f"Missing narrative roles: {', '.join(missing_roles)}")
+
+    valid = count_ok and not overlaps and has_aftermath
+
+    return {
+        "valid": valid,
+        "warnings": warnings,
+        "clip_count": count,
+        "clip_count_ok": count_ok,
+        "overlaps": overlaps,
+        "overlap_count": len(overlaps),
+        "has_crowd_reaction": has_crowd,
+        "has_manager_reaction": has_manager,
+        "has_aftermath": has_aftermath,
+        "category_concentration": {
+            "counts": cat_counts,
+            "dominant": dominant,
+            "percentage": round(pct, 1),
+            "overused": overused,
+        },
+        "narrative_roles": {
+            "counts": role_counts,
+            "missing": missing_roles,
+        },
+    }
