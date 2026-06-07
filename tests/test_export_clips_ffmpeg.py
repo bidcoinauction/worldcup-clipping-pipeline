@@ -1,7 +1,8 @@
 from unittest.mock import patch, call
 from pathlib import Path
 
-from scripts.export_clips_ffmpeg import export_clip
+from pipeline.utils import timestamp_to_seconds
+from scripts.export_clips_ffmpeg import _micro_slice, export_clip
 
 
 @patch("scripts.export_clips_ffmpeg.subprocess.run")
@@ -68,3 +69,82 @@ def test_main_dry_run_does_not_call_export(mock_open, mock_run, tmp_path, capsys
     captured = capsys.readouterr()
     assert "[dry-run]" in captured.out
     assert "clip_001" in captured.out
+
+
+def test_micro_slice_leaves_short_window_unchanged():
+    """Window <= max_seconds should pass through unchanged."""
+    s, e = _micro_slice("00:00:05", "00:00:07", 3.8)
+    assert s == "00:00:05"
+    assert e == "00:00:07"
+
+
+def test_micro_slice_centers_long_window():
+    """Window > max_seconds should return centered slice of exactly max_seconds."""
+    s, e = _micro_slice("00:00:10", "00:00:20", 4.0)
+    expected_start = 13.0
+    expected_end = 17.0
+    assert abs(timestamp_to_seconds(s) - expected_start) < 0.01
+    assert abs(timestamp_to_seconds(e) - expected_end) < 0.01
+
+
+def test_micro_slice_exact_boundary():
+    """Window exactly equal to max_seconds should pass through unchanged."""
+    s, e = _micro_slice("00:00:00", "00:00:03.8", 3.8)
+    assert s == "00:00:00"
+    assert e == "00:00:03.8"
+
+
+def test_micro_slice_zero_duration():
+    """Zero-duration window should return start and end as-is."""
+    s, e = _micro_slice("00:01:00", "00:01:00", 3.8)
+    assert s == "00:01:00"
+    assert e == "00:01:00"
+
+
+@patch("scripts.export_clips_ffmpeg._micro_slice")
+@patch("scripts.export_clips_ffmpeg.Path.open")
+def test_micro_mode_calls_slice(mock_open, mock_slice, tmp_path, capsys):
+    """Micro mode should call _micro_slice on each row."""
+    from scripts.export_clips_ffmpeg import main
+    import io
+
+    manifest_csv = "clip_id,category,start_time,end_time\nclip_001,EMOTION,00:00:10,00:00:30\n"
+    mock_open.return_value.__enter__.return_value = io.StringIO(manifest_csv)
+    mock_slice.return_value = ("00:00:15", "00:00:18.8")
+
+    with patch(
+        "scripts.export_clips_ffmpeg.Path.open",
+        return_value=io.StringIO(manifest_csv),
+    ):
+        with patch(
+            "sys.argv",
+            ["export_clips_ffmpeg", "--manifest", "dummy.csv",
+             "--source-video", "/v/m.mp4", "--mode", "micro", "--dry-run"],
+        ):
+            main()
+
+    mock_slice.assert_called_once_with("00:00:10", "00:00:30", 3.8)
+
+
+@patch("scripts.export_clips_ffmpeg._micro_slice")
+@patch("scripts.export_clips_ffmpeg.Path.open")
+def test_story_mode_does_not_slice(mock_open, mock_slice, tmp_path, capsys):
+    """Story mode should not call _micro_slice."""
+    from scripts.export_clips_ffmpeg import main
+    import io
+
+    manifest_csv = "clip_id,category,start_time,end_time\nclip_001,EMOTION,00:00:10,00:00:30\n"
+    mock_open.return_value.__enter__.return_value = io.StringIO(manifest_csv)
+
+    with patch(
+        "scripts.export_clips_ffmpeg.Path.open",
+        return_value=io.StringIO(manifest_csv),
+    ):
+        with patch(
+            "sys.argv",
+            ["export_clips_ffmpeg", "--manifest", "dummy.csv",
+             "--source-video", "/v/m.mp4", "--mode", "story", "--dry-run"],
+        ):
+            main()
+
+    mock_slice.assert_not_called()

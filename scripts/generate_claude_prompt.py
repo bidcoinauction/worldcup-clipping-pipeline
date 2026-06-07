@@ -33,11 +33,12 @@ def _build_rules_block(mode: str, duration_seconds: int) -> str:
         return f"""Rules:
 {common}
 - This mode does NOT guarantee copyright safety. It reduces risk by producing shorter clips that require heavier transformation.
-- Return {min_c}-{max_c} microclips.
-- Each clip must be {min_s}-{max_s} seconds.
+- Return {min_c}-{max_c} source windows.
+- Each source window should be 8-25 seconds, covering a full micro-moment with enough context.
+- The exporter will cut one or more {min_s}-{max_s} second pieces from inside each source window.
+- Do not trim the window — keep enough context for the exporter to find the peak moment.
 - Focus on facial reactions, crowd emotion, ball contact, referee gesture, celebration flash, or commentary spike.
-- Avoid full highlight sequences.
-- Do not include continuous broadcast sequence longer than {max_s} seconds."""
+- Avoid full highlight sequences."""
 
     msg = f"Unknown clip mode: {mode}"
     raise ValueError(msg)
