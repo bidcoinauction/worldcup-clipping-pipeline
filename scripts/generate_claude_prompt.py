@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 from pipeline.config import get_clip_mode, get_default_clip_mode, load_config
+from pipeline.condense_transcript import condense_timestamps
 from pipeline.utils import ROOT, slugify
 
 def _build_rules_block(mode: str, duration_seconds: int) -> str:
@@ -213,12 +214,7 @@ Timestamped transcript (video duration: {duration_seconds}s):
 \"\"\"
 """
 
-def _build_timestamped_transcript(transcript_path):
-    ts_path = transcript_path.with_name("timestamps.json")
-    if not ts_path.exists():
-        return transcript_path.read_text(encoding="utf-8"), 0
-    with open(ts_path, encoding="utf-8") as f:
-        segments = json.load(f)
+def _segments_to_transcript(segments):
     lines = []
     for seg in segments:
         start = seg.get("start", 0)
@@ -228,6 +224,21 @@ def _build_timestamped_transcript(transcript_path):
     duration = int(segments[-1]["end"]) if segments else 0
     return "\n".join(lines), duration
 
+
+def _load_segments(transcript_path):
+    ts_path = transcript_path.with_name("timestamps.json")
+    if not ts_path.exists():
+        return None
+    with open(ts_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _build_timestamped_transcript(transcript_path):
+    segments = _load_segments(transcript_path)
+    if segments is None:
+        return transcript_path.read_text(encoding="utf-8"), 0
+    return _segments_to_transcript(segments)
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Claude prompt from transcript.")
     parser.add_argument("--transcript", required=True)
@@ -236,11 +247,36 @@ def main():
                         help="Clip mode (default: config value)")
     parser.add_argument("--research", default=None,
                         help="Path to match_research.json with known events")
+    parser.add_argument("--condensed-windows", action="store_true",
+                        help="Reduce transcript to football-relevant windows for long matches")
+    parser.add_argument("--condense-interval", type=int, default=360,
+                        help="Seconds between fallback sampling windows (default: 360)")
+    parser.add_argument("--anchor-padding", type=int, default=25,
+                        help="Seconds each side of research anchor (default: 25)")
     args = parser.parse_args()
 
     mode = args.mode or get_default_clip_mode()
     transcript_path = Path(args.transcript)
-    timestamped_transcript, duration = _build_timestamped_transcript(transcript_path)
+
+    if args.condensed_windows:
+        segments = _load_segments(transcript_path)
+        if segments is None:
+            timestamped_transcript, duration = transcript_path.read_text(encoding="utf-8"), 0
+        else:
+            research_events = None
+            research_path = Path(args.research) if args.research else None
+            if research_path and research_path.exists():
+                research_data = json.loads(research_path.read_text(encoding="utf-8"))
+                research_events = research_data.get("events")
+            segments = condense_timestamps(
+                segments,
+                research_events=research_events,
+                coverage_interval=args.condense_interval,
+                anchor_padding=args.anchor_padding,
+            )
+            timestamped_transcript, duration = _segments_to_transcript(segments)
+    else:
+        timestamped_transcript, duration = _build_timestamped_transcript(transcript_path)
     rules_block = _build_rules_block(mode, duration)
     if mode == "package":
         goal = GOAL_PACKAGE
