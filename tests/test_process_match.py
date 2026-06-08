@@ -66,3 +66,68 @@ def test_package_mode_accepted(tmp_path):
     prompt_call = mock_run.call_args_list[1][0][0]
     mode_idx = prompt_call.index("--mode") + 1
     assert prompt_call[mode_idx] == "package"
+
+
+def test_package_mode_adds_condensed_windows(tmp_path):
+    """--mode package should auto-append --condensed-windows."""
+    input_video = tmp_path / "match.mp4"
+    input_video.touch()
+
+    with patch("sys.argv", [
+        "process_match", "--input", str(input_video),
+        "--league", "WORLD_CUP", "--match-name", "Test Match",
+        "--mode", "package",
+    ]), patch("scripts.process_match.run") as mock_run:
+        main()
+
+    prompt_call = mock_run.call_args_list[1][0][0]
+    assert "--condensed-windows" in prompt_call
+
+
+def test_story_mode_does_not_add_condensed(tmp_path):
+    """--mode story should not auto-append --condensed-windows."""
+    input_video = tmp_path / "match.mp4"
+    input_video.touch()
+
+    with patch("sys.argv", [
+        "process_match", "--input", str(input_video),
+        "--league", "WORLD_CUP", "--match-name", "Test Match",
+        "--mode", "story",
+    ]), patch("scripts.process_match.run") as mock_run:
+        main()
+
+    prompt_call = mock_run.call_args_list[1][0][0]
+    assert "--condensed-windows" not in prompt_call
+
+
+def test_micro_mode_does_not_add_condensed(tmp_path):
+    """--mode micro should not auto-append --condensed-windows."""
+    input_video = tmp_path / "match.mp4"
+    input_video.touch()
+
+    with patch("sys.argv", [
+        "process_match", "--input", str(input_video),
+        "--league", "WORLD_CUP", "--match-name", "Test Match",
+        "--mode", "micro",
+    ]), patch("scripts.process_match.run") as mock_run:
+        main()
+
+    prompt_call = mock_run.call_args_list[1][0][0]
+    assert "--condensed-windows" not in prompt_call
+
+
+def test_no_condense_flag_suppresses_condensed(tmp_path):
+    """--no-condense with package mode should suppress --condensed-windows."""
+    input_video = tmp_path / "match.mp4"
+    input_video.touch()
+
+    with patch("sys.argv", [
+        "process_match", "--input", str(input_video),
+        "--league", "WORLD_CUP", "--match-name", "Test Match",
+        "--mode", "package",
+        "--no-condense",
+    ]), patch("scripts.process_match.run") as mock_run:
+        main()
+
+    prompt_call = mock_run.call_args_list[1][0][0]
+    assert "--condensed-windows" not in prompt_call
