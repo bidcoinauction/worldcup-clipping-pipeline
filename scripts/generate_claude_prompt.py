@@ -1,6 +1,8 @@
+import sys
 import argparse
 import json
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.config import get_clip_mode, get_default_clip_mode, load_config
 from pipeline.condense_transcript import condense_timestamps
 from pipeline.utils import ROOT, slugify
@@ -156,6 +158,9 @@ CLIP_SCHEMA_BASE = """  "clip_id": "001",
   "share_reason": "why people share it",
   "hook_text": "0-2 sec hook",
   "caption": "short caption",
+  "editorial_thesis": "why this clip exists in the package",
+  "emotional_angle": "how the viewer should feel",
+  "legacy_value": 1,
   "thumbnail_idea": "specific frame or visual idea",
   "manual_scrub_note": "what visual moment to look for",
   "platform_notes": {

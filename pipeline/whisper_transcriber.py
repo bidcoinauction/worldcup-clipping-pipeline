@@ -2,9 +2,12 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 
-def transcribe(audio_path: Path, model_size: str = "base") -> tuple[str, list[dict]]:
+def transcribe(audio_path: Path, model_size: str = "base", initial_prompt: str = "") -> tuple[str, list[dict]]:
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, _info = model.transcribe(str(audio_path))
+    kwargs = {}
+    if initial_prompt:
+        kwargs["initial_prompt"] = initial_prompt
+    segments, _info = model.transcribe(str(audio_path), **kwargs)
 
     full_text: list[str] = []
     result: list[dict] = []

@@ -66,6 +66,6 @@
   "providers": {
     "transcription": "faster-whisper",
     "detection": "ollama",
-    "timeout": 600
+    "timeout": 1200
   }
 }
