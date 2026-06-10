@@ -191,7 +191,7 @@ def ffmpeg_filter(profile: str) -> list[str]:
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
         )
     elif profile == "vertical_safe":
-        top = 0.14
+        top = 0.18
         bottom = 0.02
         left = 0.0
         right = 0.08

@@ -247,13 +247,13 @@ def test_ffmpeg_filter_vertical_safe_uses_percentage_defaults():
     result = ffmpeg_filter("vertical_safe")
     fc_idx = result.index("-filter_complex")
     fg = result[fc_idx + 1]
-    # top=0.14, bottom=0.02, left=0.0, right=0.08
-    # keep_h = 1 - 0.14 - 0.02 = 0.84
+    # top=0.18, bottom=0.02, left=0.0, right=0.08
+    # keep_h = 1 - 0.18 - 0.02 = 0.80
     # keep_w = 1 - 0.0 - 0.08 = 0.92
     assert "iw*0.9200" in fg
-    assert "ih*0.8400" in fg
+    assert "ih*0.8000" in fg
     assert "iw*0.0000" in fg  # left offset
-    assert "ih*0.1400" in fg  # top offset
+    assert "ih*0.1800" in fg  # top offset
 
 
 def test_ffmpeg_filter_vertical_clean_unchanged():
