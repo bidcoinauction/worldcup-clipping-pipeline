@@ -229,6 +229,50 @@ def test_ffmpeg_filter_vertical_blur():
     assert "boxblur=28:2" in result[fc_idx + 1]
 
 
+def test_ffmpeg_filter_vertical_safe_contains_crop():
+    result = ffmpeg_filter("vertical_safe")
+    assert "-filter_complex" in result
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    # Should crop before split (crop appears before split=2)
+    crop_idx = fg.index("crop=")
+    split_idx = fg.index("split=2")
+    assert crop_idx < split_idx, "crop must happen before split"
+    assert "boxblur=28:2" in fg
+    assert "scale=1080" in fg
+    assert "-c:v" in result
+
+
+def test_ffmpeg_filter_vertical_safe_uses_percentage_defaults():
+    result = ffmpeg_filter("vertical_safe")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    # top=0.14, bottom=0.02, left=0.0, right=0.08
+    # keep_h = 1 - 0.14 - 0.02 = 0.84
+    # keep_w = 1 - 0.0 - 0.08 = 0.92
+    assert "iw*0.9200" in fg
+    assert "ih*0.8400" in fg
+    assert "iw*0.0000" in fg  # left offset
+    assert "ih*0.1400" in fg  # top offset
+
+
+def test_ffmpeg_filter_vertical_clean_unchanged():
+    vc = ffmpeg_filter("vertical_clean")
+    vs = ffmpeg_filter("vertical_safe")
+    fc_vc = vc[vc.index("-filter_complex") + 1]
+    fc_vs = vs[vs.index("-filter_complex") + 1]
+    # vertical_clean should NOT have crop before split
+    assert "crop=trunc" not in fc_vc or "split=2" not in fc_vc[:fc_vc.index("crop=trunc") + 20]
+    # vertical_safe should have crop before split
+    assert "crop=trunc" in fc_vs
+    assert fc_vs.index("crop=") < fc_vs.index("split=2")
+
+
+def test_ffmpeg_filter_source_unchanged():
+    result = ffmpeg_filter("source")
+    assert result == ["-c", "copy"]
+
+
 # ── export_clip ────────────────────────────────────────────────────────────
 
 @patch("scripts.export_research_windows.subprocess.run")
@@ -314,6 +358,36 @@ def test_export_clip_handles_ffmpeg_failure(mock_run, tmp_path):
     status, reason = export_clip(ROW_1, source, dest, force=False)
     assert status == "failed"
     assert reason == "some error"
+
+
+@patch("scripts.export_research_windows.subprocess.run")
+def test_export_clip_with_vertical_safe_profile(mock_run, tmp_path):
+    mock_run.return_value = MagicMock(returncode=0, stderr="")
+    source = tmp_path / "source.mp4"
+    source.write_text("data")
+    dest = tmp_path / "safe.mp4"
+
+    row = ClipRow(
+        clip_id="safe_001",
+        match_title="Safe Test",
+        source_file="source.mp4",
+        start_time="00:01:00",
+        end_time="00:01:15",
+        moment_label="Safe Moment",
+        emotional_angle="Clean",
+        platform="shorts",
+        export_profile="vertical_safe",
+    )
+
+    status, reason = export_clip(row, source, dest, force=False)
+    assert status == "exported"
+    mock_run.assert_called_once()
+    (cmd,) = mock_run.call_args[0]
+    fc_idx = cmd.index("-filter_complex")
+    fg = cmd[fc_idx + 1]
+    assert "crop=trunc" in fg
+    assert fg.index("crop=") < fg.index("split=2")
+    assert "boxblur=28:2" in fg
 
 
 # ── append_manifest ────────────────────────────────────────────────────────
@@ -465,6 +539,45 @@ def test_main_execute_with_force(mock_run, tmp_path, capsys):
     for call_args in mock_run.call_args_list:
         cmd = call_args[0][0]
         assert "-y" in cmd
+
+
+@patch("scripts.export_research_windows.subprocess.run")
+def test_main_execute_with_vertical_safe_profile(mock_run, tmp_path, capsys):
+    # CSV without per-row export_profile — relies on --profile default
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,moment_label,emotional_angle\n"
+        "safe_001,Safe Test,germany_italy_2012.mp4,00:01:00,00:01:15,Safe Moment,Clean\n"
+        "safe_002,Safe Test,germany_italy_2012.mp4,00:05:00,00:05:30,Safe Moment 2,Clean\n"
+    )
+    raw_dir = tmp_path / "RAW"
+    raw_dir.mkdir()
+    source = raw_dir / "germany_italy_2012.mp4"
+    source.write_text("data")
+    clips_dir = tmp_path / "CLIPS"
+    manifest = tmp_path / "manifest.csv"
+
+    mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+    from scripts.export_research_windows import main
+
+    exit_code = main([
+        "--csv", str(csv_file),
+        "--clips-dir", str(clips_dir),
+        "--manifest", str(manifest),
+        "--raw-dir", str(raw_dir),
+        "--profile", "vertical_safe",
+        "--execute",
+    ])
+
+    assert exit_code == 0
+    assert mock_run.call_count == 2
+    for call_args in mock_run.call_args_list:
+        cmd = call_args[0][0]
+        fc_idx = cmd.index("-filter_complex")
+        fg = cmd[fc_idx + 1]
+        assert "crop=trunc" in fg
+        assert fg.index("crop=") < fg.index("split=2")
 
 
 # ── parse_timestamp ────────────────────────────────────────────────────────
