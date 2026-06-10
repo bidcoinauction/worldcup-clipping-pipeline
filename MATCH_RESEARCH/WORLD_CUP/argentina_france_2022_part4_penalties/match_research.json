@@ -1,0 +1,74 @@
+{
+  "match": {
+    "home_team": "Argentina",
+    "away_team": "France",
+    "competition": "FIFA World Cup 2022",
+    "date": "2022-12-18",
+    "stage": "Final (penalty shootout only)"
+  },
+  "story_targets": {
+    "arc_type": "Legacy Arc",
+    "acts": ["setup", "pressure", "rupture", "aftermath"],
+    "required_coverage": {
+      "types": ["penalty", "penalty_save", "celebration"],
+      "diversity": ["player_celebration", "goal_moment", "crowd_reaction"]
+    },
+    "narrative_hook": "The greatest World Cup final ever decided from the spot: Messi vs Mbappe, Martinez vs destiny"
+  },
+  "events": [
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 10,
+      "type": "penalty",
+      "description": "Mbappe scores France's first penalty of the shootout. France leads the shootout 1-0. The hat-trick hero steps up first and delivers under pressure",
+      "player": "Kylian Mbappe",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 40,
+      "type": "penalty",
+      "description": "Messi scores Argentina's first penalty. The captain equalises in the shootout 1-1. Messi calmly slots it past Lloris to keep Argentina level",
+      "player": "Lionel Messi",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 90,
+      "type": "penalty_save",
+      "description": "Martinez saves Coman's penalty. The Aston Villa keeper dives to his left to deny Coman. France still 1-1 in the shootout. Martinez's gamesmanship with the referee builds tension",
+      "player": "Emiliano Martinez",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 140,
+      "type": "penalty",
+      "description": "Dybala scores Argentina's second penalty. Argentina leads the shootout 2-1. Dybala's composed finish puts Argentina ahead for the first time in the shootout",
+      "player": "Paulo Dybala",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 190,
+      "type": "penalty_save",
+      "description": "Martinez saves Kolo Muani's penalty. Another brilliant save from Martinez, diving to his right. Argentina 2-1 in the shootout. France on the brink of defeat",
+      "player": "Emiliano Martinez",
+      "team": "Argentina",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 240,
+      "type": "penalty",
+      "description": "Montiel scores the winning penalty for Argentina. Argentina win the World Cup 4-2 on penalties. Montiel slots it past Lloris and the nation erupts. Argentina are world champions for the first time since 1986",
+      "player": "Gonzalo Montiel",
+      "team": "Argentina",
+      "importance": "high"
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+{
+  "match": {
+    "home_team": "Italy",
+    "away_team": "France",
+    "competition": "FIFA World Cup 2006",
+    "date": "2006-07-09"
+  },
+  "story_targets": {
+    "arc_type": "Chaos Arc",
+    "acts": [
+      "setup",
+      "pressure",
+      "rupture",
+      "aftermath"
+    ],
+    "required_coverage": {
+      "types": [
+        "goal",
+        "red_card",
+        "controversy",
+        "celebration",
+        "trophy_lift"
+      ],
+      "diversity": [
+        "crowd_reaction",
+        "manager_reaction",
+        "player_reaction",
+        "goal_moment"
+      ]
+    },
+    "narrative_hook": "Zidane's legendary headbutt in his final match \u2014 the most infamous World Cup final moment of all time"
+  },
+  "events": [
+    {
+      "minute_raw": "7",
+      "type": "penalty",
+      "description": "Zidane scores a Panenka-style penalty that clips the crossbar and goes in. France 1-0 Italy. Malouda was fouled by Materazzi in the box",
+      "player": "Zinedine Zidane",
+      "team": "France",
+      "importance": "high",
+      "video_time_seconds": 520
+    },
+    {
+      "minute_raw": "19",
+      "type": "goal",
+      "description": "Materazzi rises highest to head in a Pirlo corner. Italy 1-1 France. The giant defender atones for conceding the penalty",
+      "player": "Marco Materazzi",
+      "team": "Italy",
+      "importance": "high",
+      "video_time_seconds": 1240
+    },
+    {
+      "minute_raw": "45+",
+      "type": "half_time",
+      "description": "Half time. Italy 1-1 France. An intense, tactical first half with both sides exchanging blows",
+      "importance": "low"
+    },
+    {
+      "minute_raw": "53",
+      "type": "shot",
+      "description": "Toni heads against the crossbar for Italy. Pirlo's delivery causing France constant problems",
+      "player": "Luca Toni",
+      "team": "Italy",
+      "importance": "medium"
+    },
+    {
+      "minute_raw": "62",
+      "type": "shot",
+      "description": "Toni has a goal disallowed for a borderline push. Italy pushing hard for a winner",
+      "player": "Luca Toni",
+      "team": "Italy",
+      "importance": "medium"
+    },
+    {
+      "minute_raw": "90",
+      "type": "full_time",
+      "description": "Full time. Italy 1-1 France. Extra time to be played. Both teams exhausted but the drama is only beginning",
+      "importance": "low"
+    },
+    {
+      "minute_raw": "104",
+      "type": "shot",
+      "description": "Zidane forces a brilliant save from Buffon with a powerful header. The Juventus keeper at his best",
+      "player": "Zinedine Zidane",
+      "team": "France",
+      "importance": "high",
+      "video_time_seconds": 6340
+    },
+    {
+      "minute_raw": "110",
+      "type": "red_card",
+      "description": "Zidane headbutts Materazzi in the chest after an exchange of words. Sent off in his final professional match. One of the most iconic moments in football history",
+      "player": "Zinedine Zidane",
+      "team": "France",
+      "importance": "high",
+      "video_time_seconds": 7780
+    },
+    {
+      "minute_raw": "110",
+      "type": "controversy",
+      "description": "Zidane walks past the World Cup trophy on his way to the tunnel after being sent off. The image of a fallen legend",
+      "player": "Zinedine Zidane",
+      "team": "France",
+      "importance": "high",
+      "video_time_seconds": 7780
+    },
+    {
+      "minute_raw": "120",
+      "type": "full_time",
+      "description": "Extra time full time. Italy 1-1 France. Penalty shootout awaits after an epic match",
+      "importance": "low"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Pirlo scores Italy's first penalty. Calm and composed for the regista",
+      "player": "Andrea Pirlo",
+      "team": "Italy",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Wiltord scores France's first penalty. Shootout tied 1-1",
+      "player": "Sylvain Wiltord",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Materazzi scores Italy's second penalty. The unlikely hero converts",
+      "player": "Marco Materazzi",
+      "team": "Italy",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "penalty_save",
+      "description": "Barthez saves Trezeguet's penalty \u2014 it hits the crossbar. France 1-2 Italy in shootout",
+      "player": "David Trezeguet",
+      "team": "France",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "De Rossi scores Italy's third penalty. Italy 3-1 in shootout",
+      "player": "Daniele De Rossi",
+      "team": "Italy",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Del Piero scores Italy's fourth penalty. Ice cold from the Juventus legend",
+      "player": "Alessandro Del Piero",
+      "team": "Italy",
+      "importance": "high",
+      "video_time_seconds": 8890
+    },
+    {
+      "minute_raw": "120+",
+      "type": "shootout_goal",
+      "description": "Grosso scores the winning penalty. Italy win the World Cup 5-3 on penalties. Azzurri champions for the fourth time",
+      "player": "Fabio Grosso",
+      "team": "Italy",
+      "importance": "high",
+      "video_time_seconds": 8920
+    },
+    {
+      "minute_raw": "120+",
+      "type": "trophy_lift",
+      "description": "Cannavaro lifts the World Cup trophy for Italy. The Azzurri celebrate their fourth world title in front of the world",
+      "player": "Fabio Cannavaro",
+      "team": "Italy",
+      "importance": "high"
+    }
+  ]
+}

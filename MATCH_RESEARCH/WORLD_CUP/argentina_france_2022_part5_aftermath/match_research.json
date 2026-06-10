@@ -1,0 +1,58 @@
+{
+  "match": {
+    "home_team": "Argentina",
+    "away_team": "France",
+    "competition": "FIFA World Cup 2022",
+    "date": "2022-12-18",
+    "stage": "Final (aftermath and trophy lift)"
+  },
+  "story_targets": {
+    "arc_type": "Legacy Arc",
+    "acts": ["setup", "pressure", "rupture", "aftermath"],
+    "required_coverage": {
+      "types": ["celebration", "trophy_lift"],
+      "diversity": ["crowd_reaction", "manager_reaction", "player_celebration"]
+    },
+    "narrative_hook": "Messi finally lifts the World Cup: the completion of football's greatest legacy"
+  },
+  "events": [
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 30,
+      "type": "celebration",
+      "description": "Argentina players collapse to the pitch in ecstasy. Montiel is mobbed by teammates. The bench empties. The full emotional release after the most dramatic World Cup final in history",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 120,
+      "type": "celebration",
+      "description": "Messi drops to his knees on the pitch, overwhelmed with emotion. Teammates surround him. The camera captures the weight of a career fulfilled",
+      "player": "Lionel Messi",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 480,
+      "type": "trophy_lift",
+      "description": "Lionel Messi lifts the FIFA World Cup trophy. The defining image of his career. Argentina are world champions for the first time since 1986. Messi kisses the trophy and holds it aloft as confetti falls",
+      "player": "Lionel Messi",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 600,
+      "type": "celebration",
+      "description": "Messi celebrates with the trophy draped in the bisht (traditional Arabic cloak). The iconic image of him holding the trophy wrapped in the black and gold cloak becomes one of the most enduring photos in football history",
+      "player": "Lionel Messi",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "120+",
+      "video_time_seconds": 900,
+      "type": "celebration",
+      "description": "Argentina team lap of honour. Players take turns holding the trophy. The entire squad celebrates with the Argentina fans in the stadium. The confetti, the singing, the pure joy",
+      "importance": "high"
+    }
+  ]
+}

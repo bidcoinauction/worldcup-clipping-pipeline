@@ -1,0 +1,64 @@
+{
+  "match": {
+    "home_team": "Germany",
+    "away_team": "Italy",
+    "competition": "UEFA Euro 2012",
+    "stage": "Semi-final",
+    "date": "2012-06-28",
+    "venue": "National Stadium, Warsaw"
+  },
+  "story_targets": {
+    "arc_type": "Underdog Triumph",
+    "acts": ["setup", "pressure", "rupture", "aftermath"],
+    "required_coverage": {
+      "types": ["goal", "celebration", "penalty", "full_time"],
+      "diversity": ["crowd_reaction", "player_celebration", "goal_moment", "aftermath"]
+    },
+    "narrative_hook": "Balotelli's iconic double sends Germany home: the rise of Italian brilliance against the tournament favorites"
+  },
+  "events": [
+    {
+      "minute_raw": "20",
+      "video_time_seconds": 1230,
+      "type": "goal",
+      "description": "Balotelli rises highest to head in a Cassano cross. Italy 1-0 Germany. The Italian superstar breaks the deadlock with a powerful header",
+      "player": "Mario Balotelli",
+      "team": "Italy",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "36",
+      "video_time_seconds": 2190,
+      "type": "goal",
+      "description": "Balotelli scores a stunning second goal. Montolivo plays a perfect through ball, Balotelli runs onto it and unleashes an unstoppable strike past Neuer. Italy 2-0 Germany",
+      "player": "Mario Balotelli",
+      "team": "Italy",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "36",
+      "video_time_seconds": 2200,
+      "type": "celebration",
+      "description": "Balotelli removes his shirt and strikes his iconic bodybuilder pose. The image of raw power and emotion. Later he is seen being calmed by teammates and sharing a moment with his mother in the stands",
+      "player": "Mario Balotelli",
+      "team": "Italy",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "90+",
+      "video_time_seconds": 3240,
+      "type": "penalty",
+      "description": "Ozil scores a late consolation penalty for Germany after a handball in the box. Germany 1-2 Italy. But it's too little too late",
+      "player": "Mesut Ozil",
+      "team": "Germany",
+      "importance": "high"
+    },
+    {
+      "minute_raw": "90+",
+      "video_time_seconds": 3260,
+      "type": "full_time",
+      "description": "Full time whistle. Italy beat Germany 2-1 to reach the Euro 2012 final. The German giant is slain. Italian players celebrate reaching the final",
+      "importance": "high"
+    }
+  ]
+}
