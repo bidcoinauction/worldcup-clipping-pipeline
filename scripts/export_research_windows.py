@@ -42,6 +42,8 @@ class ClipRow:
     emotional_angle: str
     platform: str
     export_profile: str
+    crop_anchor_x: float | None = None
+    crop_anchor_y: float | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -121,6 +123,11 @@ def read_rows(csv_path: Path, default_profile: str) -> list[ClipRow]:
             platform = (row.get("platform") or "shorts").strip()
             export_profile = (row.get("export_profile") or row.get("profile") or default_profile).strip()
 
+            crop_anchor_x_str = (row.get("crop_anchor_x") or row.get("anchor_x") or "").strip()
+            crop_anchor_y_str = (row.get("crop_anchor_y") or row.get("anchor_y") or "").strip()
+            crop_anchor_x = float(crop_anchor_x_str) if crop_anchor_x_str else None
+            crop_anchor_y = float(crop_anchor_y_str) if crop_anchor_y_str else None
+
             missing = [
                 name
                 for name, value in {
@@ -150,6 +157,8 @@ def read_rows(csv_path: Path, default_profile: str) -> list[ClipRow]:
                 emotional_angle=emotional_angle,
                 platform=platform,
                 export_profile=export_profile,
+                crop_anchor_x=crop_anchor_x,
+                crop_anchor_y=crop_anchor_y,
             ))
     return rows
 
@@ -179,7 +188,7 @@ def export_path(row: ClipRow, clips_root: Path) -> Path:
     return clips_root / match_slug / f"{row.clip_id}.mp4"
 
 
-def ffmpeg_filter(profile: str) -> list[str]:
+def ffmpeg_filter(profile: str, anchor_x: float | None = None, anchor_y: float | None = None) -> list[str]:
     if profile == "source":
         return ["-c", "copy"]
 
@@ -224,15 +233,21 @@ def ffmpeg_filter(profile: str) -> list[str]:
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
         )
     elif profile == "vertical_social":
-        top = 0.22
         bottom = 0.18
-        left = 0.225
         right = 0.225
-        keep_h = max(0.50, 1.0 - top - bottom)
-        keep_w = max(0.50, 1.0 - left - right)
+        keep_h = max(0.50, 1.0 - 0.22 - bottom)
+        keep_w = max(0.50, 1.0 - 0.225 - right)
+
+        if anchor_x is not None and anchor_y is not None:
+            use_left = max(0.0, min(1.0 - keep_w, anchor_x - keep_w / 2))
+            use_top = max(0.0, min(1.0 - keep_h, anchor_y - keep_h / 2))
+        else:
+            use_left = 0.225
+            use_top = 0.22
+
         filtergraph = (
             f"[0:v]crop=trunc(iw*{keep_w:.4f}/2)*2:trunc(ih*{keep_h:.4f}/2)*2:"
-            f"trunc(iw*{left:.4f}/2)*2:trunc(ih*{top:.4f}/2)*2,"
+            f"trunc(iw*{use_left:.4f}/2)*2:trunc(ih*{use_top:.4f}/2)*2,"
             "split=2[clean_a][clean_b];"
             "[clean_a]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,boxblur=28:2[bg];"
@@ -276,7 +291,7 @@ def export_clip(row: ClipRow, source: Path, destination: Path, force: bool) -> t
         "-ss", row.start_time,
         "-i", str(source),
         "-t", f"{clip_duration:.3f}",
-        *ffmpeg_filter(row.export_profile),
+        *ffmpeg_filter(row.export_profile, row.crop_anchor_x, row.crop_anchor_y),
         str(destination),
     ]
 
@@ -404,6 +419,8 @@ def build_manifest_row(
         "emotional_angle": row.emotional_angle,
         "platform": row.platform,
         "export_profile": row.export_profile,
+        "crop_anchor_x": f"{row.crop_anchor_x:.4f}" if row.crop_anchor_x is not None else "",
+        "crop_anchor_y": f"{row.crop_anchor_y:.4f}" if row.crop_anchor_y is not None else "",
         "local_export_path": str(destination),
         "status": status,
         "reason": reason,

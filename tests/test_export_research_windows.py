@@ -317,6 +317,68 @@ def test_ffmpeg_filter_vertical_social_has_crop_before_split():
     assert "boxblur=28:2" in fg
 
 
+# ── crop_anchor ────────────────────────────────────────────────────────────
+
+def test_read_rows_parses_anchors(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,crop_anchor_x,crop_anchor_y\n"
+        "anchored,Test Match,match.mp4,00:00:00,00:00:10,0.75,0.30\n"
+    )
+    rows = read_rows(csv_file, "vertical_social")
+    assert len(rows) == 1
+    assert rows[0].crop_anchor_x == 0.75
+    assert rows[0].crop_anchor_y == 0.30
+
+
+def test_read_rows_missing_anchors_defaults_none(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time\n"
+        "plain,Test Match,match.mp4,00:00:00,00:00:10\n"
+    )
+    rows = read_rows(csv_file, "vertical_social")
+    assert rows[0].crop_anchor_x is None
+    assert rows[0].crop_anchor_y is None
+
+
+def test_ffmpeg_filter_vertical_social_no_anchor_unchanged():
+    result = ffmpeg_filter("vertical_social")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "iw*0.2250" in fg
+    assert "ih*0.2200" in fg
+
+
+def test_ffmpeg_filter_vertical_social_anchor_center():
+    result = ffmpeg_filter("vertical_social", 0.5, 0.5)
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    # keep_w=0.55, keep_h=0.60
+    # left = max(0, min(1-0.55, 0.5 - 0.55/2)) = max(0, min(0.45, 0.225)) = 0.225
+    # top  = max(0, min(1-0.60, 0.5 - 0.60/2)) = max(0, min(0.40, 0.200)) = 0.200
+    assert "iw*0.2250" in fg
+    assert "ih*0.2000" in fg
+
+
+def test_ffmpeg_filter_vertical_social_anchor_right_clamp():
+    result = ffmpeg_filter("vertical_social", 1.0, 0.5)
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    # left = max(0, min(1-0.55, 1.0 - 0.55/2)) = max(0, min(0.45, 0.725)) = 0.45
+    assert "iw*0.4500" in fg
+    assert "ih*0.2000" in fg
+
+
+def test_ffmpeg_filter_vertical_social_anchor_not_used_by_other():
+    safe_no_anchor = ffmpeg_filter("vertical_safe")
+    safe_with_anchor = ffmpeg_filter("vertical_safe", 0.5, 0.5)
+    idx = safe_no_anchor.index("-filter_complex")
+    fc_safe = safe_no_anchor[idx + 1]
+    fc_anchor = safe_with_anchor[idx + 1]
+    assert fc_safe == fc_anchor, "vertical_safe must ignore anchors"
+
+
 # ── export_clip ────────────────────────────────────────────────────────────
 
 @patch("scripts.export_research_windows.subprocess.run")
