@@ -311,6 +311,65 @@ def test_ffmpeg_filter_source_unchanged():
     assert result == ["-c", "copy"]
 
 
+def test_ffmpeg_filter_vertical_review_contains_scale():
+    result = ffmpeg_filter("vertical_review")
+    assert "-filter_complex" in result
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "scale=1080:1920" in fg
+    assert "force_original_aspect_ratio=decrease" in fg
+
+
+def test_ffmpeg_filter_vertical_review_contains_pad():
+    result = ffmpeg_filter("vertical_review")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "pad=1080:1920" in fg
+    assert "(ow-iw)/2:(oh-ih)/2" in fg
+
+
+def test_ffmpeg_filter_vertical_review_contains_setsar():
+    result = ffmpeg_filter("vertical_review")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "setsar=1" in fg
+
+
+def test_ffmpeg_filter_vertical_review_no_boxblur():
+    result = ffmpeg_filter("vertical_review")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "boxblur" not in fg
+
+
+def test_ffmpeg_filter_vertical_review_no_split():
+    result = ffmpeg_filter("vertical_review")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "split=2" not in fg
+
+
+def test_ffmpeg_filter_vertical_review_no_crop():
+    result = ffmpeg_filter("vertical_review")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "crop=" not in fg
+
+
+def test_ffmpeg_filter_vertical_review_has_standard_encoding():
+    result = ffmpeg_filter("vertical_review")
+    assert "-c:v" in result
+    assert "-c:a" in result
+    assert "libx264" in result
+    assert "aac" in result
+
+
+def test_ffmpeg_filter_existing_profiles_unchanged():
+    for profile in ["vertical_clean", "vertical_safe", "vertical_social", "goal_context", "source"]:
+        result = ffmpeg_filter(profile)
+        assert "-filter_complex" in result or profile == "source"
+
+
 def test_ffmpeg_filter_vertical_zoom_contains_zoom():
     result = ffmpeg_filter("vertical_zoom")
     fc_idx = result.index("-filter_complex")

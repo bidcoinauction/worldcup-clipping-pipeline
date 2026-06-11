@@ -95,7 +95,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         default="vertical_clean",
-        choices=["vertical_clean", "vertical_blur", "vertical_safe", "vertical_zoom", "vertical_social", "vertical_social_dynamic", "goal_context", "source"],
+        choices=["vertical_clean", "vertical_blur", "vertical_review", "vertical_safe", "vertical_zoom", "vertical_social", "vertical_social_dynamic", "goal_context", "source"],
         help="Default export profile when CSV row does not set export_profile.",
     )
     parser.add_argument(
@@ -246,6 +246,11 @@ def ffmpeg_filter(
             "crop=1080:1920,boxblur=28:2[bg];"
             "[0:v]scale=1080:-2:force_original_aspect_ratio=decrease[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
+        )
+    elif profile == "vertical_review":
+        filtergraph = (
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[v]"
         )
     elif profile == "vertical_safe":
         top = 0.18
