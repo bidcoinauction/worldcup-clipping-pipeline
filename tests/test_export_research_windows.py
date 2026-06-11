@@ -14,13 +14,14 @@ from scripts.export_research_windows import (
     append_manifest,
     parse_timestamp,
     build_manifest_row,
+    CATEGORY_TO_PROFILE,
 )
 
 
 SAMPLE_CSV = (
-    "clip_id,match_title,source_file,start_time,end_time,moment_label,emotional_angle,platform,export_profile\n"
-    "test_001,Test Match,germany_italy_2012.mp4,00:01:00,00:01:15,Moment One,Excitement,shorts,vertical_clean\n"
-    "test_002,Test Match,germany_italy_2012.mp4,00:05:00,00:05:30,Moment Two,Tension,shorts,vertical_blur\n"
+    "clip_id,match_title,source_file,start_time,end_time,moment_label,emotional_angle,platform,export_profile,clip_category\n"
+    "test_001,Test Match,germany_italy_2012.mp4,00:01:00,00:01:15,Moment One,Excitement,shorts,vertical_clean,goal_strike\n"
+    "test_002,Test Match,germany_italy_2012.mp4,00:05:00,00:05:30,Moment Two,Tension,shorts,vertical_blur,\n"
 )
 
 ROW_1 = ClipRow(
@@ -33,6 +34,8 @@ ROW_1 = ClipRow(
     emotional_angle="Excitement",
     platform="shorts",
     export_profile="vertical_clean",
+    export_profile_explicit=True,
+    clip_category="goal_strike",
 )
 
 ROW_2 = ClipRow(
@@ -45,6 +48,8 @@ ROW_2 = ClipRow(
     emotional_angle="Tension",
     platform="shorts",
     export_profile="vertical_blur",
+    export_profile_explicit=True,
+    clip_category="",
 )
 
 
@@ -119,6 +124,39 @@ def test_read_rows_default_profile(tmp_path):
     )
     rows = read_rows(csv_file, "vertical_blur")
     assert rows[0].export_profile == "vertical_blur"
+
+
+# ── clip_category ───────────────────────────────────────────────────────────
+
+def test_read_rows_parses_clip_category(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,clip_category\n"
+        "cat_001,Test Match,match.mp4,00:00:00,00:00:10,goal_strike\n"
+    )
+    rows = read_rows(csv_file, "vertical_clean")
+    assert len(rows) == 1
+    assert rows[0].clip_category == "goal_strike"
+
+
+def test_read_rows_missing_clip_category_defaults_empty(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time\n"
+        "nocat,Test Match,match.mp4,00:00:00,00:00:10\n"
+    )
+    rows = read_rows(csv_file, "vertical_clean")
+    assert rows[0].clip_category == ""
+
+
+def test_read_rows_clip_category_empty_string(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,clip_category\n"
+        "emptycat,Test Match,match.mp4,00:00:00,00:00:10,\n"
+    )
+    rows = read_rows(csv_file, "vertical_clean")
+    assert rows[0].clip_category == ""
 
 
 # ── resolve_source ─────────────────────────────────────────────────────────
@@ -377,6 +415,212 @@ def test_ffmpeg_filter_vertical_social_anchor_not_used_by_other():
     fc_safe = safe_no_anchor[idx + 1]
     fc_anchor = safe_with_anchor[idx + 1]
     assert fc_safe == fc_anchor, "vertical_safe must ignore anchors"
+
+
+# ── vertical_social_dynamic ────────────────────────────────────────────────
+
+def test_read_rows_parses_dynamic_anchors(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,"
+        "crop_anchor_start_x,crop_anchor_start_y,crop_anchor_end_x,crop_anchor_end_y\n"
+        "dyn,Test Match,match.mp4,00:00:00,00:00:10,0.2,0.3,0.8,0.9\n"
+    )
+    rows = read_rows(csv_file, "vertical_social_dynamic")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.crop_anchor_start_x == 0.2
+    assert r.crop_anchor_start_y == 0.3
+    assert r.crop_anchor_end_x == 0.8
+    assert r.crop_anchor_end_y == 0.9
+
+
+def test_read_rows_missing_dynamic_defaults_none(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time\n"
+        "plain,Test Match,match.mp4,00:00:00,00:00:10\n"
+    )
+    rows = read_rows(csv_file, "vertical_social_dynamic")
+    r = rows[0]
+    assert r.crop_anchor_start_x is None
+    assert r.crop_anchor_start_y is None
+    assert r.crop_anchor_end_x is None
+    assert r.crop_anchor_end_y is None
+
+
+def test_ffmpeg_filter_vertical_social_dynamic_no_anchor_static():
+    result = ffmpeg_filter("vertical_social_dynamic")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "setpts=PTS-STARTPTS" in fg
+    assert "iw*0.2250" in fg
+    assert "ih*0.2200" in fg
+
+
+def test_ffmpeg_filter_vertical_social_dynamic_contains_expr():
+    result = ffmpeg_filter(
+        "vertical_social_dynamic",
+        anchor_start_x=0.3,
+        anchor_start_y=0.3,
+        anchor_end_x=0.8,
+        anchor_end_y=0.5,
+        duration=10.0,
+    )
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "setpts=PTS-STARTPTS" in fg
+    assert "t/10.000" in fg
+    assert "start_left + (end_left - start_left) pattern encoded"
+    # start_x=0.3 → s_left = max(0, min(0.45, 0.3-0.275)) = 0.025
+    # end_x=0.8   → e_left = max(0, min(0.45, 0.8-0.275)) = 0.45
+    assert "(0.0250+(0.4500-0.0250)" in fg
+    # start_y=0.3 → s_top = max(0, min(0.40, 0.3-0.30)) = 0.0
+    # end_y=0.5   → e_top = max(0, min(0.40, 0.5-0.30)) = 0.20
+    assert "(0.0000+(0.2000-0.0000)" in fg
+
+
+def test_ffmpeg_filter_vertical_social_dynamic_left_clamp():
+    result = ffmpeg_filter(
+        "vertical_social_dynamic",
+        anchor_start_x=0.0,
+        anchor_start_y=0.0,
+        anchor_end_x=0.5,
+        anchor_end_y=0.5,
+        duration=10.0,
+    )
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    # anchor_x=0.0 → s_left = max(0, min(0.45, 0.0-0.275)) = 0.0
+    assert "(0.0000+(0.2250-0.0000)" in fg or "0.0000+(0.2250" in fg
+
+
+def test_ffmpeg_filter_vertical_social_dynamic_has_crop_before_split():
+    result = ffmpeg_filter(
+        "vertical_social_dynamic",
+        anchor_start_x=0.3,
+        anchor_start_y=0.3,
+        anchor_end_x=0.8,
+        anchor_end_y=0.5,
+        duration=10.0,
+    )
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    # setpts appears first, then crop, then split
+    setpts_idx = fg.index("setpts")
+    crop_idx = fg.index("crop=")
+    split_idx = fg.index("split=2")
+    assert setpts_idx < crop_idx < split_idx
+    assert "boxblur=28:2" in fg
+    assert "scale=iw*1.6:ih*1.6" in fg
+
+
+def test_ffmpeg_filter_vertical_social_dynamic_not_used_by_other():
+    result = ffmpeg_filter(
+        "vertical_social",
+        anchor_start_x=0.5,
+        anchor_start_y=0.5,
+        anchor_end_x=0.9,
+        anchor_end_y=0.5,
+        duration=10.0,
+    )
+    # vertical_social ignores dynamic params — should produce normal static result
+    normal = ffmpeg_filter("vertical_social")
+    idx = result.index("-filter_complex")
+    nidx = normal.index("-filter_complex")
+    assert result[idx + 1] == normal[nidx + 1]
+
+
+def test_ffmpeg_filter_vertical_social_dynamic_zoom_present():
+    result = ffmpeg_filter(
+        "vertical_social_dynamic",
+        anchor_start_x=0.3,
+        anchor_start_y=0.3,
+        anchor_end_x=0.8,
+        anchor_end_y=0.5,
+        duration=10.0,
+    )
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "scale=iw*1.6:ih*1.6" in fg
+
+
+# ── goal_context ────────────────────────────────────────────────────────────
+
+def test_ffmpeg_filter_goal_context_contains_crop():
+    result = ffmpeg_filter("goal_context")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "iw*0.9400" in fg
+    assert "ih*0.9500" in fg
+    assert "iw*0.0000" in fg
+    assert "ih*0.0000" in fg
+
+
+def test_ffmpeg_filter_goal_context_has_crop_before_split():
+    result = ffmpeg_filter("goal_context")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    crop_idx = fg.index("crop=")
+    split_idx = fg.index("split=2")
+    assert crop_idx < split_idx
+    assert "boxblur=28:2" in fg
+
+
+def test_ffmpeg_filter_goal_context_no_delogo():
+    result = ffmpeg_filter("goal_context")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "delogo=" not in fg
+    assert "drawbox=" not in fg
+
+
+def test_ffmpeg_filter_goal_context_no_foreground_zoom():
+    result = ffmpeg_filter("goal_context")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "scale=iw*" not in fg
+
+
+def test_ffmpeg_filter_goal_context_not_in_other():
+    result = ffmpeg_filter("vertical_safe")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "goal_context" not in fg
+
+
+# ── clip_category → profile resolution ─────────────────────────────────────
+
+def test_category_to_profile_resolves_goal_strike(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,clip_category\n"
+        "cat_gs,Test Match,match.mp4,00:00:00,00:00:10,goal_strike\n"
+    )
+    rows = read_rows(csv_file, "vertical_clean")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.clip_category == "goal_strike"
+    assert r.export_profile_explicit is False
+    if not r.export_profile_explicit and r.clip_category:
+        r.export_profile = CATEGORY_TO_PROFILE.get(r.clip_category, "vertical_clean")
+    assert r.export_profile == "goal_context"
+
+
+def test_category_to_profile_does_not_override_explicit_profile(tmp_path):
+    csv_file = tmp_path / "windows.csv"
+    csv_file.write_text(
+        "clip_id,match_title,source_file,start_time,end_time,export_profile,clip_category\n"
+        "cat_exp,Test Match,match.mp4,00:00:00,00:00:10,vertical_blur,goal_strike\n"
+    )
+    rows = read_rows(csv_file, "vertical_clean")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.clip_category == "goal_strike"
+    assert r.export_profile_explicit is True
+    if not r.export_profile_explicit and r.clip_category:
+        r.export_profile = CATEGORY_TO_PROFILE.get(r.clip_category, "vertical_clean")
+    assert r.export_profile == "vertical_blur"
 
 
 # ── export_clip ────────────────────────────────────────────────────────────
