@@ -255,6 +255,17 @@ def test_read_segment_list_full_paths(tmp_path):
     assert result == {"match_S0000.ts", "match_S0001.ts"}
 
 
+def test_read_segment_list_mixed_separators(tmp_path):
+    lst = tmp_path / "list.txt"
+    lst.write_text(
+        "C:/FOOTBALL/LIVE_SEGMENTS/match_S0002.ts\n"
+        "D:\\ARCHIVE\\RAW\\match_S0003.ts\n"
+        "//network/share/live/match_S0004.ts\n"
+    )
+    result = read_segment_list(lst)
+    assert result == {"match_S0002.ts", "match_S0003.ts", "match_S0004.ts"}
+
+
 @patch("scripts.record_live.subprocess.Popen")
 def test_main_dry_run_does_not_start_ffmpeg(mock_popen, tmp_path, capsys):
     from scripts.record_live import main

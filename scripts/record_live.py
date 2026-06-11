@@ -127,7 +127,7 @@ def read_segment_list(list_path: Path) -> set[str]:
     if not list_path.exists():
         return set()
     lines = list_path.read_text(encoding="utf-8").splitlines()
-    return {Path(line.strip()).name for line in lines if line.strip()}
+    return {Path(line.strip().replace("\\", "/")).name for line in lines if line.strip()}
 
 
 def main() -> None:

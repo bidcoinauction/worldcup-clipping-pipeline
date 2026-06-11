@@ -44,6 +44,15 @@ def _find_match(rows, match_no):
 
 
 def _resolve_video(match):
+    """
+    Resolve source video for a scheduled match.
+
+    Two workflows:
+    - Archived RAW workflow: full-match video file in RAW/WORLD_CUP or RAW/.
+    - Live segment workflow: set stream_url in the CSV, then use
+      record_live.py + live_watch.py (this function does not process
+      LIVE_READY segments).
+    """
     path = match.get("source_video_path", "").strip()
     if path:
         p = Path(path)
@@ -149,8 +158,12 @@ def main():
     video_path = _resolve_video(match)
     if not video_path:
         expected = archive_path("RAW", "WORLD_CUP")
-        print(f"  source: NOT FOUND — expected at {expected}/{match_slug}.*")
-        print(f"  Set source_video_path in CSV or place the file in that directory.")
+        print(f"  source: NOT FOUND")
+        print(f"  Archived RAW workflow: place full match file at {expected}/{match_slug}.*")
+        print(f"    or set source_video_path in the schedule CSV.")
+        print(f"  Live segment workflow: this command does not process LIVE_READY segments.")
+        print(f"    Use scripts/record_live.py to record, then scripts/live_watch.py to transcribe.")
+        print(f"    Set stream_url in the schedule CSV as fallback.")
         if not args.dry_run:
             print("Error: source video required")
             raise SystemExit(1)
