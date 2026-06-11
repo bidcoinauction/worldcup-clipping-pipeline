@@ -295,6 +295,23 @@ def build_html(
     .detection-item .field-value {{ color:var(--text); }}
     .thesis {{ color:var(--cyan); font-size:13px; line-height:1.4; margin:6px 0; padding:8px; background:var(--bg); border-radius:4px; }}
 
+    /* Review panel */
+    .review-btns {{ display:flex; gap:6px; flex-wrap:wrap; }}
+    .review-btns button {{ flex:1; min-width:60px; font-size:12px; min-height:32px; padding:4px 8px; }}
+    .review-btns button.on {{ background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:700; }}
+    .review-notes {{ width:100%; resize:vertical; padding:8px; margin-top:8px; min-height:50px; font-size:12px; }}
+    .file-path {{ display:flex; gap:6px; align-items:center; margin-top:8px; }}
+    .file-path code {{ flex:1; font-size:11px; overflow-wrap:anywhere; }}
+    .copy-btn {{ font-size:11px; min-height:26px; padding:0 8px; white-space:nowrap; }}
+    .review-dot {{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle; }}
+    .review-dot.keep {{ background:var(--ok); }}
+    .review-dot.needs_crop, .review-dot.needs_trim {{ background:var(--warn); }}
+    .review-dot.discard {{ background:#ff4444; }}
+
+    /* Filter row */
+    .filter-row {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }}
+    .filter-row select {{ min-height:30px; font-size:12px; flex:1; min-width:100px; }}
+
     @media (max-width:1080px) {{ .topbar, main, .viewer {{ grid-template-columns:1fr; }} header {{ position:static; }} }}
   </style>
 </head>
@@ -309,6 +326,11 @@ def build_html(
       <div>
         <select id="matchFilter" aria-label="Filter by match"></select>
       </div>
+    </div>
+    <div class="topbar" style="margin-top:6px;grid-template-columns:1fr 1fr 1fr 1fr">
+      <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option></select>
+      <select id="profileFilter" aria-label="Filter by profile"><option value="">All profiles</option></select>
+      <select id="categoryFilter" aria-label="Filter by category"><option value="">All categories</option></select>
     </div>
   </header>
   <main>
@@ -334,6 +356,47 @@ def build_html(
     const esc = v => String(v || "").replace(/[&<>"']/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}}[c]));
     const okValues = ["exported","uploaded","synced","sent"];
     const pill = (label, val) => `<span class="pill ${{okValues.includes(String(val||"").toLowerCase())?"ok":val?"warn":""}}">${{esc(label)}}: ${{esc(val||"n/a")}}</span>`;
+
+    function durationStr(c) {{
+      const st = c.start_time, et = c.end_time;
+      if (!st || !et) return "";
+      const parts = s => {{ const p = s.split(":"); return p.length === 3 ? +p[0]*3600 + +p[1]*60 + +p[2] : p.length === 2 ? +p[0]*60 + +p[1] : +p[0]; }};
+      const sec = Math.round(parts(et) - parts(st));
+      return sec > 0 ? (sec >= 60 ? Math.floor(sec/60) + "m " + (sec%60) + "s" : sec + "s") : "";
+    }}
+
+    function reviewKey(cid) {{ return "review_" + cid; }}
+
+    function renderReview(c) {{
+      const p = document.getElementById("reviewPanel");
+      if (!p) return;
+      const cid = c.clip_id || "";
+      const k = reviewKey(cid);
+      const data = JSON.parse(localStorage.getItem(k) || "{{}}");
+      p.querySelectorAll(".rvw-btn").forEach(b => {{
+        b.classList.toggle("on", b.dataset.v === (data.status || ""));
+        b.onclick = () => {{
+          const next = b.dataset.v === data.status ? "" : b.dataset.v;
+          data.status = next || "";
+          localStorage.setItem(k, JSON.stringify(data));
+          renderReview(c); updateReviewDot(cid);
+        }};
+      }});
+      const ta = p.querySelector(".review-notes");
+      ta.value = data.notes || "";
+      ta.oninput = () => {{ data.notes = ta.value; localStorage.setItem(k, JSON.stringify(data)); }};
+      const fp = p.querySelector("#filePathCode");
+      if (fp) fp.textContent = c.local_export_path || "";
+      const cb = p.querySelector("#copyPathBtn");
+      if (cb) cb.onclick = () => navigator.clipboard.writeText(c.local_export_path || "");
+    }}
+
+    function updateReviewDot(cid) {{
+      const dot = document.getElementById("rd-" + cid);
+      if (!dot) return;
+      const data = JSON.parse(localStorage.getItem(reviewKey(cid)) || "{{}}");
+      dot.className = "review-dot" + (data.status ? " " + data.status : "");
+    }}
 
     function videoSrc(clip) {{
       return clip.media_url || "";
@@ -369,14 +432,27 @@ def build_html(
     function populateFilters() {{
       const matches = [...new Set(clips.map(c => c.match_title || "Unmatched"))].sort();
       matchFilter.innerHTML = `<option value="">All matches</option>` + matches.map(m => `<option value="${{esc(m)}}">${{esc(m)}}</option>`).join("");
+      const statuses = [...new Set(clips.map(c => c.status || "").filter(Boolean))].sort();
+      document.getElementById("statusFilter").innerHTML = `<option value="">All statuses</option>` + statuses.map(s => `<option value="${{esc(s)}}">${{esc(s)}}</option>`).join("");
+      const profiles = [...new Set(clips.map(c => c.export_profile || "").filter(Boolean))].sort();
+      document.getElementById("profileFilter").innerHTML = `<option value="">All profiles</option>` + profiles.map(p => `<option value="${{esc(p)}}">${{esc(p)}}</option>`).join("");
+      const categories = [...new Set(clips.map(c => c.clip_category || "").filter(Boolean))].sort();
+      document.getElementById("categoryFilter").innerHTML = `<option value="">All categories</option>` + categories.map(c => `<option value="${{esc(c)}}">${{esc(c)}}</option>`).join("");
     }}
 
     function applyFilters() {{
       const q = search.value.trim().toLowerCase();
       const m = matchFilter.value;
+      const sf = document.getElementById("statusFilter").value;
+      const pf = document.getElementById("profileFilter").value;
+      const cf = document.getElementById("categoryFilter").value;
       filtered = clips.filter(c => {{
         const text = [c.clip_id, c.match_title, c.moment_label, c.emotional_angle, c.relative_export_path].join(" ").toLowerCase();
-        return (!m || (c.match_title || "Unmatched") === m) && (!q || text.includes(q));
+        return (!m || (c.match_title || "Unmatched") === m) &&
+               (!sf || (c.status || "") === sf) &&
+               (!pf || (c.export_profile || "") === pf) &&
+               (!cf || (c.clip_category || "") === cf) &&
+               (!q || text.includes(q));
       }});
       selectedIndex = Math.min(selectedIndex, Math.max(filtered.length - 1, 0));
       renderList(); renderViewer();
@@ -389,6 +465,12 @@ def build_html(
         return '<button class="clip-row' + (i === selectedIndex ? ' active' : '') + '" data-index="' + i + '">' +
           '<strong>' + esc(c.moment_label || c.clip_id) + '</strong>' +
           '<div class="meta-line">' + esc(c.match_title || "Unmatched") + ' | ' + esc(c.start_time) + (c.end_time ? ' \u2192 ' + esc(c.end_time) : '') + '</div>' +
+          '<div class="meta-line">' +
+            (c.clip_category ? '<span class="pill">' + esc(c.clip_category) + '</span>' : '') +
+            '<span class="pill">' + durationStr(c) + '</span>' +
+            (c.export_profile ? '<span class="pill">' + esc(c.export_profile) + '</span>' : '') +
+            '<span class="review-dot" id="rd-' + esc(c.clip_id) + '"></span>' +
+          '</div>' +
           (det.editorial_thesis ? '<div class="meta-line" style="color:var(--cyan)">' + esc(det.editorial_thesis.substring(0,80)) + '</div>' : '') +
           '<div class="status-line">' +
           pill("Export", c.status) +
@@ -474,6 +556,7 @@ def build_html(
               '<div class="kv"><span>ID</span><code>' + esc(c.clip_id || "—") + '</code></div>' +
               '<div class="kv"><span>Size</span><code>' + esc(c.file_size_mb || "—") + ' MB</code></div>' +
               '<div class="kv"><span>Profile</span><code>' + esc(c.export_profile || "—") + '</code></div>' +
+              '<div class="kv"><span>Category</span><code>' + esc(c.clip_category || "—") + '</code></div>' +
               '<div class="kv"><span>Platform</span><code>' + esc(c.platform || "—") + '</code></div>' +
               '<div class="kv"><span>Source</span><code>' + esc(c.source_file || "—") + '</code></div>' +
             '</div>' +
@@ -508,9 +591,20 @@ def build_html(
               ).join("") +
             '</div>'
             : '') +
+          '<div class="panel" id="reviewPanel"><h3>Review</h3>' +
+            '<div class="review-btns">' +
+              '<button class="rvw-btn" data-v="keep">Keep</button>' +
+              '<button class="rvw-btn" data-v="needs_crop">Needs crop</button>' +
+              '<button class="rvw-btn" data-v="needs_trim">Needs trim</button>' +
+              '<button class="rvw-btn" data-v="discard">Discard</button>' +
+            '</div>' +
+            '<textarea class="review-notes" placeholder="Review notes..."></textarea>' +
+            '<div class="file-path"><code id="filePathCode"></code><button class="copy-btn" id="copyPathBtn">Copy path</button></div>' +
+          '</div>' +
         '</div>';
 
       renderTimeline(c, document.getElementById("timelineContainer"));
+      renderReview(c);
     }}
 
     document.addEventListener("keydown", e => {{
@@ -521,7 +615,11 @@ def build_html(
     }});
     search.addEventListener("input", applyFilters);
     matchFilter.addEventListener("change", applyFilters);
+    document.getElementById("statusFilter").addEventListener("change", applyFilters);
+    document.getElementById("profileFilter").addEventListener("change", applyFilters);
+    document.getElementById("categoryFilter").addEventListener("change", applyFilters);
     populateFilters(); applyFilters();
+    clips.forEach(c => updateReviewDot(c.clip_id));
   </script>
 </body>
 </html>

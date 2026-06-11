@@ -434,3 +434,142 @@ def test_path_to_file_url(tmp_path):
     url = path_to_file_url(p)
     assert url.startswith("file://")
     assert "test.mp4" in url
+
+
+# ── review dashboard new features ──────────────────────────────────────────
+
+def test_build_html_contains_clip_category():
+    rows = [
+        {
+            "clip_id": "cat_001",
+            "match_title": "Category Test",
+            "match_slug": "cat_test",
+            "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5",
+            "start_time": "00:01:00",
+            "end_time": "00:01:15",
+            "status": "exported",
+            "moment_label": "Category Moment",
+            "emotional_angle": "Tension",
+            "clip_category": "goal_strike",
+            "export_profile": "goal_context",
+            "_detection": [],
+            "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "goal_strike" in html
+    assert "goal_context" in html
+
+
+def test_build_html_contains_review_buttons():
+    rows = [
+        {
+            "clip_id": "rvw_001", "match_title": "Review Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "", "end_time": "",
+            "status": "", "moment_label": "Test", "emotional_angle": "",
+            "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "Keep" in html
+    assert "Needs crop" in html
+    assert "Needs trim" in html
+    assert "Discard" in html
+
+
+def test_build_html_contains_notes_textarea():
+    rows = [
+        {
+            "clip_id": "note_001", "match_title": "Notes Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "", "end_time": "",
+            "status": "", "moment_label": "Test", "emotional_angle": "",
+            "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "review-notes" in html
+    assert "Review notes" in html
+
+
+def test_build_html_contains_copy_path():
+    rows = [
+        {
+            "clip_id": "copy_001", "match_title": "Copy Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "", "end_time": "",
+            "status": "", "moment_label": "Test", "emotional_angle": "",
+            "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "Copy path" in html
+    assert "filePathCode" in html
+    assert "copyPathBtn" in html
+
+
+def test_build_html_contains_duration_function():
+    rows = [
+        {
+            "clip_id": "dur_001", "match_title": "Duration Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "00:01:00",
+            "end_time": "00:01:15", "status": "", "moment_label": "Test",
+            "emotional_angle": "", "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "durationStr" in html
+    assert "function durationStr" in html
+
+
+def test_build_html_contains_localStorage_calls():
+    rows = [
+        {
+            "clip_id": "ls_001", "match_title": "LS Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "", "end_time": "",
+            "status": "", "moment_label": "Test", "emotional_angle": "",
+            "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "localStorage.getItem" in html
+    assert "localStorage.setItem" in html
+
+
+def test_build_html_contains_filter_dropdowns():
+    rows = [
+        {
+            "clip_id": "flt_001", "match_title": "Filter Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "", "end_time": "",
+            "status": "exported", "moment_label": "Test", "emotional_angle": "",
+            "export_profile": "vertical_clean", "clip_category": "goal_strike",
+            "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "statusFilter" in html
+    assert "profileFilter" in html
+    assert "categoryFilter" in html
+    assert "All statuses" in html
+    assert "All profiles" in html
+    assert "All categories" in html
+
+
+def test_build_html_contains_review_dot():
+    rows = [
+        {
+            "clip_id": "dot_001", "match_title": "Dot Test",
+            "match_slug": "test", "media_url": "file:///tmp/v.mp4",
+            "file_size_mb": "0.5", "start_time": "", "end_time": "",
+            "status": "", "moment_label": "Test", "emotional_angle": "",
+            "_detection": [], "_research": {},
+        }
+    ]
+    html = build_html(rows, {}, "Test", "now")
+    assert "review-dot" in html
+    assert "rd-" in html
