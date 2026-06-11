@@ -57,7 +57,7 @@ def save_registry(registry_path: Path, data: dict) -> None:
     data["version"] = REGISTRY_VERSION
     tmp = registry_path.with_suffix(".tmp.json")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.rename(registry_path)
+    os.replace(str(tmp), str(registry_path))
 
 
 def find_ready_segments(

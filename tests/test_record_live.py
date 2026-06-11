@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch, call
 from scripts.record_live import (
     build_ace_url,
     build_ffmpeg_cmd,
+    build_full_ffmpeg_cmd,
     build_list_path,
     build_output_pattern,
     build_test_ffmpeg_cmd,
@@ -316,6 +317,7 @@ def test_main_dry_run_accepts_segment_minutes(mock_popen, tmp_path, capsys):
             "record_live",
             "abc",
             "--match-id", "match",
+            "--mode", "segment",
             "--segment-minutes", "30",
             "--dry-run",
         ],
@@ -325,6 +327,74 @@ def test_main_dry_run_accepts_segment_minutes(mock_popen, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "1800s" in captured.out
     assert "30 min" in captured.out
+
+
+def test_build_full_ffmpeg_cmd_structure():
+    cmd = build_full_ffmpeg_cmd("http://host/ace/getstream?id=abc", "/out/live.ts")
+    assert cmd[0] == "ffmpeg"
+    assert "-y" in cmd
+    assert "-reconnect" in cmd
+    r_idx = cmd.index("-reconnect")
+    assert cmd[r_idx + 1] == "1"
+    assert "-reconnect_at_eof" in cmd
+    assert "-reconnect_streamed" in cmd
+    assert "-reconnect_delay_max" in cmd
+    d_idx = cmd.index("-reconnect_delay_max")
+    assert cmd[d_idx + 1] == "4294"
+    assert "-err_detect" in cmd
+    e_idx = cmd.index("-err_detect")
+    assert cmd[e_idx + 1] == "ignore_err"
+    assert "-i" in cmd
+    i_idx = cmd.index("-i")
+    assert cmd[i_idx + 1] == "http://host/ace/getstream?id=abc"
+    assert "-c" in cmd
+    c_idx = cmd.index("-c")
+    assert cmd[c_idx + 1] == "copy"
+    assert cmd[-1] == "/out/live.ts"
+
+
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_dry_run_full_mode(mock_popen, tmp_path, capsys):
+    from scripts.record_live import main
+
+    with patch(
+        "sys.argv",
+        [
+            "record_live",
+            "abc123",
+            "--match-id", "test_match",
+            "--mode", "full",
+            "--dry-run",
+        ],
+    ):
+        main()
+
+    mock_popen.assert_not_called()
+    captured = capsys.readouterr()
+    assert "[dry-run]" in captured.out
+    assert "Mode: full" in captured.out
+    assert "abc123" in captured.out
+
+
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_dry_run_full_custom_output(mock_popen, tmp_path, capsys):
+    from scripts.record_live import main
+
+    with patch(
+        "sys.argv",
+        [
+            "record_live",
+            "abc",
+            "--match-id", "match",
+            "--mode", "full",
+            "--output", str(tmp_path / "custom.ts"),
+            "--dry-run",
+        ],
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    assert "custom.ts" in captured.out
 
 
 @patch("scripts.record_live.subprocess.Popen")
@@ -511,6 +581,7 @@ def test_main_starts_ffmpeg(mock_popen, mock_signal, tmp_path):
         [
             "record_live",
             "abc123",
+            "--mode", "segment",
             "--match-id", "test_match",
             "--staging-dir", str(tmp_path / "LIVE_SEGMENTS"),
             "--ready-dir", str(tmp_path / "LIVE_READY"),
@@ -565,6 +636,7 @@ def test_main_watches_and_finalizes_segments(mock_popen, mock_signal, tmp_path):
                 [
                     "record_live",
                     "abc123",
+                    "--mode", "segment",
                     "--match-id", "test_match",
                     "--staging-dir", str(staging),
                     "--ready-dir", str(ready),
@@ -612,6 +684,7 @@ def test_main_finalizes_remaining_on_exit(mock_popen, mock_signal, tmp_path):
                 [
                     "record_live",
                     "abc123",
+                    "--mode", "segment",
                     "--match-id", "test_match",
                     "--staging-dir", str(staging),
                     "--ready-dir", str(ready),
@@ -654,6 +727,7 @@ def test_main_graceful_shutdown_on_keyboard_interrupt(mock_popen, mock_signal, t
                 [
                     "record_live",
                     "abc123",
+                    "--mode", "segment",
                     "--match-id", "test",
                     "--staging-dir", str(staging),
                     "--ready-dir", str(ready),
@@ -690,6 +764,7 @@ def test_main_ffmpeg_exit_code_displayed(mock_popen, mock_signal, tmp_path, caps
                 [
                     "record_live",
                     "abc",
+                    "--mode", "segment",
                     "--match-id", "m",
                     "--staging-dir", str(staging),
                     "--ready-dir", str(ready),

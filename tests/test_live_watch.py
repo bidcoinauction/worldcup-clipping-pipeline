@@ -79,6 +79,14 @@ def test_save_registry_updates_version(tmp_path):
     assert data["version"] == 1
 
 
+def test_save_registry_can_overwrite(tmp_path):
+    p = tmp_path / "registry.json"
+    p.write_text("garbage data that should be replaced")
+    data = {"version": 1, "segments": {"s.ts": {"state": "transcribed"}}}
+    save_registry(p, data)
+    assert json.loads(p.read_text(encoding="utf-8")) == data
+
+
 def test_find_ready_segments_no_status_skipped(tmp_path):
     (tmp_path / "match_S0001.ts").write_text("x")
     result = find_ready_segments(tmp_path)

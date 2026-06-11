@@ -70,6 +70,21 @@ def build_test_ffmpeg_cmd(
     ]
 
 
+def build_full_ffmpeg_cmd(ace_url: str, output_path: str) -> list[str]:
+    return [
+        "ffmpeg",
+        "-y",
+        "-reconnect", "1",
+        "-reconnect_at_eof", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "4294",
+        "-err_detect", "ignore_err",
+        "-i", ace_url,
+        "-c", "copy",
+        output_path,
+    ]
+
+
 def archive_root() -> str:
     return os.environ.get("FOOTBALL_ARCHIVE_ROOT") or (
         "C:\\FootballArchive" if os.name == "nt" else "FootballArchive"
@@ -132,13 +147,20 @@ def read_segment_list(list_path: Path) -> set[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Record a live Acestream match in fixed-duration .ts segments.",
+        description="Record a live Acestream match. Default mode writes a single .ts file with reconnect flags. "
+                    "Use --mode segment for fixed-duration .ts segments.",
     )
     parser.add_argument("acestream_id", help="Acestream content hash / ID")
     parser.add_argument(
         "--match-id",
         required=True,
         help="Match slug for naming (e.g. argentina_france_2022_final)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("full", "segment"),
+        default="full",
+        help="Recording mode: full (single .ts, default) or segment (fixed-duration chunks)",
     )
     parser.add_argument(
         "--ace-host",
@@ -149,15 +171,19 @@ def main() -> None:
         "--segment-minutes",
         type=int,
         default=15,
-        help="Segment duration in minutes (default: 15)",
+        help="Segment duration in minutes when --mode segment (default: 15)",
+    )
+    parser.add_argument(
+        "--output",
+        help="Output path for --mode full (default: FOOTBALL_ARCHIVE/<match_id>_live.ts)",
     )
     parser.add_argument(
         "--staging-dir",
-        help="Override staging directory (default: FOOTBALL_ARCHIVE/LIVE_SEGMENTS)",
+        help="Override staging directory when --mode segment (default: FOOTBALL_ARCHIVE/LIVE_SEGMENTS)",
     )
     parser.add_argument(
         "--ready-dir",
-        help="Override ready directory (default: FOOTBALL_ARCHIVE/LIVE_READY)",
+        help="Override ready directory when --mode segment (default: FOOTBALL_ARCHIVE/LIVE_READY)",
     )
     parser.add_argument(
         "--dry-run",
@@ -183,8 +209,50 @@ def main() -> None:
 
     args = parser.parse_args()
     match_id = slugify(args.match_id)
+    ace_url = build_ace_url(args.acestream_id, args.ace_host)
     segment_seconds = args.segment_minutes * 60
 
+    if args.mode == "full":
+        output_path = Path(args.output or archive_path(f"{match_id}_live.ts"))
+        cmd = build_full_ffmpeg_cmd(ace_url, str(output_path))
+
+        if args.dry_run:
+            print(f"[dry-run] Ace URL: {ace_url}")
+            print(f"[dry-run] Match ID: {match_id}")
+            print(f"[dry-run] Mode: full")
+            print(f"[dry-run] Output: {output_path}")
+            print(f"[dry-run] Would start ffmpeg recording")
+            return
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Recording {match_id} (full) -> {output_path}")
+        print("Press Ctrl+C to stop gracefully.")
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        try:
+            process.wait()
+        except KeyboardInterrupt:
+            print("\nShutting down gracefully...")
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+        ret = process.poll()
+        if ret is not None:
+            print(f"ffmpeg exited with code {ret}")
+        return
+
+    segment_seconds = args.segment_minutes * 60
     staging_dir = Path(args.staging_dir or archive_path("LIVE_SEGMENTS"))
     ready_dir = Path(args.ready_dir or archive_path("LIVE_READY"))
 
@@ -193,6 +261,7 @@ def main() -> None:
 
     if args.dry_run:
         print(f"[dry-run] Match ID: {match_id}")
+        print(f"[dry-run] Mode: segment")
         print(f"[dry-run] Staging dir: {staging_dir}")
         print(f"[dry-run] Ready dir: {ready_dir}")
         if args.test:
@@ -222,10 +291,8 @@ def main() -> None:
         cmd = build_test_ffmpeg_cmd(output_pattern, segment_seconds, list_path, args.test_duration)
         print(f"Test recording (synthetic video) as {match_id}")
     else:
-        ace_url = build_ace_url(args.acestream_id, args.ace_host)
         cmd = build_ffmpeg_cmd(ace_url, output_pattern, segment_seconds, list_path)
-        print(f"Recording {match_id} from {ace_url}")
-
+        print(f"Recording {match_id} (segments) from {ace_url}")
     print(f"Segments ({segment_seconds}s) -> {staging_dir} -> {ready_dir}")
     print("Press Ctrl+C to stop gracefully.")
 
