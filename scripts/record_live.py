@@ -48,6 +48,28 @@ def build_ffmpeg_cmd(
     ]
 
 
+def build_test_ffmpeg_cmd(
+    output_pattern: str,
+    segment_time: int,
+    list_path: str,
+    test_duration: int,
+) -> list[str]:
+    return [
+        "ffmpeg",
+        "-y",
+        "-f", "lavfi",
+        "-i", f"testsrc2=duration={test_duration}:size=1280x720:rate=30",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-f", "segment",
+        "-segment_time", str(segment_time),
+        "-reset_timestamps", "1",
+        "-segment_list", list_path,
+        output_pattern,
+    ]
+
+
 def archive_root() -> str:
     return os.environ.get("FOOTBALL_ARCHIVE_ROOT") or (
         "C:\\FootballArchive" if os.name == "nt" else "FootballArchive"
@@ -142,21 +164,48 @@ def main() -> None:
         action="store_true",
         help="Print actions without executing",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full ffmpeg command and show ffmpeg output on console",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Use synthetic video source (testsrc2) instead of Acestream",
+    )
+    parser.add_argument(
+        "--test-duration",
+        type=int,
+        default=120,
+        help="Total test duration in seconds (default: 120, only used with --test)",
+    )
 
     args = parser.parse_args()
     match_id = slugify(args.match_id)
-    ace_url = build_ace_url(args.acestream_id, args.ace_host)
     segment_seconds = args.segment_minutes * 60
 
     staging_dir = Path(args.staging_dir or archive_path("LIVE_SEGMENTS"))
     ready_dir = Path(args.ready_dir or archive_path("LIVE_READY"))
 
+    if args.test:
+        segment_seconds = 10
+
     if args.dry_run:
-        print(f"[dry-run] Ace URL: {ace_url}")
         print(f"[dry-run] Match ID: {match_id}")
         print(f"[dry-run] Staging dir: {staging_dir}")
         print(f"[dry-run] Ready dir: {ready_dir}")
-        print(f"[dry-run] Segment duration: {segment_seconds}s ({args.segment_minutes} min)")
+        if args.test:
+            print(f"[dry-run] Test mode enabled (synthetic video via testsrc2)")
+            print(f"[dry-run] Test duration: {args.test_duration}s")
+            print(f"[dry-run] Segment duration: {segment_seconds}s")
+            print(f"[dry-run] ffmpeg log: {staging_dir / f'{match_id}_ffmpeg.log'}")
+        else:
+            ace_url = build_ace_url(args.acestream_id, args.ace_host)
+            print(f"[dry-run] Ace URL: {ace_url}")
+            print(f"[dry-run] Segment duration: {segment_seconds}s ({args.segment_minutes} min)")
+        if args.verbose:
+            print(f"[dry-run] Verbose mode: full ffmpeg output shown on console")
         print(f"[dry-run] Would start ffmpeg recording")
         print(f"[dry-run] Would watch segment list for completed segments")
         print(f"[dry-run] Would move completed segments to {ready_dir}")
@@ -168,16 +217,31 @@ def main() -> None:
 
     output_pattern = build_output_pattern(staging_dir, match_id)
     list_path = build_list_path(staging_dir, match_id)
-    cmd = build_ffmpeg_cmd(ace_url, output_pattern, segment_seconds, list_path)
 
-    print(f"Recording {match_id} from {ace_url}")
+    if args.test:
+        cmd = build_test_ffmpeg_cmd(output_pattern, segment_seconds, list_path, args.test_duration)
+        print(f"Test recording (synthetic video) as {match_id}")
+    else:
+        ace_url = build_ace_url(args.acestream_id, args.ace_host)
+        cmd = build_ffmpeg_cmd(ace_url, output_pattern, segment_seconds, list_path)
+        print(f"Recording {match_id} from {ace_url}")
+
     print(f"Segments ({segment_seconds}s) -> {staging_dir} -> {ready_dir}")
     print("Press Ctrl+C to stop gracefully.")
 
+    if args.verbose:
+        print(f"[ffmpeg] {' '.join(cmd)}")
+
+    stderr_fh = None
+    if not args.verbose:
+        log_path = staging_dir / f"{match_id}_ffmpeg.log"
+        print(f"ffmpeg log: {log_path}")
+        stderr_fh = open(log_path, "w", encoding="utf-8")
+
     process = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=stderr_fh,
     )
 
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -192,9 +256,13 @@ def main() -> None:
                 break
             current = read_segment_list(Path(list_path))
             new = current - known_segments
+            if new and args.verbose:
+                print(f"[verbose] Segment list has {len(current)} entries, {len(new)} new")
             for name in sorted(new):
                 src = staging_dir / name
                 if not src.exists():
+                    if args.verbose:
+                        print(f"[verbose] {name} listed but not found at {src}")
                     continue
                 seg_num = segment_number_from_path(src)
                 print(f"Segment {seg_num:04d} complete: {name}")
@@ -219,6 +287,9 @@ def main() -> None:
         ret = process.poll()
         if ret is not None:
             print(f"ffmpeg exited with code {ret}")
+
+        if stderr_fh is not None:
+            stderr_fh.close()
 
 
 if __name__ == "__main__":

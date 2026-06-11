@@ -7,6 +7,7 @@ from scripts.record_live import (
     build_ffmpeg_cmd,
     build_list_path,
     build_output_pattern,
+    build_test_ffmpeg_cmd,
     finalize_segment,
     read_segment_list,
     segment_number_from_path,
@@ -82,6 +83,53 @@ def test_build_ffmpeg_cmd_segment_time():
 
 def test_build_ffmpeg_cmd_reset_timestamps():
     cmd = build_ffmpeg_cmd("u", "p", 900, "l")
+    assert "-reset_timestamps" in cmd
+    rt_idx = cmd.index("-reset_timestamps")
+    assert cmd[rt_idx + 1] == "1"
+
+
+def test_build_test_ffmpeg_cmd_structure():
+    cmd = build_test_ffmpeg_cmd(
+        output_pattern="C:/STAGING/test_S%04d.ts",
+        segment_time=10,
+        list_path="C:/STAGING/test_list.txt",
+        test_duration=120,
+    )
+    assert cmd[0] == "ffmpeg"
+    assert "-y" in cmd
+    assert "-f" in cmd
+    f_idx = cmd.index("-f")
+    assert cmd[f_idx + 1] == "lavfi"
+    assert "-i" in cmd
+    i_idx = cmd.index("-i")
+    assert "testsrc2" in cmd[i_idx + 1]
+    assert "duration=120" in cmd[i_idx + 1]
+    assert "size=1280x720" in cmd[i_idx + 1]
+    assert "-c:v" in cmd
+    c_idx = cmd.index("-c:v")
+    assert cmd[c_idx + 1] == "libx264"
+    assert "-preset" in cmd
+    p_idx = cmd.index("-preset")
+    assert cmd[p_idx + 1] == "ultrafast"
+    seg_idx = cmd.index("-f", f_idx + 1)
+    assert cmd[seg_idx + 1] == "segment"
+    assert "-segment_time" in cmd
+    t_idx = cmd.index("-segment_time")
+    assert cmd[t_idx + 1] == "10"
+    assert "-segment_list" in cmd
+    assert cmd[-1] == "C:/STAGING/test_S%04d.ts"
+
+
+def test_build_test_ffmpeg_cmd_duration_and_time():
+    cmd = build_test_ffmpeg_cmd("p", 5, "l", 60)
+    i_idx = cmd.index("-i")
+    assert "duration=60" in cmd[i_idx + 1]
+    t_idx = cmd.index("-segment_time")
+    assert cmd[t_idx + 1] == "5"
+
+
+def test_build_test_ffmpeg_cmd_reset_timestamps():
+    cmd = build_test_ffmpeg_cmd("p", 10, "l", 120)
     assert "-reset_timestamps" in cmd
     rt_idx = cmd.index("-reset_timestamps")
     assert cmd[rt_idx + 1] == "1"
@@ -305,6 +353,135 @@ def test_main_dry_run_slugifies_match_id(mock_popen, tmp_path, capsys):
 
     captured = capsys.readouterr()
     assert "argentina_vs_france_2022" in captured.out
+
+
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_dry_run_with_test(mock_popen, tmp_path, capsys):
+    from scripts.record_live import main
+
+    with patch(
+        "sys.argv",
+        [
+            "record_live",
+            "test",
+            "--match-id", "test_match",
+            "--test",
+            "--dry-run",
+        ],
+    ):
+        main()
+
+    mock_popen.assert_not_called()
+    captured = capsys.readouterr()
+    assert "[dry-run]" in captured.out
+    assert "Test mode enabled" in captured.out
+    assert "synthetic video" in captured.out
+    assert "test_match" in captured.out
+
+
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_dry_run_with_verbose(mock_popen, tmp_path, capsys):
+    from scripts.record_live import main
+
+    with patch(
+        "sys.argv",
+        [
+            "record_live",
+            "abc123",
+            "--match-id", "test_match",
+            "--verbose",
+            "--dry-run",
+        ],
+    ):
+        main()
+
+    mock_popen.assert_not_called()
+    captured = capsys.readouterr()
+    assert "[dry-run]" in captured.out
+    assert "Verbose mode" in captured.out
+
+
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_dry_run_with_test_and_verbose(mock_popen, tmp_path, capsys):
+    from scripts.record_live import main
+
+    with patch(
+        "sys.argv",
+        [
+            "record_live",
+            "test",
+            "--match-id", "test_match",
+            "--test",
+            "--verbose",
+            "--dry-run",
+        ],
+    ):
+        main()
+
+    mock_popen.assert_not_called()
+    captured = capsys.readouterr()
+    assert "Test mode enabled" in captured.out
+    assert "Verbose mode" in captured.out
+
+
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_dry_run_with_test_and_duration(mock_popen, tmp_path, capsys):
+    from scripts.record_live import main
+
+    with patch(
+        "sys.argv",
+        [
+            "record_live",
+            "test",
+            "--match-id", "test_match",
+            "--test",
+            "--test-duration", "300",
+            "--dry-run",
+        ],
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    assert "300s" in captured.out
+
+
+@patch("scripts.record_live.signal.signal")
+@patch("scripts.record_live.subprocess.Popen")
+def test_main_test_mode_uses_test_ffmpeg_cmd(mock_popen, mock_signal, tmp_path):
+    from scripts.record_live import main
+
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = 0
+    mock_proc.stdout = MagicMock()
+    mock_proc.stderr = MagicMock()
+    mock_popen.return_value = mock_proc
+
+    staging = tmp_path / "LIVE_SEGMENTS"
+    ready = tmp_path / "LIVE_READY"
+
+    import scripts.record_live as rl
+
+    with patch.object(rl, "time") as mock_time:
+        with patch(
+            "sys.argv",
+            [
+                "record_live",
+                "test",
+                "--match-id", "test_match",
+                "--test",
+                "--staging-dir", str(staging),
+                "--ready-dir", str(ready),
+            ],
+        ):
+            main()
+
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[0] == "ffmpeg"
+    assert "-f" in cmd
+    f_idx = cmd.index("-f")
+    assert cmd[f_idx + 1] == "lavfi"
+    assert any("testsrc2" in part for part in cmd)
 
 
 @patch("scripts.record_live.signal.signal")
