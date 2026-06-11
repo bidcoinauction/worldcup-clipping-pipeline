@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         default="vertical_clean",
-        choices=["vertical_clean", "vertical_blur", "vertical_safe", "source"],
+        choices=["vertical_clean", "vertical_blur", "vertical_safe", "vertical_zoom", "vertical_social", "source"],
         help="Default export profile when CSV row does not set export_profile.",
     )
     parser.add_argument(
@@ -204,6 +204,40 @@ def ffmpeg_filter(profile: str) -> list[str]:
             "[clean_a]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,boxblur=28:2[bg];"
             "[clean_b]scale=1080:-2:force_original_aspect_ratio=decrease[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
+        )
+    elif profile == "vertical_zoom":
+        top = 0.18
+        bottom = 0.02
+        left = 0.0
+        right = 0.08
+        keep_h = max(0.50, 1.0 - top - bottom)
+        keep_w = max(0.50, 1.0 - left - right)
+        filtergraph = (
+            f"[0:v]crop=trunc(iw*{keep_w:.4f}/2)*2:trunc(ih*{keep_h:.4f}/2)*2:"
+            f"trunc(iw*{left:.4f}/2)*2:trunc(ih*{top:.4f}/2)*2,"
+            "split=2[clean_a][clean_b];"
+            "[clean_a]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=28:2[bg];"
+            "[clean_b]scale=1080:-2:force_original_aspect_ratio=decrease,"
+            "scale=iw*1.5:ih*1.5[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
+        )
+    elif profile == "vertical_social":
+        top = 0.22
+        bottom = 0.18
+        left = 0.225
+        right = 0.225
+        keep_h = max(0.50, 1.0 - top - bottom)
+        keep_w = max(0.50, 1.0 - left - right)
+        filtergraph = (
+            f"[0:v]crop=trunc(iw*{keep_w:.4f}/2)*2:trunc(ih*{keep_h:.4f}/2)*2:"
+            f"trunc(iw*{left:.4f}/2)*2:trunc(ih*{top:.4f}/2)*2,"
+            "split=2[clean_a][clean_b];"
+            "[clean_a]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=28:2[bg];"
+            "[clean_b]scale=1080:-2:force_original_aspect_ratio=decrease,"
+            "scale=iw*1.6:ih*1.6[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
         )
     else:

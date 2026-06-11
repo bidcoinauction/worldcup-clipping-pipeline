@@ -273,6 +273,50 @@ def test_ffmpeg_filter_source_unchanged():
     assert result == ["-c", "copy"]
 
 
+def test_ffmpeg_filter_vertical_zoom_contains_zoom():
+    result = ffmpeg_filter("vertical_zoom")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "scale=iw*1.5:ih*1.5" in fg
+
+
+def test_ffmpeg_filter_vertical_zoom_keeps_safe_crop():
+    vs = ffmpeg_filter("vertical_safe")
+    vz = ffmpeg_filter("vertical_zoom")
+    fc_vs = vs[vs.index("-filter_complex") + 1]
+    fc_vz = vz[vz.index("-filter_complex") + 1]
+    crop_vs = fc_vs[:fc_vs.index("split=2")]
+    crop_vz = fc_vz[:fc_vz.index("split=2")]
+    assert crop_vs == crop_vz, "vertical_zoom must use same crop as vertical_safe"
+
+
+def test_ffmpeg_filter_vertical_social_contains_crop():
+    result = ffmpeg_filter("vertical_social")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "iw*0.5500" in fg
+    assert "ih*0.6000" in fg
+    assert "iw*0.2250" in fg
+    assert "ih*0.2200" in fg
+
+
+def test_ffmpeg_filter_vertical_social_contains_zoom():
+    result = ffmpeg_filter("vertical_social")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    assert "scale=iw*1.6:ih*1.6" in fg
+
+
+def test_ffmpeg_filter_vertical_social_has_crop_before_split():
+    result = ffmpeg_filter("vertical_social")
+    fc_idx = result.index("-filter_complex")
+    fg = result[fc_idx + 1]
+    crop_idx = fg.index("crop=")
+    split_idx = fg.index("split=2")
+    assert crop_idx < split_idx, "crop must happen before split"
+    assert "boxblur=28:2" in fg
+
+
 # ── export_clip ────────────────────────────────────────────────────────────
 
 @patch("scripts.export_research_windows.subprocess.run")
