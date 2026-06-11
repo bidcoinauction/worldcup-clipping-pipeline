@@ -5,3 +5,4 @@ rich
 pytest
 faster-whisper
 requests
+icalendar
