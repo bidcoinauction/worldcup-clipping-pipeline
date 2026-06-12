@@ -5,6 +5,8 @@
   "home_team": "Mexico",
   "away_team": "South Africa",
   "date": "2026-06-11",
+  "event_url": "",
+  "resolved_acestream_hash": "",
   "sources": [
     {
       "label": "first_half",
@@ -19,8 +21,8 @@
   ],
   "pipeline": {
     "recorded": true,
-    "verified": false,
-    "transcribed": false,
+    "verified": true,
+    "transcribed": true,
     "researched": false,
     "clipped": false,
     "exported": false

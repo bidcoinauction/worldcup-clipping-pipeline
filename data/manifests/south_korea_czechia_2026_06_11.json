@@ -1,0 +1,30 @@
+{
+  "manifest_version": 1,
+  "match_id": "south_korea_czechia_2026_06_11",
+  "match_no": 2,
+  "home_team": "",
+  "away_team": "",
+  "date": "",
+  "event_url": "https://livetv.sx/enx/eventinfo/384718862_south_korea_kor_czech_republic_cze/",
+  "resolved_acestream_hash": "09efde1ad03b0f8b5be1bc4d97720e5ff6af3f38",
+  "sources": [
+    {
+      "label": "first_half",
+      "filename": "south_korea_czechia_2026_06_11_first_half.ts",
+      "status": "recorded"
+    },
+    {
+      "label": "second_half",
+      "filename": "south_korea_czechia_2026_06_11_second_half.ts",
+      "status": "recorded"
+    }
+  ],
+  "pipeline": {
+    "recorded": true,
+    "verified": false,
+    "transcribed": false,
+    "researched": false,
+    "clipped": false,
+    "exported": false
+  }
+}

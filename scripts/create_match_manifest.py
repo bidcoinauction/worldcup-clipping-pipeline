@@ -38,6 +38,8 @@ def main():
     parser.add_argument("--home", help="Home team name")
     parser.add_argument("--away", help="Away team name")
     parser.add_argument("--date", help="Match date (YYYY-MM-DD)")
+    parser.add_argument("--event-url", help="LiveTV event URL for stream resolution")
+    parser.add_argument("--resolved-hash", help="Resolved Ace Stream hash")
     parser.add_argument("--source", action="append", dest="sources",
                         help="filename:label (e.g. file.ts:first_half)")
     parser.add_argument("--dry-run", action="store_true",
@@ -60,6 +62,8 @@ def main():
             "home_team": args.home or "",
             "away_team": args.away or "",
             "date": args.date or "",
+            "event_url": args.event_url or "",
+            "resolved_acestream_hash": args.resolved_hash or "",
             "sources": [],
             "pipeline": {
                 "recorded": False,
@@ -70,6 +74,11 @@ def main():
                 "exported": False,
             },
         }
+
+    if args.event_url:
+        data["event_url"] = args.event_url
+    if args.resolved_hash:
+        data["resolved_acestream_hash"] = args.resolved_hash
 
     if args.sources:
         existing_filenames = {s["filename"] for s in data["sources"]}
