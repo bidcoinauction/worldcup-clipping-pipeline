@@ -1,6 +1,6 @@
 match_no,date,time,timezone,home,away,venue,notes,stream_url,pipeline_status,match_id,source_video_path
-1,2026-06-11,13:00,America/Mexico_City,Mexico,South Africa,"Estadio Azteca (Mexico City, Mexico)",Group A - Opening match,,planned,mexico_south_africa_2026_06_11,
-2,2026-06-11,20:00,America/Mexico_City,South Korea,Czechia,"Estadio Akron (Zapopan, Mexico)",Group A,,planned,south_korea_czechia_2026_06_11,
+1,2026-06-11,13:00,America/Mexico_City,Mexico,South Africa,"Estadio Azteca (Mexico City, Mexico)",Group A - Opening match,,recorded,mexico_south_africa_2026_06_11,/Users/powwow/Downloads/worldcup_clipping_pipeline_openai_api/FootballArchive/RAW/WORLD_CUP/mexico_south_africa_2026_06_11.ts
+2,2026-06-11,20:00,America/Mexico_City,South Korea,Czechia,"Estadio Akron (Zapopan, Mexico)",Group A,,recorded,south_korea_czechia_2026_06_11,/Users/powwow/Downloads/worldcup_clipping_pipeline_openai_api/FootballArchive/RAW/WORLD_CUP/south_korea_czechia_2026_06_11.ts
 3,2026-06-12,15:00,America/Toronto,Canada,Bosnia and Herzegovina,"BMO Field (Toronto, Canada)",Group B - Canada home,,planned,canada_bosnia_and_herzegovina_2026_06_12,
 4,2026-06-12,18:00,America/Los_Angeles,USA,Paraguay,"SoFi Stadium (Inglewood, CA, USA)",Group D - USA home,,planned,usa_paraguay_2026_06_12,
 5,2026-06-13,12:00,America/Los_Angeles,Qatar,Switzerland,"Levi's Stadium (Santa Clara, CA, USA)",Group B,,planned,qatar_switzerland_2026_06_13,
