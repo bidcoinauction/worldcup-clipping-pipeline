@@ -1,11 +1,15 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.build_stadium_dashboard import (
     discover_clips,
     read_manifest,
     read_research,
     read_detections,
+    read_match_briefs,
+    read_match_manifests,
+    resolve_raw_video_path,
     build_html,
     path_to_file_url,
     html_escape,
@@ -573,3 +577,217 @@ def test_build_html_contains_review_dot():
     html = build_html(rows, {}, "Test", "now")
     assert "review-dot" in html
     assert "rd-" in html
+
+
+# ── read_match_briefs ─────────────────────────────────────────────────────
+
+
+def test_read_match_briefs_finds_json(tmp_path):
+    brief_dir = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "test_match"
+    brief_dir.mkdir(parents=True)
+    (brief_dir / "match_brief.json").write_text(json.dumps({
+        "narrative_storylines": ["Historic rivalry"],
+        "key_players": [{"team": "A", "name": "Player One", "position": "ST"}],
+    }))
+    result = read_match_briefs(tmp_path / "MATCH_RESEARCH")
+    assert "test_match" in result
+    assert result["test_match"]["narrative_storylines"] == ["Historic rivalry"]
+
+
+def test_read_match_briefs_empty_directory(tmp_path):
+    (tmp_path / "MATCH_RESEARCH").mkdir()
+    result = read_match_briefs(tmp_path / "MATCH_RESEARCH")
+    assert result == {}
+
+
+def test_read_match_briefs_not_found(tmp_path):
+    result = read_match_briefs(tmp_path / "nonexistent")
+    assert result == {}
+
+
+def test_read_match_briefs_skips_invalid_json(tmp_path):
+    d = tmp_path / "MATCH_RESEARCH" / "bad" / "nested"
+    d.mkdir(parents=True)
+    (d / "match_brief.json").write_text("not json")
+    result = read_match_briefs(tmp_path / "MATCH_RESEARCH")
+    assert result == {}
+
+
+# ── read_match_manifests ──────────────────────────────────────────────────
+
+
+def test_read_match_manifests_finds_json(tmp_path):
+    (tmp_path / "manifests").mkdir()
+    (tmp_path / "manifests" / "match_001.json").write_text(json.dumps({
+        "match_id": "match_001",
+        "event_url": "https://example.com",
+        "resolved_acestream_hash": "abc123",
+    }))
+    result = read_match_manifests(tmp_path / "manifests")
+    assert "match_001" in result
+    assert result["match_001"]["event_url"] == "https://example.com"
+    assert result["match_001"]["resolved_acestream_hash"] == "abc123"
+
+
+def test_read_match_manifests_empty_directory(tmp_path):
+    (tmp_path / "manifests").mkdir()
+    result = read_match_manifests(tmp_path / "manifests")
+    assert result == {}
+
+
+def test_read_match_manifests_not_found(tmp_path):
+    result = read_match_manifests(tmp_path / "nonexistent")
+    assert result == {}
+
+
+def test_read_match_manifests_skips_invalid_json(tmp_path):
+    (tmp_path / "manifests").mkdir()
+    (tmp_path / "manifests" / "bad.json").write_text("not json")
+    result = read_match_manifests(tmp_path / "manifests")
+    assert result == {}
+
+
+# ── resolve_raw_video_path ────────────────────────────────────────────────
+
+
+def test_resolve_raw_video_path_found(tmp_path):
+    raw_dir = tmp_path / "FootballArchive" / "RAW" / "WORLD_CUP"
+    raw_dir.mkdir(parents=True)
+    raw_file = raw_dir / "match_001.ts"
+    raw_file.write_text("fake ts")
+    from scripts.build_stadium_dashboard import ROOT
+    with patch("scripts.build_stadium_dashboard.ROOT") as mock_root:
+        mock_root.__truediv__ = lambda self, other: tmp_path / other
+        result = resolve_raw_video_path("match_001")
+        assert "match_001.ts" in result
+
+
+def test_resolve_raw_video_path_missing(tmp_path):
+    from scripts.build_stadium_dashboard import ROOT
+    with patch("scripts.build_stadium_dashboard.ROOT") as mock_root:
+        mock_root.__truediv__ = lambda self, other: tmp_path / other
+        result = resolve_raw_video_path("nonexistent")
+        assert result == ""
+
+
+# ── build_html new panels ─────────────────────────────────────────────────
+
+
+def test_build_html_contains_brief_data_script_tag():
+    rows = [{
+        "clip_id": "b_001", "match_title": "Brief Test",
+        "match_slug": "brief_test", "media_url": "file:///tmp/v.mp4",
+        "file_size_mb": "0.5", "start_time": "", "end_time": "",
+        "status": "", "moment_label": "Test", "emotional_angle": "",
+        "_detection": [], "_research": {}, "_brief": {},
+        "_manifest": {}, "_raw_video_path": "",
+    }]
+    briefs = {"brief_test": {"narrative_storylines": ["Test story"]}}
+    html = build_html(rows, {}, "Test", "now", briefs_by_match=briefs)
+    assert "brief-data" in html
+    assert "manifest-data" in html
+
+
+def test_build_html_renders_match_brief_panel_when_brief_data():
+    rows = [{
+        "clip_id": "b_002", "match_title": "Brief Panel",
+        "match_slug": "bp_test", "media_url": "file:///tmp/v.mp4",
+        "file_size_mb": "0.5", "start_time": "", "end_time": "",
+        "status": "", "moment_label": "Test", "emotional_angle": "",
+        "_detection": [], "_research": {}, "_brief": {
+            "narrative_storylines": ["David vs Goliath"],
+            "tournament_implications": {"win": "Advances to knockouts", "draw": "", "loss": "", "knockout_path_if_advance": ""},
+            "standings_entering_match": {"table": [{"team": "A", "pts": 3, "w": 1, "d": 0, "l": 0}]},
+            "key_players": [{"team": "A", "name": "Star", "position": "FW", "notable": "Captain"}],
+        },
+        "_manifest": {}, "_raw_video_path": "",
+    }]
+    briefs = {"bp_test": rows[0]["_brief"]}
+    html = build_html(rows, {}, "Test", "now", briefs_by_match=briefs)
+    assert "Match Brief" in html
+    assert "David vs Goliath" in html
+    assert "Advances to knockouts" in html
+    assert "Captain" in html
+    # Individual data values appear in embedded JSON
+    assert '"pts": 3' in html
+    assert '"w": 1' in html
+
+
+def test_build_html_no_brief_data_embedded_when_not_provided():
+    rows = [{
+        "clip_id": "nb_001", "match_title": "No Brief",
+        "match_slug": "no_brief", "media_url": "file:///tmp/v.mp4",
+        "file_size_mb": "0.5", "start_time": "", "end_time": "",
+        "status": "", "moment_label": "Test", "emotional_angle": "",
+        "_detection": [], "_research": {}, "_brief": {},
+        "_manifest": {}, "_raw_video_path": "",
+    }]
+    html = build_html(rows, {}, "Test", "now")
+    assert "Match Brief" in html  # JS code is always present
+    # No brief data embedded
+    assert '"narrative_storylines"' not in html
+
+
+def test_build_html_renders_recording_info_panel():
+    rows = [{
+        "clip_id": "r_001", "match_title": "Rec Test",
+        "match_slug": "rec_test", "media_url": "file:///tmp/v.mp4",
+        "file_size_mb": "0.5", "start_time": "", "end_time": "",
+        "status": "", "moment_label": "Test", "emotional_angle": "",
+        "_detection": [], "_research": {},
+        "_brief": {},
+        "_manifest": {"event_url": "https://livetv.example", "resolved_acestream_hash": "abc123"},
+        "_raw_video_path": "/tmp/RAW/video.ts",
+    }]
+    manifests = {"rec_test": rows[0]["_manifest"]}
+    html = build_html(rows, {}, "Test", "now", manifests_by_id=manifests)
+    assert "Recording Info" in html
+    assert "livetv.example" in html
+    assert "abc123" in html
+    assert "RAW/video.ts" in html or "/tmp/RAW/video.ts" in html
+
+
+def test_build_html_omits_recording_info_data_when_not_provided():
+    rows = [{
+        "clip_id": "nr_001", "match_title": "No Rec",
+        "match_slug": "no_rec", "media_url": "file:///tmp/v.mp4",
+        "file_size_mb": "0.5", "start_time": "", "end_time": "",
+        "status": "", "moment_label": "Test", "emotional_angle": "",
+        "_detection": [], "_research": {},
+        "_brief": {}, "_manifest": {}, "_raw_video_path": "",
+    }]
+    html = build_html(rows, {}, "Test", "now")
+    assert "Recording Info" in html  # JS code is always present
+    # No manifest/recording data embedded
+    assert '"event_url"' not in html
+    assert '"resolved_acestream_hash"' not in html
+
+
+# ── discover_clips new fields ─────────────────────────────────────────────
+
+
+def test_discover_clips_attaches_brief_manifest_raw(tmp_path):
+    clips_dir = tmp_path / "CLIPS"
+    match_dir = clips_dir / "test_slug"
+    match_dir.mkdir(parents=True)
+    (match_dir / "clip.mp4").write_text("fake mp4")
+    briefs = {"test_slug": {"narrative_storylines": ["Story"]}}
+    manifests = {"test_slug": {"event_url": "https://x.com", "resolved_acestream_hash": "hash"}}
+    rows = discover_clips(clips_dir, [], {}, {}, briefs_by_match=briefs, manifests_by_id=manifests)
+    assert len(rows) == 1
+    assert rows[0]["_brief"]["narrative_storylines"] == ["Story"]
+    assert rows[0]["_manifest"]["event_url"] == "https://x.com"
+    assert rows[0]["_manifest"]["resolved_acestream_hash"] == "hash"
+
+
+def test_discover_clips_attaches_raw_path(tmp_path):
+    clips_dir = tmp_path / "CLIPS"
+    match_dir = clips_dir / "raw_test"
+    match_dir.mkdir(parents=True)
+    (match_dir / "clip.mp4").write_text("fake mp4")
+    from scripts.build_stadium_dashboard import ROOT
+    with patch("scripts.build_stadium_dashboard.ROOT") as mock_root:
+        mock_root.__truediv__ = lambda self, other: tmp_path / other
+        rows = discover_clips(clips_dir, [], {}, {})
+    assert len(rows) == 1
+    assert isinstance(rows[0]["_raw_video_path"], str)

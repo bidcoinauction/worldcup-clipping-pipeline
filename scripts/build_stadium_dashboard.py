@@ -108,6 +108,47 @@ def read_detections(detections_dir: Path) -> dict[str, list[dict]]:
     return result
 
 
+def read_match_briefs(research_dir: Path) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    if not research_dir.exists():
+        return result
+    for json_path in sorted(research_dir.rglob("match_brief.json")):
+        slug = json_path.parent.name
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            result[slug] = data
+        except (json.JSONDecodeError, OSError):
+            continue
+    return result
+
+
+def read_match_manifests(manifests_dir: Path) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    if not manifests_dir.exists():
+        return result
+    for json_path in sorted(manifests_dir.glob("*.json")):
+        match_id = json_path.stem
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            result[match_id] = data
+        except (json.JSONDecodeError, OSError):
+            continue
+    return result
+
+
+def resolve_raw_video_path(match_id: str) -> str:
+    candidates = [
+        ROOT / "FootballArchive" / "RAW" / "WORLD_CUP" / f"{match_id}.ts",
+        ROOT / "FootballArchive" / "RAW" / f"{match_id}.ts",
+        ROOT / "RAW" / "WORLD_CUP" / f"{match_id}.ts",
+        ROOT / "RAW" / f"{match_id}.ts",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c.resolve())
+    return ""
+
+
 def manifest_by_local_path(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     mapped: dict[str, dict[str, str]] = {}
     for row in rows:
@@ -126,6 +167,8 @@ def discover_clips(
     manifest_rows: list[dict[str, str]],
     research_by_match: dict[str, dict],
     detections_by_match: dict[str, list[dict]],
+    briefs_by_match: dict[str, dict] | None = None,
+    manifests_by_id: dict[str, dict] | None = None,
 ) -> list[dict]:
     by_path = manifest_by_local_path(manifest_rows)
     clipped_rows: list[dict] = []
@@ -180,6 +223,11 @@ def discover_clips(
         # Attach research data
         row["_research"] = research_by_match.get(match_slug, {})
 
+        # Attach match brief, manifest, and raw video path
+        row["_brief"] = (briefs_by_match or {}).get(match_slug, {})
+        row["_manifest"] = (manifests_by_id or {}).get(match_slug, {})
+        row["_raw_video_path"] = resolve_raw_video_path(match_slug) if match_slug else ""
+
         clipped_rows.append(row)
 
     # Add manifest rows whose files weren't found on disk
@@ -199,6 +247,9 @@ def discover_clips(
             missing["match_slug"] = ""
             missing["_detection"] = []
             missing["_research"] = {}
+            missing["_brief"] = (briefs_by_match or {}).get("", {})
+            missing["_manifest"] = (manifests_by_id or {}).get("", {})
+            missing["_raw_video_path"] = ""
             clipped_rows.append(missing)
 
     return clipped_rows
@@ -219,12 +270,16 @@ def build_html(
     research_by_match: dict[str, dict],
     title: str,
     generated_at: str,
+    briefs_by_match: dict[str, dict] | None = None,
+    manifests_by_id: dict[str, dict] | None = None,
 ) -> str:
     # Sort rows by match_title
     rows.sort(key=lambda r: r.get("match_title", ""))
 
     data_json = json.dumps(rows, ensure_ascii=True)
     research_json = json.dumps(research_by_match, ensure_ascii=True)
+    briefs_json = json.dumps(briefs_by_match or {}, ensure_ascii=True)
+    manifests_json = json.dumps(manifests_by_id or {}, ensure_ascii=True)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -342,9 +397,13 @@ def build_html(
   </main>
   <script id="clip-data" type="application/json">{data_json}</script>
   <script id="research-data" type="application/json">{research_json}</script>
+  <script id="brief-data" type="application/json">{briefs_json}</script>
+  <script id="manifest-data" type="application/json">{manifests_json}</script>
   <script>
     const clips = JSON.parse(document.getElementById("clip-data").textContent);
     const researchData = JSON.parse(document.getElementById("research-data").textContent || "{{}}");
+    const briefData = JSON.parse(document.getElementById("brief-data").textContent || "{{}}");
+    const manifestData = JSON.parse(document.getElementById("manifest-data").textContent || "{{}}");
     let filtered = [...clips];
     let selectedIndex = 0;
     const search = document.getElementById("search");
@@ -591,6 +650,52 @@ def build_html(
               ).join("") +
             '</div>'
             : '') +
+
+          (function() {{
+            const b = c.match_slug ? briefData[c.match_slug] : null;
+            if (!b) return '';
+            const parts = [];
+            const sl = (b.narrative_storylines || []).filter(Boolean);
+            if (sl.length > 0) {{
+              parts.push('<div><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;">Storylines</span>' +
+                sl.map(s => '<div style="margin:4px 0;font-size:12px;">' + esc(s) + '</div>').join('') + '</div>');
+            }}
+            const imp = b.tournament_implications || {{}};
+            const impLines = Object.entries(imp).filter(([k, v]) => v).map(([k, v]) => {{
+              const label = k.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase());
+              return '<div class="field"><span class="field-label">' + esc(label) + '</span><span class="field-value">' + esc(v) + '</span></div>';
+            }});
+            if (impLines.length > 0) {{
+              parts.push('<div style="margin-top:8px;"><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;">Tournament Implications</span>' + impLines.join('') + '</div>');
+            }}
+            const st = b.standings_entering_match || {{}};
+            const table = st.table || [];
+            if (table.length > 0) {{
+              parts.push('<div style="margin-top:8px;"><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;">Standings</span>' +
+                table.map(t => '<div style="font-size:12px;margin:2px 0;">' + esc(t.team) + ': ' + esc(t.pts) + ' pts (' + t.w + 'W ' + t.d + 'D ' + t.l + 'L)</div>').join('') + '</div>');
+            }}
+            const kp = (b.key_players || []).filter(Boolean);
+            if (kp.length > 0) {{
+              parts.push('<div style="margin-top:8px;"><span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;">Key Players</span>' +
+                kp.map(p => '<div style="font-size:12px;margin:2px 0;">' + esc(p.team) + ': ' + esc(p.name) + ' (' + esc(p.position || '') + ')' + (p.notable ? ' — ' + esc(p.notable) : '') + '</div>').join('') + '</div>');
+            }}
+            if (parts.length === 0) return '';
+            return '<div class="panel"><h3>Match Brief</h3>' + parts.join('') + '</div>';
+          }})() +
+
+          (function() {{
+            const m = c.match_slug ? manifestData[c.match_slug] : null;
+            const rawPath = c._raw_video_path || '';
+            const eventUrl = (m && m.event_url) || '';
+            const aceHash = (m && m.resolved_acestream_hash) || '';
+            if (!eventUrl && !aceHash && !rawPath) return '';
+            const recParts = [];
+            if (eventUrl) recParts.push('<div class="kv"><span>Event URL</span><code>' + esc(eventUrl) + '</code></div>');
+            if (aceHash) recParts.push('<div class="kv"><span>Ace Hash</span><code>' + esc(aceHash) + '</code></div>');
+            if (rawPath) recParts.push('<div class="kv"><span>RAW Video</span><code>' + esc(rawPath) + '</code></div>');
+            return '<div class="panel"><h3>Recording Info</h3><div class="grid">' + recParts.join('') + '</div></div>';
+          }})() +
+
           '<div class="panel" id="reviewPanel"><h3>Review</h3>' +
             '<div class="review-btns">' +
               '<button class="rvw-btn" data-v="keep">Keep</button>' +
@@ -641,10 +746,19 @@ def main(argv: list[str] | None = None) -> int:
     manifest_rows = read_manifest(manifest_path)
     research_by_match = read_research(research_dir)
     detections_by_match = read_detections(detections_dir)
-    clip_rows = discover_clips(clips_dir, manifest_rows, research_by_match, detections_by_match)
+    briefs_by_match = read_match_briefs(research_dir)
+    manifests_dir = ROOT / "data" / "manifests"
+    manifests_by_id = read_match_manifests(manifests_dir) if manifests_dir.exists() else {}
+    clip_rows = discover_clips(
+        clips_dir, manifest_rows, research_by_match, detections_by_match,
+        briefs_by_match=briefs_by_match,
+        manifests_by_id=manifests_by_id,
+    )
     generated_at = datetime.now().isoformat(timespec="seconds")
 
-    html = build_html(clip_rows, research_by_match, args.title, generated_at)
+    html = build_html(clip_rows, research_by_match, args.title, generated_at,
+                       briefs_by_match=briefs_by_match,
+                       manifests_by_id=manifests_by_id,)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
     print(f"Built {output_path} with {len(clip_rows)} clips")
