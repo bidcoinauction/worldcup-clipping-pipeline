@@ -47,6 +47,37 @@ clip_id,match_id,moment_id,clip_type,start_time,end_time,duration_seconds,series
 match_id,stakes,crowd_emotion,historical_impact,narrative_arc,cultural_memory,total_score,tier
 ```
 
+## Live Recording Workflow
+
+For live matches (World Cup 2026 and later), the pipeline starts with an Ace Stream broadcast instead of an archived file.
+
+```text
+Ace Stream ID
+  -> record_live.py --mode full (Windows)
+  -> <match_id>_live.ts
+  -> [future] process_live_recording.py
+       -> transcription
+       -> timestamps.json
+       -> clip detection
+       -> clip manifest
+       -> exports
+```
+
+### Platform Roles
+
+- **Windows:** Capture box. Ace Stream only runs on Windows. `record_live.py` records the stream to a single `.ts` file with reconnect flags and corrupt-packet tolerance.
+- **Mac:** Dev/build box. Pipeline development, OpenCode, Git. Transcribing and clipping can happen here after the `.ts` file is transferred.
+
+### Match-Day Steps
+
+1. Extract the Ace Stream hash from `acestream://HASH`.
+2. On Windows: `python scripts\record_live.py HASH --match-id MATCH_ID --mode full --verbose`
+3. Stop with `q`. Do not press Play in Ace Stream Player while FFmpeg owns the stream.
+4. Verify with `ffprobe C:\FootballArchive\<match_id>_live.ts`.
+5. Transfer for processing.
+
+See `data/worldcup_2026_schedule.csv` for all 104 match schedules.
+
 ## Validation
 
 ```bash

@@ -445,6 +445,7 @@ def test_main_dry_run_with_test(mock_popen, tmp_path, capsys):
         [
             "record_live",
             "test",
+            "--mode", "segment",
             "--match-id", "test_match",
             "--test",
             "--dry-run",
@@ -469,6 +470,7 @@ def test_main_dry_run_with_verbose(mock_popen, tmp_path, capsys):
         [
             "record_live",
             "abc123",
+            "--mode", "segment",
             "--match-id", "test_match",
             "--verbose",
             "--dry-run",
@@ -491,6 +493,7 @@ def test_main_dry_run_with_test_and_verbose(mock_popen, tmp_path, capsys):
         [
             "record_live",
             "test",
+            "--mode", "segment",
             "--match-id", "test_match",
             "--test",
             "--verbose",
@@ -514,6 +517,7 @@ def test_main_dry_run_with_test_and_duration(mock_popen, tmp_path, capsys):
         [
             "record_live",
             "test",
+            "--mode", "segment",
             "--match-id", "test_match",
             "--test",
             "--test-duration", "300",
@@ -548,6 +552,7 @@ def test_main_test_mode_uses_test_ffmpeg_cmd(mock_popen, mock_signal, tmp_path):
             [
                 "record_live",
                 "test",
+                "--mode", "segment",
                 "--match-id", "test_match",
                 "--test",
                 "--staging-dir", str(staging),

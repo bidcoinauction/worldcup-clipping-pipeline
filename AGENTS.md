@@ -19,22 +19,63 @@ Stadium Signal is a football mythology archive. Prioritize emotional narrative, 
 
 ## Live Recording Workflow
 
-### Platform Notes
+### Platform Roles
 
-- **Windows (Ace Stream):** Run `record_live.py --mode full` (default). Records a single `.ts` file with reconnect flags for stream resilience. Output: `C:\FootballArchive\<match_id>_live.ts`.
-- **macOS / Linux:** Can also use `record_live.py --mode full` after recording, or process the recorded file from any platform.
-- **Segment mode:** Use `--mode segment` for fixed-duration chunks consumed by `live_watch.py`.
+- **Windows (Ace Stream):** Capture box. Ace Stream only runs on Windows. Run `record_live.py` here to record live broadcasts.
+- **Mac:** Dev/build box. OpenCode, Git, pipeline development, and post-processing. Recorded files from Windows can be transcribed and clipped here.
 
-### Typical Windows Live Flow
+### Proven Match-Day Workflow
 
-1. Get Ace Stream ID for the match.
-2. `python scripts/record_live.py <ACE_ID> --match-id <slug>`
-3. Press Ctrl+C to stop recording.
-4. Process the resulting `C:\FootballArchive\<slug>_live.ts` with `process_match.py` or `transcribe_match.py`.
+This workflow was validated during the Mexico vs South Africa (World Cup 2026) test.
 
-### Cross-Platform Processing
+1. Get the Ace Stream link (e.g., `acestream://HASH`).
+2. Extract the hash from the URL.
+3. On Windows, record the live stream:
+   ```
+   python scripts\record_live.py HASH --match-id MATCH_ID --mode full --verbose
+   ```
+   - Output: `C:\FootballArchive\<match_id>_live.ts`
+   - Stop recording by pressing `q` in the terminal (not Ctrl+C).
+   - **Do not press Play again in Ace Stream Player while FFmpeg owns the stream** — only one consumer can read the stream at a time.
+4. Verify the recording with `ffprobe`:
+   ```
+   ffprobe C:\FootballArchive\<match_id>_live.ts
+   ```
+5. Transfer the `.ts` file to Mac (or keep on Windows) for processing.
 
-Recorded `.ts` files from Windows can be transcribed and clipped on macOS/Linux — no RAW import required.
+Full-file recording (`--mode full`) is the safest match-day workflow. It uses reconnect flags (`-reconnect 1 -reconnect_delay_max 4294`) and ignores corrupt packets (`-err_detect ignore_err`).
+
+### First Production Recording — Mexico vs South Africa
+
+```
+File:   mexico_south_africa_live.ts
+Duration: 38m31s
+Size:    ~334 MB
+Resolution: 1024x576
+```
+
+### Segment Mode (Experimental)
+
+`--mode segment` splits the stream into fixed-duration `.ts` chunks and is consumed by `live_watch.py`. It is **not** part of the current match-day workflow. Segment mode is under development for future automated processing and is less reliable than full-file recording for live Ace Stream captures.
+
+## Next Build Phase
+
+Create `process_live_recording.py` to automate the post-recording pipeline:
+
+Input: `<match_id>_live.ts`
+Pipeline: transcription -> timestamps.json -> clip detection -> clip manifest -> exports
+
+Target architecture:
+
+```
+Ace Stream
+  -> record_live.py --mode full
+  -> <match_id>_live.ts
+  -> process_live_recording.py
+  -> transcripts
+  -> clips
+  -> exports
+```
 
 ## Required Validation
 
