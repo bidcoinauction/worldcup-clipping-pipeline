@@ -47,6 +47,48 @@ clip_id,match_id,moment_id,clip_type,start_time,end_time,duration_seconds,series
 match_id,stakes,crowd_emotion,historical_impact,narrative_arc,cultural_memory,total_score,tier
 ```
 
+## Match Manifest Workflow
+
+For multi-source recordings (e.g. first half, second half recorded separately), the pipeline uses JSON manifests to track sources and pipeline progress.
+
+### Creating a Manifest
+
+```bash
+python scripts/create_match_manifest.py \
+  --match-id mexico_south_africa_2026_06_11 \
+  --match-no 1 \
+  --home Mexico --away "South Africa" \
+  --date 2026-06-11 \
+  --source mexico_south_africa_live.ts:first_half
+
+# Add a second recording source
+python scripts/create_match_manifest.py \
+  --match-id mexico_south_africa_2026_06_11 \
+  --source mexico_south_africa_second_half.ts:second_half
+```
+
+### Processing from a Manifest
+
+```bash
+# Dry-run to verify commands
+python scripts/process_from_manifest.py \
+  --manifest data/manifests/mexico_south_africa_2026_06_11.json \
+  --dry-run
+
+# Full processing (concat -> register -> transcribe -> detect -> clip)
+python scripts/process_from_manifest.py \
+  --manifest data/manifests/mexico_south_africa_2026_06_11.json \
+  --run-detection
+```
+
+The `process_from_manifest.py` script:
+- Concatenates all recorded sources into `RAW/WORLD_CUP/<match_id>.ts`
+- Auto-creates the output directory if it does not exist
+- Runs child processes (`update_match.py`, `process_scheduled_match.py`) with `cwd` set to the repository root
+- Updates the manifest pipeline status on success
+
+See `data/manifests/` for available manifests. See `AGENTS.md` for full workflow details.
+
 ## Live Recording Workflow
 
 For live matches (World Cup 2026 and later), the pipeline starts with an Ace Stream broadcast instead of an archived file.

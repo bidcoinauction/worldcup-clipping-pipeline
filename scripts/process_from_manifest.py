@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.stadium_signal import archive_path
+from pipeline.utils import ROOT
 
 
 def _print_cmd(cmd: list[str]) -> str:
@@ -20,7 +21,7 @@ def _run(cmd: list[str], dry_run: bool, step: str) -> bool:
         return True
     print(f"  Running: {label}")
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, cwd=ROOT)
         return True
     except subprocess.CalledProcessError as exc:
         print(f"  FAILED: {step} (exit {exc.returncode})")
@@ -72,6 +73,7 @@ def main():
     # ── Step 1: Concatenate to RAW/WORLD_CUP ──
     concat_output = archive_path("RAW", "WORLD_CUP", f"{match_id}.ts")
     concat_output_path = Path(concat_output)
+    concat_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Build concat file listing all source paths
     concat_lines = []
@@ -121,7 +123,7 @@ def main():
 
     # ── Step 2: Register in schedule CSV ──
     update_cmd = [
-        sys.executable or "python", "scripts/update_match.py",
+        sys.executable or "python", str(ROOT / "scripts/update_match.py"),
         "--match", str(match_no),
         "--source-video-path", concat_output,
         "--pipeline-status", "recorded",
@@ -132,7 +134,7 @@ def main():
 
     # ── Step 3: Run pipeline ──
     process_cmd = [
-        sys.executable or "python", "scripts/process_scheduled_match.py",
+        sys.executable or "python", str(ROOT / "scripts/process_scheduled_match.py"),
         "--match-no", str(match_no),
     ]
     if args.run_detection:

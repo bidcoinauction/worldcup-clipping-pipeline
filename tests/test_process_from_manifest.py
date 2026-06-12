@@ -225,3 +225,52 @@ def test_process_no_condense_flag_pass_through(tmp_path, capsys):
             process_main()
     captured = capsys.readouterr()
     assert "--no-condense" in captured.out
+
+
+# ── Path resolution tests ──
+
+
+def test_process_creates_output_directory(tmp_path, capsys):
+    manifest = _write_manifest(tmp_path)
+    with patch("sys.argv", [
+        "process_from_manifest",
+        "--manifest", str(manifest),
+        "--dry-run",
+    ]):
+        with patch("scripts.process_from_manifest.archive_path", return_value="/tmp/first.ts"):
+            with patch("pathlib.Path.mkdir") as mock_mkdir:
+                process_main()
+    mock_mkdir.assert_any_call(parents=True, exist_ok=True)
+
+
+def test_process_resolves_child_scripts_absolute(tmp_path, capsys):
+    manifest = _write_manifest(tmp_path)
+    from scripts.process_from_manifest import ROOT
+    with patch("sys.argv", [
+        "process_from_manifest",
+        "--manifest", str(manifest),
+        "--dry-run",
+    ]):
+        with patch("scripts.process_from_manifest.archive_path", return_value="/tmp/first.ts"):
+            process_main()
+    captured = capsys.readouterr()
+    expected_update = str(ROOT / "scripts/update_match.py")
+    expected_process = str(ROOT / "scripts/process_scheduled_match.py")
+    assert expected_update in captured.out
+    assert expected_process in captured.out
+
+
+def test_process_calls_subprocess_with_cwd_root(tmp_path, capsys):
+    manifest = _write_manifest(tmp_path)
+    from scripts.process_from_manifest import ROOT
+    with patch("sys.argv", [
+        "process_from_manifest",
+        "--manifest", str(manifest),
+        "--dry-run",
+    ]):
+        with patch("scripts.process_from_manifest.archive_path", return_value="/tmp/first.ts"):
+            with patch("scripts.process_from_manifest.subprocess.run") as mock_run:
+                process_main()
+    for call_args in mock_run.call_args_list:
+        kwargs = call_args.kwargs if call_args.kwargs else call_args[1]
+        assert kwargs.get("cwd") == ROOT, f"Expected cwd={ROOT}, got {kwargs.get('cwd')}"
