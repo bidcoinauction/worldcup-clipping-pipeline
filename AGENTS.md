@@ -58,23 +58,69 @@ Resolution: 1024x576
 
 `--mode segment` splits the stream into fixed-duration `.ts` chunks and is consumed by `live_watch.py`. It is **not** part of the current match-day workflow. Segment mode is under development for future automated processing and is less reliable than full-file recording for live Ace Stream captures.
 
-## Next Build Phase
+## Archive Architecture
 
-Create `process_live_recording.py` to automate the post-recording pipeline:
+### Git Repository (this repo)
+Stores metadata, workflow code, CSV schedules, **match manifests**, transcripts,
+clip manifests, and prompts. Everything here is text — safe to version control and share.
 
-Input: `<match_id>_live.ts`
-Pipeline: transcription -> timestamps.json -> clip detection -> clip manifest -> exports
+### FootballArchive (C:\FootballArchive)
+Stores video assets: raw recordings (.ts), exported clips (.mp4), and other
+large binary files. This directory is outside the repo and never committed to Git.
 
-Target architecture:
+### How they connect
+Match manifests in `data/manifests/*.json` reference video files by filename.
+At runtime, filenames are resolved against `FOOTBALL_ARCHIVE_ROOT` or the
+platform default (`C:\FootballArchive` on Windows, `FootballArchive/` on Mac).
+
+## Match Manifest Workflow
+
+Manifests track each match's source recordings and pipeline progress. They are
+the bridge between the capture box (Windows) and the processing pipeline.
+
+### Creating a manifest
+
+```bash
+# Register the first recording
+python scripts/create_match_manifest.py \
+  --match-id mexico_south_africa_2026_06_11 \
+  --match-no 1 \
+  --home Mexico --away "South Africa" \
+  --date 2026-06-11 \
+  --source mexico_south_africa_live.ts:first_half
+
+# Add a second recording
+python scripts/create_match_manifest.py \
+  --match-id mexico_south_africa_2026_06_11 \
+  --source mexico_south_africa_second_half.ts:second_half
+```
+
+### Processing a manifest
+
+`process_from_manifest.py` concatenates all recorded sources into a single
+`.ts` file in `RAW/WORLD_CUP/<match_id>.ts`, then delegates to the existing
+pipeline. It does **not** reimplement transcription, detection, or manifest
+building — those are handled by `process_scheduled_match.py`.
+
+```bash
+# Dry-run first to see every subprocess command
+python scripts/process_from_manifest.py \
+  --manifest data/manifests/mexico_south_africa_2026_06_11.json \
+  --dry-run
+
+# Full processing with clip detection
+python scripts/process_from_manifest.py \
+  --manifest data/manifests/mexico_south_africa_2026_06_11.json \
+  --run-detection
+```
+
+### Pipeline (delegated entirely to existing scripts)
 
 ```
-Ace Stream
-  -> record_live.py --mode full
-  -> <match_id>_live.ts
-  -> process_live_recording.py
-  -> transcripts
-  -> clips
-  -> exports
+Manifest sources
+  -> ffmpeg concat -> RAW/WORLD_CUP/<match_id>.ts
+  -> update_match.py        (register in schedule CSV)
+  -> process_scheduled_match.py  (transcribe -> prompt -> detection -> manifest)
 ```
 
 ## Required Validation

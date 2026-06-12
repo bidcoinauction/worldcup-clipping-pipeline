@@ -1,0 +1,28 @@
+{
+  "manifest_version": 1,
+  "match_id": "mexico_south_africa_2026_06_11",
+  "match_no": 1,
+  "home_team": "Mexico",
+  "away_team": "South Africa",
+  "date": "2026-06-11",
+  "sources": [
+    {
+      "label": "first_half",
+      "filename": "mexico_south_africa_live.ts",
+      "status": "recorded"
+    },
+    {
+      "label": "second_half",
+      "filename": "mexico_south_africa_second_half.ts",
+      "status": "recorded"
+    }
+  ],
+  "pipeline": {
+    "recorded": true,
+    "verified": false,
+    "transcribed": false,
+    "researched": false,
+    "clipped": false,
+    "exported": false
+  }
+}
