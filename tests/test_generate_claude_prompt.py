@@ -310,3 +310,185 @@ def test_micro_mode_no_package_fields(tmp_path):
     content = out.read_text(encoding="utf-8")
     assert "sequence_order" not in content
     assert "narrative_role" not in content
+
+
+def _brief_file(tmp_path, data=None):
+    d = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "psg_arsenal_2min"
+    d.mkdir(parents=True, exist_ok=True)
+    default = {
+        "narrative_storylines": ["Historic rivalry renewed"],
+        "tournament_implications": {
+            "win": "Would secure top of the group",
+            "draw": "",
+            "loss": "",
+            "knockout_path_if_advance": ""
+        },
+        "standings_entering_match": {
+            "group": "A",
+            "teams": ["South Korea", "Czechia", "Mexico", "South Africa"],
+            "table": [
+                {"team": "Czechia", "played": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "gd": 0, "pts": 0},
+                {"team": "Mexico", "played": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "gd": 0, "pts": 0},
+            ],
+            "context": "Placeholder"
+        },
+        "key_players": [
+            {"team": "South Korea", "name": "Heung-min Son", "position": "LW", "notable": "Tottenham captain"},
+            {"team": "Czechia", "name": "Patrik Schick", "position": "ST", "notable": "Bayer Leverkusen"},
+        ]
+    }
+    payload = data if data is not None else default
+    path = d / "match_brief.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_brief_block_injected_when_present(tmp_path):
+    _research_file(tmp_path)
+    _brief_file(tmp_path)
+    research = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "psg_arsenal_2min" / "match_research.json"
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Match context (brief):" in content
+    assert "Historic rivalry renewed" in content
+    assert "Heung-min Son" in content
+    assert "Patrik Schick" in content
+
+
+def test_brief_block_omitted_when_no_brief_file(tmp_path):
+    _research_file(tmp_path)
+    research = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "psg_arsenal_2min" / "match_research.json"
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Match context (brief):" not in content
+
+
+def test_brief_block_omitted_when_no_research(tmp_path):
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Match context (brief):" not in content
+
+
+def test_brief_malformed_warns_and_continues(tmp_path):
+    research = _research_file(tmp_path)
+    brief = tmp_path / "MATCH_RESEARCH" / "WORLD_CUP" / "psg_arsenal_2min" / "match_brief.json"
+    brief.write_text("not valid json", encoding="utf-8")
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Match context (brief):" not in content
+    assert "[12' GOAL]" in content
+
+
+def test_brief_empty_fields_omits_block(tmp_path):
+    research = _research_file(tmp_path)
+    _brief_file(tmp_path, data={})
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Match context (brief):" not in content
+
+
+def test_brief_storylines_and_implications(tmp_path):
+    research = _research_file(tmp_path)
+    _brief_file(tmp_path, data={
+        "narrative_storylines": ["David vs Goliath", "Underdog story"],
+        "tournament_implications": {"win": "Advances to knockout", "draw": "", "loss": "", "knockout_path_if_advance": ""},
+        "standings_entering_match": {"table": []},
+        "key_players": [],
+    })
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Match context (brief):" in content
+    assert "David vs Goliath" in content
+    assert "Underdog story" in content
+    assert "Advances to knockout" in content
+    assert "Win: Advances to knockout" in content
+    assert "Group standings" not in content
+    assert "Key players" not in content
+
+
+def test_brief_standings_table(tmp_path):
+    research = _research_file(tmp_path)
+    _brief_file(tmp_path, data={
+        "narrative_storylines": [],
+        "tournament_implications": {},
+        "standings_entering_match": {
+            "table": [
+                {"team": "Brazil", "pts": 6, "w": 2, "d": 0, "l": 0, "gd": 4},
+                {"team": "Argentina", "pts": 3, "w": 1, "d": 0, "l": 1, "gd": 1},
+            ]
+        },
+        "key_players": [],
+    })
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Group standings entering match:" in content
+    assert "Brazil: 6 pts (2W 0D 0L, GD +4)" in content
+    assert "Argentina: 3 pts (1W 0D 1L, GD +1)" in content
+
+
+def test_brief_key_players(tmp_path):
+    research = _research_file(tmp_path)
+    _brief_file(tmp_path, data={
+        "narrative_storylines": [],
+        "tournament_implications": {},
+        "standings_entering_match": {"table": []},
+        "key_players": [
+            {"team": "France", "name": "Kylian Mbappe", "position": "ST", "notable": "PSG superstar"},
+            {"team": "Argentina", "name": "Lionel Messi", "position": "RW", "notable": "GOAT"},
+        ],
+    })
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Key players:" in content
+    assert "France: Kylian Mbappe (ST) (PSG superstar)" in content
+    assert "Argentina: Lionel Messi (RW) (GOAT)" in content
+
+
+def test_brief_no_tournament_implications_omitted(tmp_path):
+    research = _research_file(tmp_path)
+    _brief_file(tmp_path, data={
+        "narrative_storylines": ["Big match"],
+        "tournament_implications": {"win": "", "draw": "", "loss": "", "knockout_path_if_advance": ""},
+        "standings_entering_match": {"table": []},
+        "key_players": [],
+    })
+    with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
+        _mock_root(mock_root, tmp_path)
+        _run_main(tmp_path, research_arg=research)
+
+    out = tmp_path / "PROMPTS" / "psg_arsenal_2min_claude_prompt.txt"
+    content = out.read_text(encoding="utf-8")
+    assert "Tournament implications" not in content
+    assert "Big match" in content

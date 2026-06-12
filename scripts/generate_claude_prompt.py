@@ -190,6 +190,50 @@ def _build_category_rule(research_path: Path | None) -> str:
     return CATEGORY_RULE_RESEARCH
 
 
+def _build_match_brief_block(research_path: Path | None) -> str:
+    if research_path is None or not research_path.exists():
+        return ""
+    brief_path = research_path.parent / "match_brief.json"
+    if not brief_path.exists():
+        return ""
+    try:
+        data = json.loads(brief_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, IOError):
+        print(f"Warning: malformed match_brief.json at {brief_path}, skipping")
+        return ""
+    lines = ["Match context (brief):"]
+    storylines = data.get("narrative_storylines", [])
+    if storylines:
+        lines.append("  Narrative storylines:")
+        for s in storylines:
+            lines.append(f"    - {s}")
+    implications = data.get("tournament_implications", {})
+    if implications and any(v for v in implications.values()):
+        lines.append("  Tournament implications:")
+        for key, val in implications.items():
+            if val:
+                label = key.replace("_", " ").title()
+                lines.append(f"    - {label}: {val}")
+    standings = data.get("standings_entering_match", {})
+    table = standings.get("table", [])
+    if table:
+        lines.append("  Group standings entering match:")
+        for row in table:
+            lines.append(
+                f"    - {row['team']}: {row['pts']} pts "
+                f"({row['w']}W {row['d']}D {row['l']}L, GD {row['gd']:+d})"
+            )
+    key_players = data.get("key_players", [])
+    if key_players:
+        lines.append("  Key players:")
+        for p in key_players:
+            notable = f" ({p['notable']})" if p.get("notable") else ""
+            lines.append(f"    - {p['team']}: {p['name']} ({p['position']}){notable}")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n\n"
+
+
 PROMPT_TEMPLATE = """You are an elite short-form football clipping strategist for a US-targeted 2026 World Cup account.
 
 Account positioning:
@@ -210,7 +254,7 @@ Prioritize these categories:
 
 {rules_block}
 
-{story_targets_block}{research_block}Match name:
+{story_targets_block}{research_block}{brief_block}Match name:
 {match_name}
 
 Timestamped transcript (video duration: {duration_seconds}s):
@@ -293,6 +337,7 @@ def main():
     research_block = _build_research_block(research_path)
     category_rule = _build_category_rule(research_path)
     story_targets_block = _build_story_targets_block(research_path)
+    brief_block = _build_match_brief_block(research_path)
     clip_schema = _build_clip_schema(mode)
     account_positioning = load_config().get("account_positioning", "America Discovers Football")
     prompt = PROMPT_TEMPLATE.format(
@@ -304,6 +349,7 @@ def main():
         research_block=research_block,
         category_rule=category_rule,
         story_targets_block=story_targets_block,
+        brief_block=brief_block,
         clip_schema=clip_schema,
         account_positioning=account_positioning,
     )
