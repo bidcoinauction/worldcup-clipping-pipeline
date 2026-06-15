@@ -960,6 +960,22 @@ TOURNEY_WITH_UNDERSCORE = """<html><body>
 </tr></table>
 </body></html>"""
 
+TOURNEY_WITH_BROADCASTS = """<html><body>
+<table>
+<tr><td colspan="3"><b>BROADCASTS</b></td></tr>
+<tr>
+<td><b>Sweden SWE &ndash; Tunisia TUN</b></td>
+<td><a href="/enx/showvideo/1566722/">Highlights</a></td>
+<td><a href="/enx/showvideo/1566753/">Long Highlights</a></td>
+</tr>
+<tr><td colspan="3"><b>REPLAYS</b></td></tr>
+<tr>
+<td><b>Germany GER &ndash; Brazil BRA</b></td>
+<td><a href="/enx/showvideo/1566800/">Highlights</a></td>
+</tr>
+</table>
+</body></html>"""
+
 
 # ── Tournament page parser tests ──
 
@@ -1002,6 +1018,18 @@ class TestParseTourneyPage:
     def test_deduplicates_by_showvideo_id(self):
         entries = parse_tourney_page(TOURNEY_DUP_LINKS)
         assert len(entries) == 1
+
+    def test_filters_broadcasts_headers(self):
+        entries = parse_tourney_page(TOURNEY_WITH_BROADCASTS)
+        assert len(entries) == 3
+        assert all("BROADCASTS" not in e.match_name for e in entries)
+        assert all("REPLAYS" not in e.match_name for e in entries)
+
+    def test_match_name_has_no_html(self):
+        entries = parse_tourney_page(TOURNEY_WITH_BROADCASTS)
+        for e in entries:
+            assert "<" not in e.match_name
+            assert ">" not in e.match_name
 
     def test_empty_page(self):
         entries = parse_tourney_page(TOURNEY_EMPTY)

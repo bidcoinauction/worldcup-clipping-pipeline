@@ -79,8 +79,8 @@ def parse_tourney_page(html: str, base_url: str = "https://livetv.sx", league: s
     # Find all match name positions in the page (boundary-based to handle nested HTML)
     match_name_spans: list[tuple[int, re.Match]] = []
     for m in re.finditer(
-        r'<b>(.*?)(?:&ndash;|–|-)(.*?)</b>',
-        html, re.DOTALL | re.IGNORECASE,
+        r'<b>([^<]*?)(?:&ndash;|–|-)([^<]*?)</b>',
+        html, re.IGNORECASE,
     ):
         match_name_spans.append((m.start(), m))
 
