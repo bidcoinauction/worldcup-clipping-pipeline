@@ -40,6 +40,31 @@ FETCH_STRATEGIES: list[tuple[str, str, dict[str, Any] | None]] = [
 ]
 
 
+def _add_candidate(
+    url: str, discovery_method: str,
+    candidates: list[dict[str, Any]], seen: set[str],
+) -> None:
+    raw = url.strip()
+    cleaned = raw.replace("\\/", "/")
+    if not cleaned.startswith(("http://", "https://")):
+        if cleaned.startswith("//"):
+            cleaned = "https:" + cleaned
+        else:
+            return
+    norm = cleaned.rstrip("/")
+    if norm in seen:
+        return
+    seen.add(norm)
+    ext = Path(cleaned.split("?")[0].split("#")[0]).suffix.lower()
+    candidates.append({
+        "url": cleaned,
+        "discovery_method": discovery_method,
+        "extension": ext,
+        "is_hls": ext in HLS_EXTENSIONS,
+        "is_media": ext in MEDIA_EXTENSIONS,
+    })
+
+
 def _extract_media_urls(html: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -47,24 +72,9 @@ def _extract_media_urls(html: str) -> list[dict[str, Any]]:
     for name, pattern in DISCOVERY_PATTERNS:
         for match in re.finditer(pattern, html, re.IGNORECASE):
             raw = match.group(1).strip()
-            url = raw.replace("\\/", "/")
-            if not url.startswith("http://") and not url.startswith("https://"):
-                if url.startswith("//"):
-                    url = "https:" + url
-                else:
-                    continue
-            norm = url.rstrip("/")
-            if norm in seen:
-                continue
-            seen.add(norm)
-            ext = Path(url.split("?")[0].split("#")[0]).suffix.lower()
-            candidates.append({
-                "url": url,
-                "discovery_method": name,
-                "extension": ext,
-                "is_hls": ext in HLS_EXTENSIONS,
-                "is_media": ext in MEDIA_EXTENSIONS,
-            })
+            # Handle comma-separated fallback mirrors (player convention)
+            for part in raw.split(","):
+                _add_candidate(part, name, candidates, seen)
 
     return candidates
 
@@ -120,21 +130,44 @@ def fetch_page(url: str, timeout: int = 20, user_agent: str | None = None) -> tu
     return None, "all strategies failed"
 
 
+_AD_KEYWORDS = ("getbanner", "doubleclick", "googleads", "facebook.com/plugins", "googlesyndication")
+_VIDEO_KEYWORDS = ("player", "video.php", "embed")
+
+
 def resolve_iframe_url(html: str, base_url: str) -> str | None:
-    m = re.search(r'<iframe[^>]+src\s*=\s*"([^"]+)"', html, re.IGNORECASE)
-    if m:
-        src = m.group(1).strip()
-        if src.startswith("//"):
-            src = "https:" + src
-        elif src.startswith("/"):
+    iframes = re.findall(r'<iframe[^>]+src\s*=\s*"([^"]+)"', html, re.IGNORECASE)
+    if not iframes:
+        return None
+
+    candidates: list[tuple[int, str]] = []
+
+    for raw_src in iframes:
+        cleaned = raw_src.replace("\n", "").replace("\r", "")
+        cleaned = re.sub(r"""['"]?\s*\+\s*['"]?""", "", cleaned).strip().strip("'").strip('"')
+        if not cleaned:
+            continue
+
+        if any(kw in cleaned.lower() for kw in _AD_KEYWORDS):
+            continue
+
+        if cleaned.startswith("//"):
+            cleaned = "https:" + cleaned
+        elif cleaned.startswith("/"):
             from urllib.parse import urlparse
             parsed = urlparse(base_url)
-            src = f"{parsed.scheme}://{parsed.netloc}{src}"
-        elif not src.startswith("http"):
+            cleaned = f"{parsed.scheme}://{parsed.netloc}{cleaned}"
+        elif not cleaned.startswith("http"):
             from urllib.parse import urljoin
-            src = urljoin(base_url, src)
-        return src
-    return None
+            cleaned = urljoin(base_url, cleaned)
+
+        score = sum(1 for kw in _VIDEO_KEYWORDS if kw in cleaned.lower())
+        candidates.append((score, cleaned))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
 
 
 def validate_media_url(url: str, referer: str | None = None, timeout: int = 15) -> dict[str, Any]:
