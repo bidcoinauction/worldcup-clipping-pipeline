@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import html as html_module
 import json
 import logging
 import re
 import subprocess
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,105 @@ FETCH_STRATEGIES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("cloudscraper", "cloudscraper", None),
     ("curl", "curl", None),
 ]
+
+# ── Tournament index page types ──
+
+_TOURNEY_TYPE_PATTERNS: list[tuple[str, str]] = [
+    (r"^Highlights$", "highlights"),
+    (r"^Short Highlights$", "short_highlights"),
+    (r"^Long Highlights$", "long_highlights"),
+    (r"^Full match record$", "full_match"),
+    (r"^\d+:\d+", "goals"),
+]
+
+VALID_TOURNEY_TYPES = {"highlights", "short_highlights", "long_highlights", "full_match", "goals", "all"}
+
+
+@dataclass
+class TourneyEntry:
+    showvideo_url: str
+    showvideo_id: str
+    match_name: str
+    raw_match_name: str
+    label: str
+    video_type: str
+    league: str
+
+
+def _classify_tourney_label(label: str) -> str:
+    for pattern, vtype in _TOURNEY_TYPE_PATTERNS:
+        if re.search(pattern, label.strip()):
+            return vtype
+    return "other"
+
+
+def parse_tourney_page(html: str, base_url: str = "https://livetv.sx", league: str = "WORLD_CUP") -> list[TourneyEntry]:
+    entries: list[TourneyEntry] = []
+    seen_ids: set[str] = set()
+
+    # Find all match name positions in the page (boundary-based to handle nested HTML)
+    match_name_spans: list[tuple[int, re.Match]] = []
+    for m in re.finditer(
+        r'<b>(.*?)(?:&ndash;|–|-)(.*?)</b>',
+        html, re.DOTALL | re.IGNORECASE,
+    ):
+        match_name_spans.append((m.start(), m))
+
+    for i, (pos, name_m) in enumerate(match_name_spans):
+        # Section end = next match start or end of HTML
+        end_pos = match_name_spans[i + 1][0] if i + 1 < len(match_name_spans) else len(html)
+        section = html[pos:end_pos]
+
+        raw_team1 = html_module.unescape(name_m.group(1).strip())
+        raw_team2 = html_module.unescape(name_m.group(2).strip())
+
+        def _strip_code(name: str) -> tuple[str, str]:
+            parts = name.strip().split()
+            if parts and len(parts[-1]) <= 4 and parts[-1].isupper():
+                return " ".join(parts[:-1]), parts[-1]
+            return name, ""
+
+        base1, _code1 = _strip_code(raw_team1)
+        base2, _code2 = _strip_code(raw_team2)
+        raw_match_name = f"{raw_team1} – {raw_team2}"
+        match_name = f"{base1} vs {base2}" if base1 and base2 else raw_match_name
+
+        for link_m in re.finditer(
+            r'href="([^"]*showvideo/(\d+)[^"]*)"[^>]*>([^<]+)</a>',
+            section, re.IGNORECASE,
+        ):
+            href = link_m.group(1).strip()
+            vid_id = link_m.group(2)
+            label = html_module.unescape(link_m.group(3).strip())
+
+            if vid_id in seen_ids:
+                continue
+            seen_ids.add(vid_id)
+
+            url = _normalize_tourney_url(href, base_url)
+            vtype = _classify_tourney_label(label)
+            entries.append(TourneyEntry(
+                showvideo_url=url,
+                showvideo_id=vid_id,
+                match_name=match_name,
+                raw_match_name=raw_match_name,
+                label=label,
+                video_type=vtype,
+                league=league,
+            ))
+
+    return entries
+
+
+def _normalize_tourney_url(href: str, base_url: str) -> str:
+    cleaned = re.sub(r'_+/', '/', href)  # strip trailing __ before /
+    if cleaned.startswith("//"):
+        return "https:" + cleaned
+    if cleaned.startswith("/"):
+        return base_url.rstrip("/") + cleaned
+    if not cleaned.startswith("http"):
+        return base_url.rstrip("/") + "/" + cleaned.lstrip("/")
+    return cleaned
 
 
 def _add_candidate(
@@ -361,6 +462,7 @@ def resolve_and_download(
     dry_run: bool = False,
     force: bool = False,
     verbose: bool = False,
+    sequence_num: int = 1,
 ) -> dict[str, Any]:
     if output_root is None:
         output_root = ROOT / "FootballArchive" / "RAW_HIGHLIGHTS"
@@ -407,6 +509,9 @@ def resolve_and_download(
         else:
             result["steps"].append({"step": "iframe_fetch", "status": "failed", "detail": "could not fetch iframe"})
 
+    # Use iframe URL as referer (video servers expect the player page, not LiveTV)
+    referer = iframe_url or showvideo_url
+
     # Step 3: discover media URLs
     candidates = _extract_media_urls(discovered_html)
     result["steps"].append({"step": "discover", "status": "ok", "candidates_found": len(candidates)})
@@ -446,7 +551,7 @@ def resolve_and_download(
     # Step 6: validate
     if verbose:
         logger.debug("Validating: %s", best["url"])
-    validation = validate_media_url(best["url"], referer=showvideo_url)
+    validation = validate_media_url(best["url"], referer=referer)
     result["validation"] = validation
     result["steps"].append({"step": "validate", "status": "ok" if validation["valid"] else "invalid", "detail": validation})
 
@@ -456,7 +561,7 @@ def resolve_and_download(
 
     # Step 7: download
     ext = best["extension"] if best["extension"] else ".mp4"
-    dest_filename = f"{match_slug}_livetv_001{ext}"
+    dest_filename = f"{match_slug}_livetv_{sequence_num:03d}{ext}"
     dest_path = output_dir / dest_filename
 
     if dest_path.exists() and not force:
@@ -470,7 +575,7 @@ def resolve_and_download(
         dl_result = download_hls_via_ffmpeg(best["url"], dest_path)
     else:
         logger.info("Downloading: %s", best["url"])
-        dl_result = download_media(best["url"], dest_path, referer=showvideo_url)
+        dl_result = download_media(best["url"], dest_path, referer=referer)
 
     result["download"] = dl_result
     result["steps"].append({"step": "download", "status": "ok" if dl_result["success"] else "failed"})

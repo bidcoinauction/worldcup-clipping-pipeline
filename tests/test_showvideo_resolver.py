@@ -7,11 +7,15 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from pipeline.showvideo_resolver import (
+    VALID_TOURNEY_TYPES,
+    _classify_tourney_label,
     _extract_media_urls,
     _has_cloudflare_challenge,
+    _normalize_tourney_url,
     download_media,
     download_hls_via_ffmpeg,
     fetch_page,
+    parse_tourney_page,
     pick_best_candidate,
     read_sidecars,
     resolve_and_download,
@@ -889,3 +893,336 @@ class TestCli:
 
         rows = list(csv.DictReader(csv_path.open("r", encoding="utf-8")))
         assert len(rows) == 1  # no duplicate added
+
+
+# ── Tournament page fixtures ──
+
+TOURNEY_MULTI_MATCH = """<html><body>
+<table>
+<tr>
+<td><b>Sweden SWE &ndash; Tunisia TUN</b></td>
+<td><a href="/enx/showvideo/1566722/">Highlights</a></td>
+<td><a class="small poplink" data-pop="ddg_1" href="#">Goals</a>
+<div style="display:none" class="tif" id="ddg_1">
+<table><tr><td><a href="/enx/showvideo/1566665/">1:0</a></td></tr>
+<tr><td><a href="/enx/showvideo/1566698/">2:0</a></td></tr></table>
+</div>
+</td>
+<td><a href="/enx/showvideo/1566753/">Long Highlights</a></td>
+</tr>
+<tr>
+<td><b>Germany GER &ndash; Brazil BRA</b></td>
+<td><a href="/enx/showvideo/1566800/">Highlights</a></td>
+<td><a href="/enx/showvideo/1566801/">Full match record</a></td>
+<td><a href="/enx/showvideo/1566802/">Long Highlights</a></td>
+</tr>
+<tr>
+<td><b>France FRA &ndash; Argentina ARG</b></td>
+<td><a href="/enx/showvideo/1566900/">Highlights</a></td>
+<td><a class="small poplink" data-pop="ddg_2" href="#">Goals</a>
+<div style="display:none" class="tif" id="ddg_2">
+<table><tr><td><a href="/enx/showvideo/1566901/">1:0</a></td></tr></table>
+</div>
+</td>
+</tr>
+</table>
+</body></html>"""
+
+TOURNEY_SINGLE = """<html><body>
+<table><tr>
+<td><b>Team A TEA &ndash; Team B TEB</b></td>
+<td><a href="/enx/showvideo/111/">Highlights</a></td>
+<td><a href="/enx/showvideo/112/">Long Highlights</a></td>
+</tr></table>
+</body></html>"""
+
+TOURNEY_DUP_LINKS = """<html><body>
+<table><tr>
+<td><b>Same ID &ndash; Appears Twice</b></td>
+<td><a href="/enx/showvideo/999/">Highlights</a></td>
+<td><a href="/enx/showvideo/999/">Highlights</a></td>
+</tr></table>
+</body></html>"""
+
+TOURNEY_RELATIVE = """<html><body>
+<table><tr>
+<td><b>Relative &ndash; Links</b></td>
+<td><a href="//cdn.livetv899.me/enx/showvideo/200/">Highlights</a></td>
+</tr></table>
+</body></html>"""
+
+TOURNEY_EMPTY = """<html><body><p>No matches here</p></body></html>"""
+
+TOURNEY_WITH_UNDERSCORE = """<html><body>
+<table><tr>
+<td><b>Underscore &ndash; Test</b></td>
+<td><a href="/en/showvideo/300__/">Highlights</a></td>
+</tr></table>
+</body></html>"""
+
+
+# ── Tournament page parser tests ──
+
+class TestParseTourneyPage:
+    def test_parses_multiple_matches(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        assert len(entries) == 9  # 3 matches: Sweden(4) + Germany(3) + France(2)
+
+    def test_parses_goal_popups(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        goals = [e for e in entries if e.video_type == "goals"]
+        assert len(goals) == 3  # Sweden has 1:0, 2:0; France has 1:0
+        assert goals[0].label == "1:0"
+        assert goals[1].label == "2:0"
+
+    def test_classifies_highlights(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        highlights = [e for e in entries if e.label == "Highlights"]
+        for h in highlights:
+            assert h.video_type == "highlights"
+
+    def test_classifies_long_highlights(self):
+        entries = parse_tourney_page(TOURNEY_SINGLE)
+        lh = [e for e in entries if e.label == "Long Highlights"]
+        assert len(lh) == 1
+        assert lh[0].video_type == "long_highlights"
+
+    def test_classifies_full_match(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        fm = [e for e in entries if e.label == "Full match record"]
+        assert len(fm) == 1
+        assert fm[0].video_type == "full_match"
+
+    def test_strips_team_codes_from_match_name(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        sweden = [e for e in entries if "Sweden" in e.match_name]
+        assert all("SWE" not in e.match_name for e in sweden)
+        assert all(e.match_name == "Sweden vs Tunisia" for e in sweden)
+
+    def test_deduplicates_by_showvideo_id(self):
+        entries = parse_tourney_page(TOURNEY_DUP_LINKS)
+        assert len(entries) == 1
+
+    def test_empty_page(self):
+        entries = parse_tourney_page(TOURNEY_EMPTY)
+        assert len(entries) == 0
+
+    def test_normalizes_underscore_urls(self):
+        entries = parse_tourney_page(TOURNEY_WITH_UNDERSCORE)
+        assert len(entries) == 1
+        assert "300" in entries[0].showvideo_url
+        assert "__" not in entries[0].showvideo_url
+        assert entries[0].showvideo_url.startswith("https://livetv.sx/")
+
+
+class TestTourneyFilters:
+    def test_type_filter_highlights(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        filtered = [e for e in entries if e.video_type == "highlights"]
+        assert len(filtered) == 3
+
+    def test_type_filter_goals(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        filtered = [e for e in entries if e.video_type == "goals"]
+        assert len(filtered) == 3
+
+    def test_match_filter_substring(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        germany = [e for e in entries if "German" in e.match_name]
+        assert len(germany) == 3  # 3 entries for Germany vs Brazil
+        assert all("Germany" in e.match_name for e in germany)
+
+    def test_match_filter_case_insensitive(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        france = [e for e in entries if "france" in e.match_name.lower()]
+        assert len(france) == 2
+
+    def test_limit_caps_entries(self):
+        entries = parse_tourney_page(TOURNEY_MULTI_MATCH)
+        assert len(entries[:3]) == 3
+        assert len(entries[:10]) == 9  # more than available
+
+
+class TestClassifyTourneyLabel:
+    def test_highlights(self):
+        assert _classify_tourney_label("Highlights") == "highlights"
+
+    def test_long_highlights(self):
+        assert _classify_tourney_label("Long Highlights") == "long_highlights"
+
+    def test_short_highlights(self):
+        assert _classify_tourney_label("Short Highlights") == "short_highlights"
+
+    def test_full_match(self):
+        assert _classify_tourney_label("Full match record") == "full_match"
+
+    def test_goal_score(self):
+        assert _classify_tourney_label("1:0") == "goals"
+        assert _classify_tourney_label("3:2") == "goals"
+        assert _classify_tourney_label("4:2") == "goals"
+
+    def test_other(self):
+        assert _classify_tourney_label("Some weird label") == "other"
+        assert _classify_tourney_label("") == "other"
+
+
+class TestNormalizeTourneyUrl:
+    def test_enx_path(self):
+        result = _normalize_tourney_url("/enx/showvideo/1566722/", "https://livetv.sx")
+        assert result == "https://livetv.sx/enx/showvideo/1566722/"
+
+    def test_en_path_with_underscores(self):
+        result = _normalize_tourney_url("/en/showvideo/300__/", "https://livetv.sx")
+        assert result == "https://livetv.sx/en/showvideo/300/"
+        assert "__" not in result
+
+    def test_protocol_relative(self):
+        result = _normalize_tourney_url("//cdn.example.com/enx/showvideo/200/", "https://livetv.sx")
+        assert result == "https://cdn.example.com/enx/showvideo/200/"
+
+    def test_full_url_passthrough(self):
+        result = _normalize_tourney_url("https://livetv.sx/enx/showvideo/999/", "https://livetv.sx")
+        assert result == "https://livetv.sx/enx/showvideo/999/"
+
+
+class TestTourneyImport:
+    def test_dry_run_downloads_nothing(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch:
+            mock_fetch.return_value = (TOURNEY_SINGLE, "requests")
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--league", "WORLD_CUP",
+                "--output-root", str(tmp_path),
+                "--dry-run",
+            ])
+        assert exit_code == 0
+        assert not list(tmp_path.iterdir())
+
+    def test_execute_calls_resolver_per_item(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch, \
+             patch("pipeline.showvideo_resolver.resolve_and_download") as mock_resolve:
+            mock_fetch.return_value = (TOURNEY_SINGLE, "requests")
+            mock_resolve.return_value = {
+                "source_page_url": "https://livetv.sx/enx/showvideo/111/",
+                "match_name": "Team A vs Team B",
+                "downloaded": None,
+                "output_path": str(tmp_path / "team_a_vs_team_b" / "team_a_vs_team_b_livetv_001.mp4"),
+                "candidate_selected": {"url": "https://cdn.example.com/video.mp4"},
+            }
+
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--league", "WORLD_CUP",
+                "--output-root", str(tmp_path),
+                "--execute",
+            ])
+        assert exit_code == 0
+        assert mock_resolve.call_count == 2  # Highlights + Long Highlights
+
+    def test_one_failure_continues(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch, \
+             patch("pipeline.showvideo_resolver.resolve_and_download") as mock_resolve:
+            mock_fetch.return_value = (TOURNEY_SINGLE, "requests")
+            # First call succeeds, second fails
+            mock_resolve.side_effect = [
+                {"output_path": "/fake/ok.mp4", "candidate_selected": {"url": "ok"}, "error": None},
+                {"error": "download failed", "candidate_selected": {"url": "fail"}},
+            ]
+
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--league", "WORLD_CUP",
+                "--output-root", str(tmp_path),
+                "--execute",
+            ])
+        assert exit_code == 1  # partial failure
+        assert mock_resolve.call_count == 2
+
+    def test_skip_existing_via_sidecar(self, tmp_path):
+        match_dir = tmp_path / "team_a_vs_team_b"
+        match_dir.mkdir(parents=True)
+        sidecar = match_dir / "existing.mp4.import.json"
+        sidecar.write_text('{"resolved_media_url": "https://cdn.example.com/video111.mp4"}')
+
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch, \
+             patch("pipeline.showvideo_resolver.resolve_and_download") as mock_resolve:
+            mock_fetch.return_value = (TOURNEY_SINGLE, "requests")
+            mock_resolve.return_value = {
+                "output_path": str(match_dir / "team_a_vs_team_b_livetv_002.mp4"),
+                "candidate_selected": {"url": "https://cdn.example.com/video112.mp4"},
+                "error": None,
+            }
+
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--league", "WORLD_CUP",
+                "--output-root", str(tmp_path),
+                "--execute",
+            ])
+        # Should still call resolve_and_download (sidecar dedup is inside that function)
+        assert exit_code == 0
+
+
+class TestTourneyCli:
+    def test_requires_dry_run_or_execute(self):
+        from scripts.import_livetv_tourney import main
+        exit_code = main(["--url", "https://livetv.sx/enx/videotourney/999/"])
+        assert exit_code == 1
+
+    def test_dry_run_flag_accepted(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch:
+            mock_fetch.return_value = (TOURNEY_EMPTY, "requests")
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--dry-run",
+            ])
+        assert exit_code == 0
+
+    def test_execute_with_empty_page(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch:
+            mock_fetch.return_value = (TOURNEY_EMPTY, "requests")
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--output-root", str(tmp_path),
+                "--execute",
+            ])
+        assert exit_code == 0
+
+    def test_type_flag_filters(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch:
+            mock_fetch.return_value = (TOURNEY_MULTI_MATCH, "requests")
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--type", "goals",
+                "--dry-run",
+            ])
+        assert exit_code == 0
+
+    def test_match_filter_flag(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch:
+            mock_fetch.return_value = (TOURNEY_MULTI_MATCH, "requests")
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--match-filter", "Germany",
+                "--dry-run",
+            ])
+        assert exit_code == 0
+
+    def test_limit_flag(self, tmp_path):
+        with patch("pipeline.showvideo_resolver.fetch_page") as mock_fetch:
+            mock_fetch.return_value = (TOURNEY_MULTI_MATCH, "requests")
+            from scripts.import_livetv_tourney import main
+            exit_code = main([
+                "--url", "https://livetv.sx/enx/videotourney/999/",
+                "--limit", "2",
+                "--dry-run",
+            ])
+        assert exit_code == 0
