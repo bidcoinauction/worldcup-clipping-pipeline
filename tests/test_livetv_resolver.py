@@ -233,7 +233,7 @@ def test_rank_hashes_scores_are_ints():
     rows = parse_stream_rows(SAMPLE_HTML)
     ranked = rank_hashes(rows)
     for r in ranked:
-        assert isinstance(r["score"], int | float)
+        assert isinstance(r["score"], (int, float))
 
 
 # ── check_availability_windows ──

@@ -128,6 +128,6 @@ Manifest sources
 After code changes, run:
 
 ```bash
-python scripts/validate_data.py
+python scripts/validate_data.py  # or python3 scripts/validate_data.py on systems without a python alias
 pytest
 ```

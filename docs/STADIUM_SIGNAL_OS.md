@@ -123,7 +123,7 @@ See `data/worldcup_2026_schedule.csv` for all 104 match schedules.
 ## Validation
 
 ```bash
-python scripts/validate_data.py
+python scripts/validate_data.py  # or python3 scripts/validate_data.py if python is unavailable
 pytest
 ```
 

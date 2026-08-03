@@ -1,6 +1,8 @@
 from unittest.mock import MagicMock, patch, call
 from pathlib import Path
 
+import pytest
+
 from pipeline.utils import get_video_duration, timestamp_to_seconds
 from scripts.export_clips_ffmpeg import _micro_slice, _validate_and_clamp, export_clip
 
@@ -180,7 +182,11 @@ def test_validate_clamp_within_bounds():
 
 
 def test_get_video_duration_returns_float():
-    dur = get_video_duration(Path("FootballArchive/SAMPLES/psg_arsenal_2min.mp4"))
+    sample = Path("FootballArchive/SAMPLES/psg_arsenal_2min.mp4")
+    if not sample.exists():
+        pytest.skip(f"local media sample missing: {sample}")
+
+    dur = get_video_duration(sample)
     assert isinstance(dur, float)
     assert dur > 0
     assert abs(dur - 120.0) < 1.0

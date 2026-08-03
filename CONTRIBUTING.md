@@ -1,21 +1,22 @@
 # Contributing
 
-Thanks for helping with the GSMG.io 5 BTC puzzle effort!
+Thanks for helping improve the Stadium Signal World Cup clipping pipeline.
 
 ## How to contribute
 
-- **Share results clearly.** When adding new scripts or data, document the intent, inputs, and outputs.
-- **Keep artifacts organized.** Prefer adding new analysis under descriptive filenames and update the relevant `.md` log if it changes the overall progress.
-- **Avoid sensitive data.** Do **not** commit private keys, real seed phrases, or credentials. If you think something sensitive belongs in the repo, open an issue to discuss instead.
-- **Prefer ambiguity-reducing facts.** For Level 5, prioritize authoritative clarifications and tests that rule out whole hypothesis branches before adding new brute-force variants.
+- **Preserve the World Cup reference deployment.** Keep existing match, manifest, archive, and validation workflows working unless a change explicitly migrates them.
+- **Keep changes scoped.** Prefer small script, config, data, or test changes over broad rewrites.
+- **Document intent, inputs, and outputs.** New scripts and data files should be understandable without reading a conversation log.
+- **Avoid sensitive data.** Do not commit API keys, access tokens, private media credentials, session files, or client-provided secrets.
+- **Separate generated artifacts from source.** Large video/audio outputs belong in `FootballArchive/` or another ignored archive root, not in Git.
 
 ## Suggested workflow
 
-1. Review the latest status in `GSMG_Puzzle_README.md`.
-2. For Level 5 work, review `LEVEL5_HYPOTHESIS_RESET.md` and state which ambiguity your change addresses.
-3. Add or update scripts in the root (or under `manifest/` if you are curating a stable snapshot).
-4. Summarize findings in the appropriate log file.
+1. Review `AGENTS.md` and `README.md` for the current operating workflow.
+2. Run `python3 scripts/validate_data.py` and `pytest` before proposing a commit.
+3. If a script requires local media, ffmpeg, API credentials, or network access, document that requirement in the change.
+4. Keep business architecture and pilot planning grounded in the verified repository state.
 
 ## Data integrity
 
-When updating CSVs or logs, keep previous versions unless you are explicitly replacing a file. If replacing, note why in your commit message or in the related log.
+When updating CSVs, manifests, or research files, preserve required columns and references. Run the data validator after changes and explain any intentional schema or fixture changes.

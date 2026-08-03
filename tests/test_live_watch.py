@@ -189,39 +189,37 @@ def test_transcribe_segment_extracts_and_transcribes(tmp_path):
     mock_whisper_module.transcribe = MagicMock(return_value=(
         "hello world", [{"start": 0.0, "end": 1.0, "text": "hello"}]
     ))
-    import sys as _sys
-    _sys.modules["pipeline.whisper_transcriber"] = mock_whisper_module
 
-    with patch("scripts.live_watch.subprocess.run") as mock_ffmpeg:
-        seg = tmp_path / "segments" / "match_S0001.ts"
-        seg.parent.mkdir()
-        seg.write_text("video data")
-        status = {"match_id": "match", "segment_number": 1, "duration_seconds": 900.0}
-        transcript_dir = tmp_path / "transcripts" / "match_S0001"
+    with patch.dict("sys.modules", {"pipeline.whisper_transcriber": mock_whisper_module}):
+        with patch("scripts.live_watch.subprocess.run") as mock_ffmpeg:
+            seg = tmp_path / "segments" / "match_S0001.ts"
+            seg.parent.mkdir()
+            seg.write_text("video data")
+            status = {"match_id": "match", "segment_number": 1, "duration_seconds": 900.0}
+            transcript_dir = tmp_path / "transcripts" / "match_S0001"
 
-        txt, ts, md = transcribe_segment(seg, status, transcript_dir, "base")
+            txt, ts, md = transcribe_segment(seg, status, transcript_dir, "base")
 
-        assert txt.exists()
-        assert ts.exists()
-        assert md.exists()
-        mock_ffmpeg.assert_called_once()
-        mock_whisper_module.transcribe.assert_called_once_with(ANY, model_size="base")
+            assert txt.exists()
+            assert ts.exists()
+            assert md.exists()
+            mock_ffmpeg.assert_called_once()
+            mock_whisper_module.transcribe.assert_called_once_with(ANY, model_size="base")
 
 
 def test_transcribe_segment_cleans_up_audio(tmp_path):
     mock_whisper_module = MagicMock()
     mock_whisper_module.transcribe = MagicMock(return_value=("x", []))
-    import sys as _sys
-    _sys.modules["pipeline.whisper_transcriber"] = mock_whisper_module
 
-    with patch("scripts.live_watch.subprocess.run") as mock_ffmpeg:
-        seg = tmp_path / "match_S0001.ts"
-        seg.write_text("x")
-        status = {"match_id": "m", "segment_number": 1}
-        transcript_dir = tmp_path / "out"
-        transcribe_segment(seg, status, transcript_dir, "base")
-        audio_files = list(transcript_dir.glob("*_audio.*"))
-        assert len(audio_files) == 0
+    with patch.dict("sys.modules", {"pipeline.whisper_transcriber": mock_whisper_module}):
+        with patch("scripts.live_watch.subprocess.run") as mock_ffmpeg:
+            seg = tmp_path / "match_S0001.ts"
+            seg.write_text("x")
+            status = {"match_id": "m", "segment_number": 1}
+            transcript_dir = tmp_path / "out"
+            transcribe_segment(seg, status, transcript_dir, "base")
+            audio_files = list(transcript_dir.glob("*_audio.*"))
+            assert len(audio_files) == 0
 
 
 def test_transcribe_segment_dry_run(tmp_path, capsys):

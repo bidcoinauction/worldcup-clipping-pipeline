@@ -1,8 +1,10 @@
 openai
+anthropic
 python-dotenv
 tqdm
 rich
 pytest
 faster-whisper
 requests
+urllib3
 icalendar
