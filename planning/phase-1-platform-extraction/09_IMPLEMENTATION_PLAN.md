@@ -73,11 +73,25 @@ These are **not** extracted and stay on the World Cup case study:
 
 > "Implement the Phase 1 first slice: add a validated, additive config loader that reads project identity, taxonomy, platform, and prompt-selection from `config/pipeline_config.json` (and optional env overrides), while preserving all existing keys and behavior. Keep the World Cup reference deployment intact: `python3 scripts/validate_data.py` and `pytest` must pass (baseline 541 passed, 1 skipped). Add tests for config validation, identity/taxonomy/platform resolution with World Cup defaults preserved, prompt-template path resolution, and archive-root resolution. Do not rename any file, key, path, or schema; do not add dependencies, auth, billing, dashboards, databases, queues, or multi-tenant logic."
 
+## Status — Phase 1 First Slice (Built)
+
+The first config-extraction slice is implemented and merged:
+
+- `pipeline/config_errors.py` — dedicated `ConfigurationError` used for all configuration failures.
+- `pipeline/config.py` — additive strict validation (`validate_config_dict`, `load_validated_config`) plus the legacy allowlist `KNOWN_LEGACY_KEYS`; all existing public accessors unchanged.
+- `pipeline/configurator.py` — structured resolution: project identity (`ACCOUNT_POSITIONING` kept as legacy fallback only), explicit taxonomy/profile registry, repo-relative template resolution, platform/output selection, and the canonical `resolve_archive_root`/`resolve_archive_path`.
+- `pipeline/stadium_signal.py` — `archive_root`/`archive_path` now delegate to the canonical resolver (smallest approved call-site update; other archive-path callers are unchanged for later slices).
+- `scripts/validate_config.py` — read-only config validator CLI (no network, no file mutation).
+- `config/examples/basketball.json` — non-production structured example for a second sport; never loaded by default.
+- Tests: `test_config_validation.py`, `test_configurator.py`, `test_validate_config.py`, `test_basketball_example.py`.
+
+Verification: `python3 scripts/validate_data.py` passes; `pytest` 570 passed, 1 skipped (baseline 541 passed / 1 skipped preserved); both `validate_config.py` fixtures pass; an intentionally invalid fixture exits nonzero with the complete field path and without file mutation.
+
 ## Gate Before Merge
 
 - `git diff --check` clean.
 - Validator + pytest pass.
-- No production code/test/config changed in Phase 1 (documentation-only).
+- World Cup reference deployment and all existing keys/behaviors preserved (additive only).
 
 ## Competitive Validation (ChatCut)
 

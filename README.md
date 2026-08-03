@@ -49,15 +49,31 @@ See `.env.example` for the supported variables:
 - `DEFAULT_WHISPER_MODEL`
 - `OLLAMA_URL`
 - `OLLAMA_MODEL`
-- `ACCOUNT_POSITIONING`
+- `ACCOUNT_POSITIONING` (legacy fallback only; ignored when `account_positioning` is set in `config/pipeline_config.json`)
 
 Do not commit `.env` or files under `secrets/`.
+
+## Configuration
+
+`config/pipeline_config.json` is the reference deployment config (World Cup football). It is read by `pipeline/config.py` (legacy accessors) and validated by `pipeline/config.py:validate_config_dict`. Unknown top-level keys are rejected with their full field path instead of being silently ignored.
+
+The additive structured layer in `pipeline/configurator.py` resolves project identity, taxonomy, templates, platforms, and the canonical archive root (`FOOTBALL_ARCHIVE_ROOT`, falling back to `C:\FootballArchive` / `FootballArchive`). Unknown profile, taxonomy, or template selections raise `pipeline.config_errors.ConfigurationError`.
+
+`config/examples/basketball.json` is a **non-production example** proving the structured boundary for a second sport. It is never registered as a default profile and is not loaded at runtime.
+
+Validate any configuration file (read-only, no network, no file mutation):
+
+```bash
+python3 scripts/validate_config.py                      # reference config
+python3 scripts/validate_config.py config/examples/basketball.json
+```
 
 ## Validation
 
 ```bash
 python3 scripts/validate_data.py
 pytest
+python3 scripts/validate_config.py config/pipeline_config.json
 ```
 
 Verified Phase 0 baseline on macOS:

@@ -2,6 +2,7 @@
 venv/
 .venv_py314_backup/
 .cache/
+.pytest_cache/
 .codex_tmp/
 __pycache__/
 *.pyc

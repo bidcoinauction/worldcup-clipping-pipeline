@@ -137,6 +137,18 @@ To decide whether a concept should be extracted (made reusable) or remain World 
 
 Extract when reusable across deployment types. Keep specialized when it is football or World Cup-specific.
 
+## Extraction Progress (Phase 1 — Configuration)
+
+Configuration is the first extracted boundary. It is **additive** — the World Cup reference deployment is preserved unchanged.
+
+- `pipeline/config_errors.py` — `ConfigurationError` for all configuration failures.
+- `pipeline/config.py` — strict validation (`validate_config_dict`, `load_validated_config`) over the legacy allowlist `KNOWN_LEGACY_KEYS`; existing accessors unchanged.
+- `pipeline/configurator.py` — structured project identity, explicit taxonomy registry, template resolution, platform/output selection, and canonical archive-root resolution.
+- `scripts/validate_config.py` — read-only validator (no network, no file mutation); exits nonzero with the full failing field path on invalid config.
+- `config/examples/basketball.json` — non-production structured example for a second sport; never auto-loaded.
+
+Reference contract rules 1-4 above determine what is extracted vs. kept. The basketball example exists only to prove the structured boundary; it is not selected by default.
+
 ## Anti-Patterns
 
 Avoid these in extraction work:

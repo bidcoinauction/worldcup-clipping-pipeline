@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable
 
+from .configurator import resolve_archive_path, resolve_archive_root
 from .utils import ROOT, timestamp_to_seconds
 
 
@@ -637,14 +638,11 @@ def _score_from_scores(match_id: str, root: Path = ROOT) -> float:
 
 
 def archive_root() -> str:
-    return os.environ.get("FOOTBALL_ARCHIVE_ROOT") or ("C:\\FootballArchive" if os.name == "nt" else "FootballArchive")
+    return resolve_archive_root()
 
 
 def archive_path(*parts: str) -> str:
-    root = archive_root()
-    if "\\" in root or ":" in root:
-        return str(PureWindowsPath(root, *parts))
-    return str(Path(root, *parts))
+    return resolve_archive_path(*parts)
 
 
 def ffmpeg_commands(root: Path = ROOT, *, overwrite: bool = False) -> list[str]:

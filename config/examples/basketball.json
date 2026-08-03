@@ -1,0 +1,37 @@
+{
+  "_note": "NON-PRODUCTION EXAMPLE. This profile is not registered in the built-in taxonomy registry and is never loaded by default. It exists only to prove the structured configuration boundary for a second sport. Validated via: python3 scripts/validate_config.py config/examples/basketball.json",
+  "name": "basketball",
+  "project": {
+    "name": "Basketball Archive",
+    "positioning": "Global hoops for new American fans"
+  },
+  "taxonomies": {
+    "match_kinds": [
+      "FINAL_QUARTER",
+      "OVERTIME",
+      "RIVALRY",
+      "PLAYOFF",
+      "ALL_STAR"
+    ],
+    "emotional_kinds": [
+      "BUZZER_BEATER",
+      "COLLAPSE",
+      "COMEBACK",
+      "STAR_POWER",
+      "MOMENTUM"
+    ]
+  },
+  "templates": {
+    "prompt": "prompts/basketball_detection_prompt.txt",
+    "assets": "prompts/basketball_thumbnail_prompt.txt"
+  },
+  "platforms": [
+    "TikTok",
+    "Reels",
+    "Shorts"
+  ],
+  "outputs": {
+    "default_format": "story",
+    "directory": "FootballArchive"
+  }
+}
