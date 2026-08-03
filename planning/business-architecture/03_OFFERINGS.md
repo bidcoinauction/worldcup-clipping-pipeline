@@ -233,3 +233,13 @@ Best for:
 Current repo support:
 
 - Supported by audit and blueprint documentation, not by code.
+
+## Competitive Validation
+
+ChatCut provides conversational per-piece editing; our offer is recurring managed content production. The competitive analysis does not change the offering set. It clarifies that:
+
+- Offers that are just per-piece editing (e.g., a "Creator Automation" offer that competes head-on with tools like ChatCut) are vulnerable and should not be the wedge.
+- Offers that are **managed, recurring, and operationally grounded** (Game Highlight Production, Social Content Operations, Managed Content Production) are the defensible core.
+- Commodity "edit a single video" functionality is not sold as our differentiator.
+
+The first paid pilot should be a managed, operational offer (sports/highlight production), per `RELEASE_READINESS.md` and `planning/phase-0-verification/07_IMPLEMENTATION_PLAN.md`. See `planning/competitive-analysis/02_DIFFERENTIATION.md`.

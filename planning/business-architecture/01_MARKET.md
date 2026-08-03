@@ -81,3 +81,13 @@ Less suitable early markets:
 - Clients expecting fully automated viral prediction.
 - Clients without rights to their source footage.
 - Clients needing direct publishing and analytics on day one.
+
+## Competitive Validation
+
+ChatCut is a conversational AI video editor delivered as a ChatGPT plugin, aimed at individual creator editing tasks (talking-head edits, long-to-short, captions, filler removal, motion graphics). It does not change our market thesis; it confirms it.
+
+- The individual, creator-facing editing space is where product-for-feature video editing competition lives.
+- Those editing capabilities (captions, filler removal, generic clipping, aspect conversion) are commodity, documented in `planning/competitive-analysis/`.
+- Our defensible position is **managed media operations** for organizations producing recurring live or long-form content, with sports/events as the proven wedge.
+
+No ChatCut capabilities are assumed to exist in this repository. See `planning/competitive-analysis/02_DIFFERENTIATION.md`.

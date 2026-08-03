@@ -136,3 +136,14 @@ Definition of done:
 ## Roadmap Guardrail
 
 Do not build platform features only because they are standard in software products. Build them when they remove repeated operational pain or unlock paid work.
+
+## Competitive Validation (ChatCut)
+
+ChatCut does not change roadmap priorities. It confirms them.
+
+- Per-piece conversational editing (a general talking-head editor, full timeline editor, ChatGPT-plugin editing) is **not prioritized**. See `planning/competitive-analysis/05_ROADMAP_IMPLICATIONS.md`.
+- The roadmap remains anchored on the managed-pilot path (Phase 1-2) and operational productization (Phase 3-4), not on editing-product features.
+- Immediate items (reference-deployment preservation, configuration extraction, taxonomy/prompt selection, path/archive config, safer FFmpeg, operator errors, pilot runbook, rights/brand intake, job log, human review, manual delivery) all remain KEEP.
+- Chat-specific editing features are moved later or removed (do not pursue), consistent with the product guardrails in `planning/competitive-analysis/04_PRODUCT_GUARDRAILS.md`.
+
+No roadmap pivot is required. Rationale for every item is in `planning/competitive-analysis/05_ROADMAP_IMPLICATIONS.md`.

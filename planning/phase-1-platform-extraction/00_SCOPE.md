@@ -54,3 +54,13 @@ Use the **Extraction Decision Test** in `docs/REFERENCE_DEPLOYMENT.md`. If a con
 - Every future change has a documented decision record for what is extracted vs specialized.
 - The proposed first implementation slice is concrete, repo-grounded, and does not disturb the reference deployment.
 - `git diff --check` passes; no production code, tests, or config values changed.
+
+## Competitive Boundary (ChatCut)
+
+The competitive analysis (`planning/competitive-analysis/`) confirms Phase 1 scope:
+
+- Phase 1 extracts **operational and configurable** concepts (identity, taxonomy, prompt selection, paths) — not editing features.
+- Editing-product capabilities (talking-head editing, timeline editor, motion graphics, ChatGPT-plugin editing) are out of scope for the platform and are not extracted into config.
+- The second-deployment model (basketball) validates operational reuse; it is not a ChatCut-style editor.
+
+This boundary does not change the Phase 1 deliverables or the proposed first slice.

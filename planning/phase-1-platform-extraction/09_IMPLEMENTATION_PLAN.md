@@ -78,3 +78,11 @@ These are **not** extracted and stay on the World Cup case study:
 - `git diff --check` clean.
 - Validator + pytest pass.
 - No production code/test/config changed in Phase 1 (documentation-only).
+
+## Competitive Validation (ChatCut)
+
+The competitive analysis (`planning/competitive-analysis/`) does not change this implementation plan. It confirms the first slice should extract **operational config** (identity, taxonomy, platform, prompt selection, archive roots), not editing features.
+
+- No editing-product capabilities are added to the slice.
+- Commodity editing features (captions, filler removal, motion graphics) remain out of scope and are delegated or deferred per `planning/competitive-analysis/03_BUILD_BUY_PARTNER.md`.
+- The recommended next build prompt remains the config-extraction prompt in this document; it is unchanged by the competitive benchmark.

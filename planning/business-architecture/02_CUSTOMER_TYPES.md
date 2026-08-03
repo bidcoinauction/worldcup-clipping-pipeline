@@ -197,3 +197,9 @@ Main gaps:
 - Generic archive metadata.
 - Search and indexing.
 - Rights provenance.
+
+## Competitive Validation
+
+ChatCut targets individual creators and small editing tasks, which corresponds to the "Streamers And Creators" and one-off segments in this document. Those segments are the least defensible for us and are not the pilot target.
+
+The competitive analysis does not change which customer types we serve. It reinforces that **organizations with recurring content** (sports leagues, teams, tournaments, events) are the defensible wedge, while **individual one-off creators** are better served by tools like ChatCut and are not our target. See `planning/competitive-analysis/01_CATEGORY_MAP.md`.

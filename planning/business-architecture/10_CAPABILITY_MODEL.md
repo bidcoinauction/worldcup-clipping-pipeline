@@ -256,3 +256,14 @@ Tradeoff:
 - Customer branding is data, not code.
 - Workflows should be composable.
 - Case studies are deployments, not products.
+
+## Competitive Validation (ChatCut)
+
+ChatCut covers commodity editing capabilities (captions, filler removal, clipping, vertical export, motion graphics). Our capability model deliberately **owns the operational layer** — Analyze, Extract, Review, Approve, Deliver, Measure, Archive — and treats Transform (captions, exports) as replaceable components.
+
+- Capture: keep as a thin adapter; local-file intake is the pilot default.
+- Transform: do not build an NLE or motion-graphics marketplace; integrate mature tools.
+- Review/Approve/Measure/Archive: these are our defensible capabilities and should remain owned.
+- The capability map in `planning/competitive-analysis/03_BUILD_BUY_PARTNER.md` assigns each capability a BUILD/BUY/PARTNER/INTEGRATE/DEFER/DO-NOT-PURSUE verdict.
+
+This confirms, rather than changes, the capability model.

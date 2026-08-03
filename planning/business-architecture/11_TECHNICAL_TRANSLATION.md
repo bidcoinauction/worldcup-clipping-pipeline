@@ -112,3 +112,11 @@ pytest
 ```
 
 If a future phase adds linting, formatting, type checking, or CI, document those commands here.
+
+## Competitive Validation (ChatCut)
+
+ChatCut operates in the per-piece editing category. It does not change the technical translation. It reinforces that we should not build editor features and should instead treat external editors as downstream destinations.
+
+- The likely future technical shape stays focused on configurable workflows, brand systems, source manifests, and provenance — not on an NLE.
+- Commodity editing (captions, filler removal, clipping, export) can be delegated to mature external tools rather than built, so those tools become destinations we hand off to. See `planning/competitive-analysis/03_BUILD_BUY_PARTNER.md`.
+- The first technical boundary and likely files to modify later in this document remain correct; ChatCut adds no new required technical surface.
