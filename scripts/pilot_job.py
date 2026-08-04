@@ -38,9 +38,14 @@ from pipeline.pilot import (  # noqa: E402
     JobPathError,
     JobRecordError,
     OutputManifestError,
+    PipelineRunError,
     confirm_delivery,
     create_job,
+    create_pipeline_run,
+    finish_pipeline_run,
     generate_delivery_package,
+    list_pipeline_runs,
+    pipeline_run_summary,
     read_history,
     read_job,
     list_delivery_packages,
@@ -53,7 +58,10 @@ from pipeline.pilot import (  # noqa: E402
     show_job,
     show_delivery_package,
     show_output_manifest,
+    show_pipeline_run,
+    start_pipeline_run,
     transition_job,
+    update_pipeline_stage,
     validate_delivery_package,
     validate_output_manifest,
     validate_intake,
@@ -267,7 +275,8 @@ def _cmd_outputs_list(args: argparse.Namespace) -> int:
         print(f"No output manifests registered for {args.job_id}.")
         return 0
     for row in rows:
-        print(f"{row['manifest_id']}\trevision={row['revision']}\toutputs={row['output_count']}")
+        run = f"\trun={row['run_id']}" if row.get("run_id") else ""
+        print(f"{row['manifest_id']}\trevision={row['revision']}\toutputs={row['output_count']}{run}")
     return 0
 
 
@@ -276,6 +285,8 @@ def _cmd_outputs_show(args: argparse.Namespace) -> int:
     print(f"OUTPUT MANIFEST: {data['manifest_id']}")
     print(f"  job: {data['job_id']}")
     print(f"  revision: {data['revision']}")
+    if data.get("run_id"):
+        print(f"  run_id: {data['run_id']}")
     print(f"  outputs: {data['output_count']}")
     for output in data["outputs"]:
         include = "include" if output["include_in_delivery"] else "exclude"
@@ -380,7 +391,8 @@ def _cmd_delivery_list(args: argparse.Namespace) -> int:
         print(f"No delivery packages recorded for {args.job_id}.")
         return 0
     for row in rows:
-        print(f"{row['package_id']}\trevision={row['package_revision']}\tdeliverables={row['deliverable_count']}\tcreated={row['created_at']}")
+        runs = ",".join(row.get("represented_run_ids", [])) or "-"
+        print(f"{row['package_id']}\trevision={row['package_revision']}\tdeliverables={row['deliverable_count']}\truns={runs}\tcreated={row['created_at']}")
     return 0
 
 
@@ -396,8 +408,10 @@ def _cmd_delivery_show(args: argparse.Namespace) -> int:
     print(f"  delivery_method: {data['delivery_method']}")
     print(f"  delivery_destination: {data['delivery_destination']}")
     print(f"  deliverables: {data['deliverable_count']}")
+    print(f"  represented_run_ids: {', '.join(data.get('represented_run_ids', [])) or '-'}")
     for deliverable in data["deliverables"]:
-        print(f"    {deliverable['delivery_sequence']} {deliverable['deliverable_id']} {deliverable['output_type']} {deliverable['platform']} {deliverable['filename']}")
+        run = deliverable.get("run_id") or "-"
+        print(f"    {deliverable['delivery_sequence']} {deliverable['deliverable_id']} {deliverable['output_type']} {deliverable['platform']} run={run} {deliverable['filename']}")
     return 0
 
 
@@ -435,6 +449,160 @@ def _cmd_delivery_confirm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_json_mapping(value: str | None, label: str) -> dict | None:
+    if not value:
+        return None
+    try:
+        data = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise JobRecordError(f"{label} must be valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise JobRecordError(f"{label} must be a JSON object")
+    return data
+
+
+def _cmd_runs_create(args: argparse.Namespace) -> int:
+    try:
+        result = create_pipeline_run(
+            args.job_id,
+            run_id=args.run_id,
+            operator=args.operator,
+            entry_point=args.entry_point,
+            command_args=args.command_arg or [],
+            manual_confirmed=args.manual_confirmed,
+            expected_job_revision=args.expected_job_revision,
+            working_directory=args.working_directory,
+            python_executable=args.python_executable,
+            dry_run=args.dry_run,
+            operator_notes=args.operator_notes,
+            host_platform=args.host_platform,
+            repository_commit=args.repository_commit,
+            repository_dirty=_parse_bool(args.repository_dirty) if args.repository_dirty is not None else None,
+            start_reason=args.start_reason,
+            recording_manifest=args.recording_manifest,
+            research_file=args.research_file,
+            match_id=args.match_id,
+            schedule_row=args.schedule_row,
+            models=_parse_json_mapping(args.models, "models"),
+            jobs_dir=args.jobs_dir,
+            intake_root=args.intake_root,
+        )
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    print(f"PIPELINE RUN CREATED: {result['run']['run_id']}")
+    print(f"  job: {result['run']['job_id']}")
+    print(f"  status: {result['run']['status']}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  run_revision: {result['run']['revision']}")
+    print(f"  run_path: {result['run_path']}")
+    return 0
+
+
+def _cmd_runs_start(args: argparse.Namespace) -> int:
+    try:
+        result = start_pipeline_run(
+            args.job_id, args.run_id, operator=args.operator, expected_job_revision=args.expected_job_revision,
+            expected_run_revision=args.expected_run_revision, stage=args.stage, jobs_dir=args.jobs_dir,
+            intake_root=args.intake_root,
+        )
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    print(f"PIPELINE RUN STARTED: {result['run']['run_id']}")
+    print(f"  status: {result['run']['status']}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  run_revision: {result['run']['revision']}")
+    return 0
+
+
+def _cmd_runs_stage(args: argparse.Namespace) -> int:
+    try:
+        result = update_pipeline_stage(
+            args.job_id, args.run_id, args.stage_id, status=args.status, operator=args.operator,
+            expected_job_revision=args.expected_job_revision, expected_run_revision=args.expected_run_revision,
+            command_ref=args.command_ref, function_ref=args.function_ref, inputs=args.input or [], outputs=args.output or [],
+            log_reference=args.log, error_category=args.error_category, error_summary=args.error_summary,
+            warnings=args.warning or [], metrics=_parse_json_mapping(args.metrics, "metrics"), notes=args.notes,
+            jobs_dir=args.jobs_dir,
+        )
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    print(f"PIPELINE STAGE UPDATED: {args.stage_id}")
+    print(f"  status: {args.status}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  run_revision: {result['run']['revision']}")
+    return 0
+
+
+def _cmd_runs_finish(args: argparse.Namespace) -> int:
+    try:
+        result = finish_pipeline_run(
+            args.job_id, args.run_id, status=args.status, operator=args.operator, summary=args.summary,
+            expected_job_revision=args.expected_job_revision, expected_run_revision=args.expected_run_revision,
+            failure_category=args.failure_category, failure_summary=args.failure_summary,
+            partial_success_explanation=args.partial_success_explanation, jobs_dir=args.jobs_dir,
+        )
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    print(f"PIPELINE RUN FINISHED: {result['run']['run_id']}")
+    print(f"  status: {result['run']['status']}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  run_revision: {result['run']['revision']}")
+    return 0
+
+
+def _cmd_runs_list(args: argparse.Namespace) -> int:
+    try:
+        rows = list_pipeline_runs(args.job_id, jobs_dir=args.jobs_dir)
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    if not rows:
+        print(f"No pipeline runs recorded for {args.job_id}.")
+        return 0
+    for row in rows:
+        print(f"{row['run_id']}\tstatus={row['status']}\trevision={row['revision']}\tentry_point={row['entry_point']}")
+    return 0
+
+
+def _cmd_runs_show(args: argparse.Namespace) -> int:
+    try:
+        data = show_pipeline_run(args.job_id, args.run_id, jobs_dir=args.jobs_dir)
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    print(f"PIPELINE RUN: {data['run_id']}")
+    print(f"  job: {data['job_id']}")
+    print(f"  status: {data['status']}")
+    print(f"  revision: {data['revision']}")
+    print(f"  entry_point: {data['entry_point']}")
+    for stage in data["stages"]:
+        print(f"    {stage['stage_id']} {stage['status']} outputs={stage['output_count']} warnings={stage['warning_count']}")
+    return 0
+
+
+def _cmd_runs_summary(args: argparse.Namespace) -> int:
+    try:
+        data = pipeline_run_summary(args.job_id, args.run_id, jobs_dir=args.jobs_dir)
+    except (PipelineRunError, JobRecordError, JobPathError) as exc:
+        _print_run_error(exc)
+        return 1
+    print(f"PIPELINE RUN SUMMARY: {data['run_id']}")
+    print(f"  status: {data['run_status']}")
+    print(f"  entry_point: {data['entry_point']}")
+    print(f"  duration_seconds: {data['duration_seconds']}")
+    print(f"  stage_counts: {json.dumps(data['stage_counts_by_status'], sort_keys=True)}")
+    print(f"  failed_stage: {data['failed_stage'] or '-'}")
+    print(f"  warning_count: {data['warning_count']}")
+    print(f"  registered_output_manifest_ids: {', '.join(data['registered_output_manifest_ids']) or '-'}")
+    print(f"  eligible_for_output_registration: {_yesno(data['eligible_for_output_registration'])}")
+    print(f"  revisions: job={data['job_revision']} run={data['run_revision']}")
+    return 0
+
+
 def _print_output_error(exc: OutputManifestError) -> None:
     print(f"ERROR: {exc}", file=sys.stderr)
     for issue in getattr(exc, "issues", [])[:20]:
@@ -442,6 +610,12 @@ def _print_output_error(exc: OutputManifestError) -> None:
 
 
 def _print_delivery_error(exc: Exception) -> None:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    for issue in getattr(exc, "issues", [])[:20]:
+        print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
+
+
+def _print_run_error(exc: Exception) -> None:
     print(f"ERROR: {exc}", file=sys.stderr)
     for issue in getattr(exc, "issues", [])[:20]:
         print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
@@ -619,6 +793,97 @@ def main(argv: list[str] | None = None) -> int:
     delivery_confirm.add_argument("--jobs-dir", default=None, help="Job-record directory")
     delivery_confirm.add_argument("--intake-root", default=None, help="Allowed source intake root")
     delivery_confirm.set_defaults(func=_cmd_delivery_confirm)
+
+    runs_p = subparsers.add_parser("runs", help="Record manual pipeline execution attempts and stage provenance.")
+    runs_sub = runs_p.add_subparsers(dest="runs_command", required=True)
+
+    runs_create = runs_sub.add_parser("create", help="Create a planned manual pipeline-run record.")
+    runs_create.add_argument("job_id", help="Job identifier")
+    runs_create.add_argument("--run-id", required=True, help="Run identifier")
+    runs_create.add_argument("--operator", required=True, help="Operator identifier")
+    runs_create.add_argument("--entry-point", required=True, help="Recognized entry-point identifier")
+    runs_create.add_argument("--command-arg", action="append", default=[], help="Structured command argument; repeat for each argument")
+    runs_create.add_argument("--manual-confirmed", action="store_true", help="Confirm this is a record of manual execution only")
+    runs_create.add_argument("--expected-job-revision", type=int, default=None, help="Expected job revision")
+    runs_create.add_argument("--working-directory", default=None, help="Recorded working directory")
+    runs_create.add_argument("--python-executable", default=None, help="Recorded Python executable")
+    runs_create.add_argument("--dry-run", action="store_true", help="Record that the manual command used dry-run mode")
+    runs_create.add_argument("--operator-notes", default=None, help="Optional operator notes")
+    runs_create.add_argument("--host-platform", default=None, help="Optional host/platform summary")
+    runs_create.add_argument("--repository-commit", default=None, help="Optional repository commit")
+    runs_create.add_argument("--repository-dirty", default=None, help="Whether repository was dirty: yes/no")
+    runs_create.add_argument("--start-reason", default=None, help="Optional execution start reason")
+    runs_create.add_argument("--recording-manifest", default=None, help="Optional recording manifest path")
+    runs_create.add_argument("--research-file", default=None, help="Optional research file path")
+    runs_create.add_argument("--match-id", default=None, help="Optional match identifier")
+    runs_create.add_argument("--schedule-row", default=None, help="Optional schedule row reference")
+    runs_create.add_argument("--models", default=None, help="Optional JSON object of model/provider identifiers")
+    runs_create.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_create.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    runs_create.set_defaults(func=_cmd_runs_create)
+
+    runs_start = runs_sub.add_parser("start", help="Mark a planned run as started.")
+    runs_start.add_argument("job_id", help="Job identifier")
+    runs_start.add_argument("run_id", help="Run identifier")
+    runs_start.add_argument("--operator", required=True, help="Operator identifier")
+    runs_start.add_argument("--expected-job-revision", type=int, default=None, help="Expected job revision")
+    runs_start.add_argument("--expected-run-revision", type=int, default=None, help="Expected run revision")
+    runs_start.add_argument("--stage", default=None, help="Optional first stage to mark RUNNING")
+    runs_start.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_start.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    runs_start.set_defaults(func=_cmd_runs_start)
+
+    runs_stage = runs_sub.add_parser("stage", help="Record a stage status update.")
+    runs_stage.add_argument("job_id", help="Job identifier")
+    runs_stage.add_argument("run_id", help="Run identifier")
+    runs_stage.add_argument("stage_id", help="Pipeline stage identifier")
+    runs_stage.add_argument("--status", required=True, help="Stage status")
+    runs_stage.add_argument("--operator", required=True, help="Operator identifier")
+    runs_stage.add_argument("--expected-job-revision", type=int, default=None, help="Expected job revision")
+    runs_stage.add_argument("--expected-run-revision", type=int, default=None, help="Expected run revision")
+    runs_stage.add_argument("--command-ref", default=None, help="Optional command reference")
+    runs_stage.add_argument("--function-ref", default=None, help="Optional function reference")
+    runs_stage.add_argument("--input", action="append", default=[], help="Input artifact reference")
+    runs_stage.add_argument("--output", action="append", default=[], help="Output artifact reference")
+    runs_stage.add_argument("--log", default=None, help="Log artifact reference")
+    runs_stage.add_argument("--error-category", default=None, help="Failure category")
+    runs_stage.add_argument("--error-summary", default=None, help="Failure summary")
+    runs_stage.add_argument("--warning", action="append", default=[], help="Warning summary")
+    runs_stage.add_argument("--metrics", default=None, help="Optional JSON object of actual metrics")
+    runs_stage.add_argument("--notes", default=None, help="Operator notes")
+    runs_stage.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_stage.set_defaults(func=_cmd_runs_stage)
+
+    runs_finish = runs_sub.add_parser("finish", help="Finish a started run.")
+    runs_finish.add_argument("job_id", help="Job identifier")
+    runs_finish.add_argument("run_id", help="Run identifier")
+    runs_finish.add_argument("--status", required=True, help="Final run status")
+    runs_finish.add_argument("--operator", required=True, help="Operator identifier")
+    runs_finish.add_argument("--summary", required=True, help="Completion summary")
+    runs_finish.add_argument("--expected-job-revision", type=int, default=None, help="Expected job revision")
+    runs_finish.add_argument("--expected-run-revision", type=int, default=None, help="Expected run revision")
+    runs_finish.add_argument("--failure-category", default=None, help="Required for FAILED")
+    runs_finish.add_argument("--failure-summary", default=None, help="Required for FAILED")
+    runs_finish.add_argument("--partial-success-explanation", default=None, help="Required for PARTIALLY_SUCCEEDED")
+    runs_finish.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_finish.set_defaults(func=_cmd_runs_finish)
+
+    runs_list = runs_sub.add_parser("list", help="List pipeline runs for a job.")
+    runs_list.add_argument("job_id", help="Job identifier")
+    runs_list.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_list.set_defaults(func=_cmd_runs_list)
+
+    runs_show = runs_sub.add_parser("show", help="Show a privacy-safe pipeline-run summary.")
+    runs_show.add_argument("job_id", help="Job identifier")
+    runs_show.add_argument("run_id", help="Run identifier")
+    runs_show.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_show.set_defaults(func=_cmd_runs_show)
+
+    runs_summary = runs_sub.add_parser("summary", help="Show run execution summary.")
+    runs_summary.add_argument("job_id", help="Job identifier")
+    runs_summary.add_argument("run_id", help="Run identifier")
+    runs_summary.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    runs_summary.set_defaults(func=_cmd_runs_summary)
 
     args = parser.parse_args(argv)
     return args.func(args)

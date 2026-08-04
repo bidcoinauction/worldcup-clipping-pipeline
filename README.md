@@ -152,9 +152,10 @@ python3 scripts/validate_config.py config/export/world_cup.json
 
 Phase 2 adds a validated **pilot intake manifest**, an explicit **rights gate**,
 read-only **source validation**, durable **job records**, output manifests,
-delivery package manifests, handoff checklists, and confirmation records for one
-managed local-file sports pilot. It wraps the existing pipeline; it does not
-replace or modify any World Cup manifest, schedule, or clip workflow.
+manual pipeline run records, delivery package manifests, handoff checklists, and
+confirmation records for one managed local-file sports pilot. It wraps the
+existing pipeline; it does not replace or modify any World Cup manifest,
+schedule, or clip workflow.
 
 ### Intake manifest
 
@@ -211,6 +212,10 @@ clips and related files to a job for manual review and delivery-readiness
 checks without copying, moving, editing, uploading, publishing, or processing
 media. See `docs/pilot/OUTPUT_MANIFESTS.md`.
 
+Pipeline run records capture what an operator manually ran, source/configuration
+provenance, stage outcomes, and artifact references without executing commands
+or invoking FFmpeg/models. See `docs/pilot/PIPELINE_RUN_RECORDS.md`.
+
 Delivery packages can be generated from approved, delivery-included outputs.
 They write JSON/checklist records under `JOB_ID.delivery/`, require current
 rights and valid files, omit rejected/excluded outputs, and gate
@@ -228,6 +233,10 @@ python3 scripts/pilot_job.py outputs validate path/to/output_manifest.json
 python3 scripts/pilot_job.py outputs register JOB_ID path/to/output_manifest.json
 python3 scripts/pilot_job.py outputs review JOB_ID MANIFEST_ID OUTPUT_ID --status APPROVED --operator REVIEWER --reason "Approved" --include-in-delivery
 python3 scripts/pilot_job.py outputs summary JOB_ID
+python3 scripts/pilot_job.py runs create JOB_ID --run-id RUN_ID --operator YOUR_NAME --entry-point process-match --command-arg scripts/process_match.py --manual-confirmed
+python3 scripts/pilot_job.py runs start JOB_ID RUN_ID --operator YOUR_NAME
+python3 scripts/pilot_job.py runs stage JOB_ID RUN_ID TRANSCRIPTION --status RUNNING --operator YOUR_NAME
+python3 scripts/pilot_job.py runs finish JOB_ID RUN_ID --status SUCCEEDED --operator YOUR_NAME --summary "Manual pipeline run completed"
 python3 scripts/pilot_job.py delivery generate JOB_ID PACKAGE_ID --operator YOUR_NAME --delivery-method manual --delivery-destination "desk handoff"
 python3 scripts/pilot_job.py delivery checklist JOB_ID PACKAGE_ID
 python3 scripts/pilot_job.py delivery confirm JOB_ID PACKAGE_ID --operator YOUR_NAME --confirmation "Delivered" --delivered-count 1
@@ -248,7 +257,8 @@ Pilot intake -> rights gate -> source validation -> job record (READY)
     -> delivery package/checklist -> DELIVERY_READY -> confirmation -> DELIVERED
 
 Existing clip manifest -> export scripts -> generated files
-    -> pilot output manifest -> output review -> approval -> delivery package
+    -> manual run record -> pilot output manifest -> output review -> approval
+    -> delivery package
 ```
 
 The existing match manifest (`data/manifests/*.json`), schedule CSV, and clip

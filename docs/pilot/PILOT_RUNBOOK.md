@@ -103,6 +103,43 @@ python3 scripts/pilot_job.py transition JOB_ID RUNNING \
   --expected-revision REVISION_FROM_SHOW
 ```
 
+Optionally create a pipeline run record before or during manual execution. This
+captures provenance and stage status only; it does not run the pipeline.
+
+```bash
+python3 scripts/pilot_job.py runs create JOB_ID \
+  --run-id RUN_ID \
+  --operator YOUR_NAME \
+  --entry-point process-match \
+  --command-arg scripts/process_match.py \
+  --command-arg path/to/source.mp4 \
+  --manual-confirmed \
+  --expected-job-revision REVISION_FROM_SHOW
+
+python3 scripts/pilot_job.py runs start JOB_ID RUN_ID \
+  --operator YOUR_NAME \
+  --expected-job-revision REVISION_FROM_SHOW \
+  --expected-run-revision 0
+```
+
+Record stages as the manual run progresses:
+
+```bash
+python3 scripts/pilot_job.py runs stage JOB_ID RUN_ID TRANSCRIPTION \
+  --status SUCCEEDED \
+  --operator YOUR_NAME \
+  --output TRANSCRIPTS/.../transcript.txt \
+  --expected-job-revision REVISION_FROM_SHOW \
+  --expected-run-revision RUN_REVISION
+
+python3 scripts/pilot_job.py runs finish JOB_ID RUN_ID \
+  --status SUCCEEDED \
+  --operator YOUR_NAME \
+  --summary "Manual pipeline run completed" \
+  --expected-job-revision REVISION_FROM_SHOW \
+  --expected-run-revision RUN_REVISION
+```
+
 ### 9. Review outputs
 
 Review every generated clip, caption, and thumbnail before any client sees it.
@@ -119,6 +156,10 @@ python3 scripts/pilot_job.py outputs register JOB_ID path/to/output_manifest.jso
   --expected-revision REVISION_FROM_SHOW \
   --operator YOUR_NAME
 ```
+
+If the outputs came from a recorded run, include `run_id` in the output manifest.
+The linked run must belong to the same job and be `SUCCEEDED` or
+`PARTIALLY_SUCCEEDED`.
 
 ```bash
 python3 scripts/pilot_job.py transition JOB_ID REVIEW_REQUIRED \
@@ -205,9 +246,9 @@ python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
 ### 14. Archive operational records
 
 Keep the intake manifest, job record, output manifests, delivery package,
-checklist, and confirmation on disk under `data/pilot/` (gitignored). These are
-the provenance record: intake -> rights -> validation -> job -> outputs ->
-delivery package -> confirmation.
+pipeline run records, checklist, and confirmation on disk under `data/pilot/`
+(gitignored). These are the provenance record: intake -> rights -> validation ->
+job -> manual run -> outputs -> delivery package -> confirmation.
 
 ### 15. Handle failure or cancellation
 

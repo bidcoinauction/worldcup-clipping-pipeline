@@ -114,6 +114,16 @@ python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
   --delivered-item-count 8
 ```
 
+## Pipeline Run Records
+
+Manual run records live under `JOB_ID.runs/RUN_ID.json`. They describe the
+command an operator ran, source/config provenance, stage evidence, output/log
+references, and failure summaries. Creating or starting a run never executes the
+recorded command. Output manifests can optionally link to a completed run with
+`run_id`; delivery packages list represented run IDs when available.
+
+See `docs/pilot/PIPELINE_RUN_RECORDS.md` for the schema and CLI.
+
 ## Event History
 
 Every successful transition appends exactly one event to
@@ -121,6 +131,10 @@ Every successful transition appends exactly one event to
 timestamp, previous and new state, operator, summary, structured metadata,
 source command, validation codes, and artifact references. Existing events are
 preserved.
+
+Pipeline run creation, start, stage updates, and finish also append job events
+while keeping the job state unchanged. They increment both job and run revisions
+but do not execute processing.
 
 ```bash
 python3 scripts/pilot_job.py history JOB_ID
@@ -139,6 +153,7 @@ credential-like values. It does not create, copy, upload, or delete artifacts.
 ## What The System Does Not Perform
 
 - `RUNNING` does not execute media processing.
+- `runs create`, `runs start`, `runs stage`, and `runs finish` do not execute commands, invoke FFmpeg, call models, or process media.
 - `APPROVED` records human approval only.
 - `delivery generate` does not stage, copy, move, upload, send, publish, or process files.
 - `DELIVERY_READY` does not stage or copy files.

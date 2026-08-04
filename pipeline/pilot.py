@@ -29,9 +29,12 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import platform as _platform
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -56,6 +59,7 @@ EVENT_SCHEMA_VERSION = 1
 OUTPUT_MANIFEST_SCHEMA_VERSION = 1
 DELIVERY_PACKAGE_SCHEMA_VERSION = 1
 DELIVERY_CONFIRMATION_SCHEMA_VERSION = 1
+PIPELINE_RUN_SCHEMA_VERSION = 1
 
 # Runtime roots. `data/pilot/` is gitignored; client intake and job records
 # are never committed.
@@ -127,6 +131,27 @@ OUTPUT_FILE_EXTENSIONS = {
 }
 DIRECTORY_OUTPUT_TYPES = frozenset({"REVIEW_DASHBOARD", "OTHER"})
 DELIVERY_PACKAGE_STATES = frozenset({"APPROVED", "DELIVERY_READY"})
+PIPELINE_RUN_JOB_STATES = frozenset({"READY", "RUNNING"})
+PIPELINE_RUN_STATUSES = frozenset({"PLANNED", "STARTED", "SUCCEEDED", "PARTIALLY_SUCCEEDED", "FAILED", "ABORTED"})
+PIPELINE_RUN_FINAL_STATUSES = frozenset({"SUCCEEDED", "PARTIALLY_SUCCEEDED", "FAILED", "ABORTED"})
+PIPELINE_STAGE_STATUSES = frozenset({"NOT_STARTED", "RUNNING", "SUCCEEDED", "SKIPPED", "FAILED"})
+PIPELINE_STAGES = (
+    "SOURCE_INTAKE", "CONCATENATION", "TRANSCRIPTION", "RESEARCH",
+    "PROMPT_GENERATION", "DETECTION", "CLIP_MANIFEST", "ASSET_PROMPTS",
+    "CLIP_EXPORT", "REVIEW_DASHBOARD", "OUTPUT_REGISTRATION",
+)
+PIPELINE_ENTRY_POINTS = {
+    "process-match": "scripts/process_match.py",
+    "process-from-manifest": "scripts/process_from_manifest.py",
+    "process-scheduled-match": "scripts/process_scheduled_match.py",
+    "transcribe-match": "scripts/transcribe_match.py",
+    "generate-claude-prompt": "scripts/generate_claude_prompt.py",
+    "run-gpt-detection": "scripts/run_gpt_detection.py",
+    "build-clip-manifest": "scripts/build_clip_manifest.py",
+    "generate-asset-prompts": "scripts/generate_asset_prompts.py",
+    "export-clips-ffmpeg": "scripts/export_clips_ffmpeg.py",
+    "export-research-windows": "scripts/export_research_windows.py",
+}
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -231,6 +256,14 @@ class OutputManifestError(JobRecordError):
 
 class DeliveryPackageError(JobRecordError):
     """Raised for expected delivery-package and confirmation failures."""
+
+    def __init__(self, message: str, issues: list[dict] | None = None) -> None:
+        self.issues = issues or []
+        super().__init__(message)
+
+
+class PipelineRunError(JobRecordError):
+    """Raised for expected manual pipeline-run record failures."""
 
     def __init__(self, message: str, issues: list[dict] | None = None) -> None:
         self.issues = issues or []
@@ -1516,11 +1549,601 @@ def read_history(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
     return history
 
 
+# ── Manual pipeline-run records ──────────────────────────────────────────────
+
+_PIPELINE_RUN_KEYS = (
+    "schema_version", "run_id", "job_id", "pilot_id", "project_id", "source_id",
+    "created_at", "created_by", "started_at", "completed_at", "status",
+    "revision", "job_revision_at_creation", "entry_point", "command",
+    "command_args", "working_directory", "python_executable", "operator_notes",
+    "dry_run", "manual_execution_confirmed", "host_platform",
+    "repository_commit", "repository_dirty", "start_reason", "provenance",
+    "stages", "completion_summary", "failure_category", "failure_summary",
+    "partial_success_explanation",
+)
+
+
+def _pipeline_run_dir(job_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(job_id):
+        raise JobPathError(f"invalid job identifier '{job_id}'")
+    directory = Path(jobs_dir) / f"{job_id}.runs"
+    if not _within_dir(directory, Path(jobs_dir)):
+        raise JobPathError(f"pipeline run directory for '{job_id}' would escape '{jobs_dir}'")
+    return directory
+
+
+def _pipeline_run_path(job_id: str, run_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(run_id):
+        raise PipelineRunError(f"run_id '{run_id}' is invalid; use letters, digits, '_' or '-'")
+    path = _pipeline_run_dir(job_id, jobs_dir) / f"{run_id}.json"
+    if not _within_dir(path, Path(jobs_dir)):
+        raise JobPathError(f"pipeline run path for '{job_id}/{run_id}' would escape '{jobs_dir}'")
+    return path
+
+
+def _read_pipeline_run(job_id: str, run_id: str, jobs_dir: Path) -> dict:
+    path = _pipeline_run_path(job_id, run_id, jobs_dir)
+    if not path.exists():
+        raise PipelineRunError(f"pipeline run '{run_id}' not found for job '{job_id}'")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise PipelineRunError(f"pipeline run '{run_id}' root must be an object")
+    return data
+
+
+def _normalized_run_revision(run: dict) -> int:
+    revision = run.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        return 0
+    return revision
+
+
+def _job_run_ids(job: dict, jobs_dir: Path) -> list[str]:
+    values = job.get("pipeline_runs")
+    if isinstance(values, list):
+        return [v for v in values if isinstance(v, str)]
+    directory = _pipeline_run_dir(job.get("job_id", ""), jobs_dir)
+    if not directory.exists():
+        return []
+    return sorted(path.stem for path in directory.glob("*.json"))
+
+
+def _current_git_commit() -> str | None:
+    head = ROOT / ".git" / "HEAD"
+    if not head.exists():
+        return None
+    value = head.read_text(encoding="utf-8").strip()
+    if value.startswith("ref:"):
+        ref = ROOT / ".git" / value.split(" ", 1)[1]
+        return ref.read_text(encoding="utf-8").strip() if ref.exists() else None
+    return value or None
+
+
+def _validate_command_args(entry_point: str, command_args: object) -> list[str]:
+    if entry_point not in PIPELINE_ENTRY_POINTS:
+        raise PipelineRunError(
+            f"entry_point '{entry_point}' is not recognized; allowed entry points: {', '.join(sorted(PIPELINE_ENTRY_POINTS))}"
+        )
+    if not isinstance(command_args, list) or not command_args:
+        raise PipelineRunError("command_args: expected a non-empty list")
+    clean: list[str] = []
+    unsafe_tokens = (";", "&&", "||", "|", ">", "<", "`", "$(", "${", "\n", "\r")
+    for index, arg in enumerate(command_args):
+        path = f"command_args[{index}]"
+        if not isinstance(arg, str) or not arg.strip():
+            raise PipelineRunError(f"{path}: expected a non-empty string")
+        value = arg.strip()
+        _validate_text_for_secrets(value, path)
+        if _URL_RE.match(value):
+            raise PipelineRunError(f"{path}: URLs are not accepted in run commands")
+        if any(token in value for token in unsafe_tokens):
+            raise PipelineRunError(f"{path}: shell substitutions, separators, pipes, or redirections are not allowed")
+        lowered = value.lower()
+        if any(marker in lowered for marker in ("api_key=", "token=", "password=", "cookie=", "authorization=")):
+            raise PipelineRunError(f"{path}: command arguments must not contain environment dumps or credentials")
+        clean.append(value)
+    first = clean[0]
+    script_arg = clean[1] if Path(first).name in {"python", "python3", "python.exe"} or first == sys.executable else first
+    if Path(script_arg).as_posix() != PIPELINE_ENTRY_POINTS[entry_point]:
+        raise PipelineRunError(f"command_args: entry point '{entry_point}' must reference {PIPELINE_ENTRY_POINTS[entry_point]}")
+    return clean
+
+
+def _initial_stages() -> list[dict]:
+    return [{"stage_id": stage, "status": "NOT_STARTED", "started_at": None, "completed_at": None,
+             "command_ref": None, "function_ref": None, "input_references": [], "output_references": [],
+             "log_reference": None, "error_category": None, "error_summary": None, "warnings": [],
+             "metrics": {}, "operator": None, "notes": None} for stage in PIPELINE_STAGES]
+
+
+def _stage_counts(run: dict) -> dict[str, int]:
+    counts = {status: 0 for status in sorted(PIPELINE_STAGE_STATUSES)}
+    for stage in run.get("stages", []):
+        if isinstance(stage, dict) and stage.get("status") in counts:
+            counts[stage["status"]] += 1
+    return counts
+
+
+def _safe_file_reference(raw_path: object, *, field_path: str, require_exists: bool = False,
+                         checksum: bool = True) -> dict:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise PipelineRunError(f"{field_path}: expected a non-empty path")
+    value = raw_path.strip()
+    _validate_text_for_secrets(value, field_path)
+    if _URL_RE.match(value):
+        raise PipelineRunError(f"{field_path}: URLs are not accepted in run records")
+    if ".." in Path(value).parts:
+        raise PipelineRunError(f"{field_path}: path traversal is not allowed")
+    path = Path(value)
+    resolved = path.resolve() if path.is_absolute() else (ROOT / path).resolve()
+    exists = resolved.exists()
+    if require_exists and not exists:
+        raise PipelineRunError(f"{field_path}: path not found: {resolved}")
+    ref = {"path": value, "resolved_path": str(resolved), "exists": exists,
+           "validation_succeeded": exists if require_exists else True}
+    if exists:
+        stat = resolved.stat()
+        ref["file_size"] = stat.st_size if resolved.is_file() else None
+        ref["modified_at"] = _dt.datetime.fromtimestamp(stat.st_mtime, tz=_dt.timezone.utc).isoformat()
+        if checksum and resolved.is_file():
+            ref["sha256"] = _sha256(resolved)
+    return ref
+
+
+def _optional_file_reference(raw_path: object, *, field_path: str) -> dict | None:
+    if raw_path is None or raw_path == "":
+        return None
+    return _safe_file_reference(raw_path, field_path=field_path, require_exists=False)
+
+
+def _provenance_file(path: Path, *, label: str) -> dict:
+    return {"label": label, **_safe_file_reference(str(path), field_path=f"provenance.{label}", require_exists=False)}
+
+
+def _build_run_provenance(job: dict, *, intake_root: str | None = None, recording_manifest: str | None = None,
+                          research_file: str | None = None, match_id: str | None = None,
+                          schedule_row: str | None = None, models: dict | None = None) -> dict:
+    intake = _load_stored_intake(job)
+    report = validate_intake(intake, intake_root=intake_root, check_source=True, check_rights=True)
+    config = intake.get("configuration") if isinstance(intake.get("configuration"), dict) else {}
+    media = intake.get("media") if isinstance(intake.get("media"), dict) else {}
+    project = config.get("project", job.get("project_id", "football"))
+    brand = config.get("brand", "world_cup")
+    editorial = config.get("editorial_taxonomy", "world_cup")
+    template = config.get("detection_template", "prompt")
+    export_profiles = config.get("export_profiles") if isinstance(config.get("export_profiles"), list) else []
+    return {
+        "pilot_intake_manifest": _safe_file_reference(job.get("intake_manifest_path", ""), field_path="provenance.pilot_intake_manifest", require_exists=True),
+        "source_media": _safe_file_reference(media.get("local_file_path"), field_path="provenance.source_media", require_exists=True),
+        "recording_manifest": _optional_file_reference(recording_manifest, field_path="provenance.recording_manifest"),
+        "project_configuration": _provenance_file(ROOT / "config" / "pipeline_config.json", label="project_configuration"),
+        "brand_profile": _provenance_file(ROOT / "config" / "brands" / f"{brand}.json", label="brand_profile"),
+        "editorial_taxonomy": _provenance_file(ROOT / "config" / "editorial" / f"{editorial}.json", label="editorial_taxonomy"),
+        "operational_categories": {"project": project, "categories": resolve_operational_categories(project)},
+        "detection_template": {"template_id": template, **_provenance_file(ROOT / "prompts" / "world_cup_detection_prompt.txt", label="detection_template")},
+        "export_profiles": {"profile_ids": [str(v) for v in export_profiles], "config": _provenance_file(ROOT / "config" / "export" / "world_cup.json", label="export_profiles")},
+        "research_file": _optional_file_reference(research_file, field_path="provenance.research_file"),
+        "schedule": {"match_id": match_id, "row_reference": schedule_row},
+        "repository": {"commit": _current_git_commit()},
+        "models": models or {},
+        "validation": {"source_ready": report["source_ready"], "rights_cleared": report["rights_cleared"],
+                       "config_references_valid": report["config_references_valid"], "validation_codes": report["validation_codes"]},
+    }
+
+
+def validate_pipeline_run(data: object, *, job: dict | None = None) -> dict:
+    issues: list[dict] = []
+    if not isinstance(data, dict):
+        issues.append(_output_issue("run", "BAD_TYPE", "root must be an object"))
+        return {"valid": False, "issues": issues, "validation_codes": ["BAD_TYPE"]}
+    _output_secret_scan(data, "run", issues)
+    _reject_output_unknown(data, _PIPELINE_RUN_KEYS, "run", issues)
+    if data.get("schema_version") != PIPELINE_RUN_SCHEMA_VERSION:
+        issues.append(_output_issue("run.schema_version", "BAD_SCHEMA_VERSION", f"expected {PIPELINE_RUN_SCHEMA_VERSION}"))
+    for key in ("run_id", "job_id", "pilot_id", "project_id", "source_id", "created_at", "created_by", "entry_point", "command", "working_directory", "python_executable"):
+        if not isinstance(data.get(key), str) or not data.get(key, "").strip():
+            issues.append(_output_issue(f"run.{key}", "MISSING_KEY", "expected a non-empty string"))
+    if not _is_valid_id(data.get("run_id")):
+        issues.append(_output_issue("run.run_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+    if data.get("entry_point") not in PIPELINE_ENTRY_POINTS:
+        issues.append(_output_issue("run.entry_point", "UNKNOWN_ENTRY_POINT", "entry point is not recognized"))
+    if data.get("status") not in PIPELINE_RUN_STATUSES:
+        issues.append(_output_issue("run.status", "UNKNOWN_RUN_STATUS", f"expected one of {', '.join(sorted(PIPELINE_RUN_STATUSES))}"))
+    for key in ("revision", "job_revision_at_creation"):
+        if isinstance(data.get(key), bool) or not isinstance(data.get(key), int) or data.get(key) < 0:
+            issues.append(_output_issue(f"run.{key}", "BAD_TYPE", "expected a non-negative integer"))
+    if data.get("manual_execution_confirmed") is not True:
+        issues.append(_output_issue("run.manual_execution_confirmed", "MANUAL_CONFIRMATION_REQUIRED", "must be true"))
+    if not isinstance(data.get("dry_run"), bool):
+        issues.append(_output_issue("run.dry_run", "BAD_TYPE", "expected true/false"))
+    if job is not None and data.get("job_id") != job.get("job_id"):
+        issues.append(_output_issue("run.job_id", "JOB_MISMATCH", f"does not match target job '{job.get('job_id')}'"))
+    stages = data.get("stages")
+    if not isinstance(stages, list) or not stages:
+        issues.append(_output_issue("run.stages", "MISSING_KEY", "expected non-empty stage list"))
+    else:
+        seen = set()
+        for index, stage in enumerate(stages):
+            path = f"run.stages[{index}]"
+            if not isinstance(stage, dict):
+                issues.append(_output_issue(path, "BAD_TYPE", "expected an object"))
+                continue
+            stage_id = stage.get("stage_id")
+            if stage_id not in PIPELINE_STAGES:
+                issues.append(_output_issue(f"{path}.stage_id", "UNKNOWN_STAGE", "stage is not supported"))
+            elif stage_id in seen:
+                issues.append(_output_issue(f"{path}.stage_id", "DUPLICATE_STAGE", "stage IDs must be unique"))
+            else:
+                seen.add(stage_id)
+            if stage.get("status") not in PIPELINE_STAGE_STATUSES:
+                issues.append(_output_issue(f"{path}.status", "UNKNOWN_STAGE_STATUS", f"expected one of {', '.join(sorted(PIPELINE_STAGE_STATUSES))}"))
+            if stage.get("status") in {"SUCCEEDED", "FAILED"} and not stage.get("started_at"):
+                issues.append(_output_issue(f"{path}.started_at", "MISSING_KEY", "completed or failed stages must have started_at"))
+            if stage.get("status") == "FAILED" and (not stage.get("error_category") or not stage.get("error_summary")):
+                issues.append(_output_issue(f"{path}.error_summary", "MISSING_KEY", "failed stages require error category and summary"))
+    return {"valid": not issues, "issues": issues, "validation_codes": [issue["code"] for issue in issues] or [C_INTAKE_OK]}
+
+
+def _append_run_event(job: dict, events: list[dict], event_type: str, *, message: str, operator: str,
+                      run_id: str, metadata: dict | None = None, artifacts: list[str] | None = None,
+                      source: str = "pilot_job.runs") -> dict:
+    sequence = _next_event_sequence(events)
+    return {"event_schema_version": EVENT_SCHEMA_VERSION, "event_id": _event_id(job["job_id"], sequence, event_type),
+            "job_id": job["job_id"], "sequence": sequence, "timestamp": _now_iso(), "event_type": event_type,
+            "previous_state": job.get("current_state"), "new_state": job.get("current_state"), "operator": operator,
+            "message": message, "metadata": {"run_id": run_id, **(metadata or {})}, "source": source,
+            "related_codes": [], "artifact_references": artifacts or []}
+
+
+def _write_run_and_job(run_path: Path, run: dict, record_path: Path, job: dict, events_path: Path, events: list[dict]) -> None:
+    _atomic_write_json(run_path, run)
+    _atomic_write_json(events_path, events)
+    _atomic_write_json(record_path, job)
+
+
+def create_pipeline_run(job_id: str, *, run_id: str, operator: str, entry_point: str, command_args: list[str],
+                        manual_confirmed: bool, jobs_dir: str | Path | None = None,
+                        expected_job_revision: int | None = None, working_directory: str | None = None,
+                        python_executable: str | None = None, dry_run: bool = False,
+                        operator_notes: str | None = None, host_platform: str | None = None,
+                        repository_commit: str | None = None, repository_dirty: bool | None = None,
+                        start_reason: str | None = None, recording_manifest: str | None = None,
+                        research_file: str | None = None, match_id: str | None = None,
+                        schedule_row: str | None = None, models: dict | None = None,
+                        intake_root: str | None = None, source: str = "pilot_job.runs.create") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    current = job.get("current_state", "")
+    if current not in PIPELINE_RUN_JOB_STATES:
+        raise PipelineRunError(f"job '{job_id}' in state '{current}' cannot create a pipeline run; allowed states: {', '.join(sorted(PIPELINE_RUN_JOB_STATES))}")
+    job_revision = _normalized_revision(job)
+    if expected_job_revision is not None and expected_job_revision != job_revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {job_revision}; no pipeline run created")
+    if not _is_valid_id(run_id):
+        raise PipelineRunError(f"run_id '{run_id}' is invalid; use letters, digits, '_' or '-'")
+    if not operator or not operator.strip():
+        raise PipelineRunError("operator is required for pipeline run creation")
+    if manual_confirmed is not True:
+        raise PipelineRunError("manual execution confirmation is required; no command will be executed by this record")
+    command_clean = _validate_command_args(entry_point, command_args)
+    _validate_metadata({"operator": operator, "operator_notes": operator_notes or "", "start_reason": start_reason or ""})
+    if repository_dirty is not None and not isinstance(repository_dirty, bool):
+        raise PipelineRunError("repository_dirty: expected true/false")
+    run_path = _pipeline_run_path(job_id, run_id, jobs_dir_path)
+    if run_path.exists():
+        raise PipelineRunError(f"pipeline run '{run_id}' already exists for job '{job_id}'")
+    _require_intake_readiness(job, "RUNNING", intake_root=intake_root)
+    provenance = _build_run_provenance(job, intake_root=intake_root, recording_manifest=recording_manifest,
+                                       research_file=research_file, match_id=match_id, schedule_row=schedule_row,
+                                       models=models)
+    now = _now_iso()
+    working = working_directory or str(ROOT)
+    _validate_text_for_secrets(working, "working_directory")
+    if ".." in Path(working).parts:
+        raise PipelineRunError("working_directory: path traversal is not allowed")
+    run = {"schema_version": PIPELINE_RUN_SCHEMA_VERSION, "run_id": run_id, "job_id": job_id,
+           "pilot_id": job.get("pilot_id", ""), "project_id": job.get("project_id", ""), "source_id": job.get("source_id", ""),
+           "created_at": now, "created_by": operator.strip(), "started_at": None, "completed_at": None,
+           "status": "PLANNED", "revision": 0, "job_revision_at_creation": job_revision,
+           "entry_point": entry_point, "command": shlex.join(command_clean), "command_args": command_clean,
+           "working_directory": working, "python_executable": python_executable or sys.executable or "python3",
+           "operator_notes": operator_notes, "dry_run": bool(dry_run), "manual_execution_confirmed": True,
+           "host_platform": host_platform or f"{_platform.system()} {_platform.release()} {_platform.machine()}",
+           "repository_commit": repository_commit or _current_git_commit(),
+           "repository_dirty": repository_dirty, "start_reason": start_reason, "provenance": provenance,
+           "stages": _initial_stages(), "completion_summary": None, "failure_category": None,
+           "failure_summary": None, "partial_success_explanation": None}
+    report = validate_pipeline_run(run, job=job)
+    if not report["valid"]:
+        raise PipelineRunError("pipeline run validation failed", report["issues"])
+    event = _append_run_event(job, events, "PIPELINE_RUN_CREATED", message=f"Created pipeline run {run_id}",
+                              operator=operator.strip(), run_id=run_id, artifacts=[str(run_path)], source=source)
+    new_events = [*events, event]
+    run_ids = [v for v in job.get("pipeline_runs", []) if isinstance(v, str)] if isinstance(job.get("pipeline_runs"), list) else []
+    run_ids.append(run_id)
+    updated_job = dict(job)
+    updated_job.update({"revision": job_revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "pipeline_runs": sorted(set(run_ids)), "active_pipeline_run_id": run_id,
+                        "latest_event": {"event_id": event["event_id"], "timestamp": event["timestamp"],
+                                         "event_type": event["event_type"], "previous_state": current,
+                                         "new_state": current, "message": event["message"]}})
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_run_and_job(run_path, run, record_path, updated_job, events_path, new_events)
+    return {"job": updated_job, "run": run, "run_path": str(run_path)}
+
+
+def start_pipeline_run(job_id: str, run_id: str, *, operator: str, jobs_dir: str | Path | None = None,
+                       expected_job_revision: int | None = None, expected_run_revision: int | None = None,
+                       stage: str | None = None, intake_root: str | None = None,
+                       source: str = "pilot_job.runs.start") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    run_path = _pipeline_run_path(job_id, run_id, jobs_dir_path)
+    run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
+    if job.get("current_state") not in PIPELINE_RUN_JOB_STATES:
+        raise PipelineRunError(f"job '{job_id}' in state '{job.get('current_state')}' cannot start pipeline run '{run_id}'")
+    job_revision = _normalized_revision(job)
+    run_revision = _normalized_run_revision(run)
+    if expected_job_revision is not None and expected_job_revision != job_revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {job_revision}; no pipeline run started")
+    if expected_run_revision is not None and expected_run_revision != run_revision:
+        raise JobRevisionError(f"pipeline run '{run_id}' stale revision: expected {expected_run_revision}, current revision {run_revision}; no pipeline run started")
+    if run.get("status") != "PLANNED":
+        raise PipelineRunError(f"pipeline run '{run_id}' cannot start from status '{run.get('status')}'; expected PLANNED")
+    if not operator or not operator.strip():
+        raise PipelineRunError("operator is required to start a pipeline run")
+    _require_intake_readiness(job, "RUNNING", intake_root=intake_root)
+    now = _now_iso()
+    updated_run = dict(run)
+    updated_run.update({"status": "STARTED", "started_at": now, "revision": run_revision + 1})
+    if stage:
+        if stage not in PIPELINE_STAGES:
+            raise PipelineRunError(f"stage '{stage}' is not recognized; allowed stages: {', '.join(PIPELINE_STAGES)}")
+        stages = [dict(s) for s in updated_run.get("stages", [])]
+        for item in stages:
+            if item.get("stage_id") == stage:
+                item.update({"status": "RUNNING", "started_at": now, "operator": operator.strip()})
+        updated_run["stages"] = stages
+    event = _append_run_event(job, events, "PIPELINE_RUN_STARTED", message=f"Started pipeline run {run_id}",
+                              operator=operator.strip(), run_id=run_id, artifacts=[str(run_path)], source=source)
+    new_events = [*events, event]
+    updated_job = dict(job)
+    updated_job.update({"revision": job_revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "active_pipeline_run_id": run_id,
+                        "latest_event": {"event_id": event["event_id"], "timestamp": event["timestamp"],
+                                         "event_type": event["event_type"], "previous_state": job.get("current_state"),
+                                         "new_state": job.get("current_state"), "message": event["message"]}})
+    _write_run_and_job(run_path, updated_run, record_path, updated_job, events_path, new_events)
+    return {"job": updated_job, "run": updated_run, "run_path": str(run_path)}
+
+
+def update_pipeline_stage(job_id: str, run_id: str, stage_id: str, *, status: str, operator: str,
+                          jobs_dir: str | Path | None = None, expected_job_revision: int | None = None,
+                          expected_run_revision: int | None = None, command_ref: str | None = None,
+                          function_ref: str | None = None, inputs: list[str] | None = None,
+                          outputs: list[str] | None = None, log_reference: str | None = None,
+                          error_category: str | None = None, error_summary: str | None = None,
+                          warnings: list[str] | None = None, metrics: dict | None = None,
+                          notes: str | None = None, source: str = "pilot_job.runs.stage") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    run_path = _pipeline_run_path(job_id, run_id, jobs_dir_path)
+    run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
+    job_revision = _normalized_revision(job)
+    run_revision = _normalized_run_revision(run)
+    if expected_job_revision is not None and expected_job_revision != job_revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {job_revision}; no stage update recorded")
+    if expected_run_revision is not None and expected_run_revision != run_revision:
+        raise JobRevisionError(f"pipeline run '{run_id}' stale revision: expected {expected_run_revision}, current revision {run_revision}; no stage update recorded")
+    if run.get("status") != "STARTED":
+        raise PipelineRunError(f"pipeline run '{run_id}' must be STARTED before stage updates; current status is '{run.get('status')}'")
+    if stage_id not in PIPELINE_STAGES:
+        raise PipelineRunError(f"stage '{stage_id}' is not recognized; allowed stages: {', '.join(PIPELINE_STAGES)}")
+    if status not in PIPELINE_STAGE_STATUSES or status == "NOT_STARTED":
+        raise PipelineRunError("stage update status must be one of RUNNING, SUCCEEDED, SKIPPED, FAILED")
+    if not operator or not operator.strip():
+        raise PipelineRunError("operator is required for stage updates")
+    for value, field in ((command_ref, "command_ref"), (function_ref, "function_ref"), (notes, "notes"), (error_summary, "error_summary")):
+        if value:
+            _validate_text_for_secrets(value, field)
+    input_refs = _validate_artifacts(inputs or [], field_path="input_references")
+    output_refs = _validate_artifacts(outputs or [], field_path="output_references")
+    log_ref = _validate_artifacts([log_reference], field_path="log_reference")[0] if log_reference else None
+    warning_values = _validate_artifacts(warnings or [], field_path="warnings")
+    if metrics is not None:
+        if not isinstance(metrics, dict):
+            raise PipelineRunError("metrics: expected a JSON object")
+        metric_issues: list[dict] = []
+        _scan_secrets(metrics, "metrics", metric_issues)
+        if metric_issues:
+            first = metric_issues[0]
+            raise PipelineRunError(f"{first['path']}: {first['message']}")
+        for key, value in metrics.items():
+            if not isinstance(key, str) or not key.strip():
+                raise PipelineRunError("metrics: keys must be non-empty strings")
+            if not (value is None or isinstance(value, (str, int, float, bool))):
+                raise PipelineRunError(f"metrics.{key}: expected a string, number, boolean, or null")
+            if isinstance(value, str):
+                _validate_text_for_secrets(value, f"metrics.{key}")
+    if status == "FAILED" and (not error_category or not error_summary):
+        raise PipelineRunError("failed stage updates require error_category and error_summary")
+    if error_category and error_category.upper() not in FAILURE_CATEGORIES:
+        raise PipelineRunError(f"error_category must be one of {', '.join(sorted(FAILURE_CATEGORIES))}")
+    stages = [dict(s) for s in run.get("stages", [])]
+    stage = next((s for s in stages if s.get("stage_id") == stage_id), None)
+    if stage is None:
+        raise PipelineRunError(f"pipeline run '{run_id}' does not contain stage '{stage_id}'")
+    current = stage.get("status")
+    if current in {"SUCCEEDED", "FAILED", "SKIPPED"}:
+        raise PipelineRunError(f"stage '{stage_id}' is already {current} and cannot be silently restarted")
+    if status in {"SUCCEEDED", "FAILED"} and current != "RUNNING":
+        raise PipelineRunError(f"stage '{stage_id}' cannot be marked {status} before it is RUNNING")
+    now = _now_iso()
+    if status == "RUNNING":
+        stage["started_at"] = stage.get("started_at") or now
+    if status in {"SUCCEEDED", "SKIPPED", "FAILED"}:
+        stage["completed_at"] = now
+        if not stage.get("started_at"):
+            stage["started_at"] = now
+    stage.update({"status": status, "command_ref": command_ref or stage.get("command_ref"),
+                  "function_ref": function_ref or stage.get("function_ref"),
+                  "input_references": [*stage.get("input_references", []), *input_refs],
+                  "output_references": [*stage.get("output_references", []), *output_refs],
+                  "log_reference": log_ref or stage.get("log_reference"),
+                  "error_category": error_category.upper() if error_category else stage.get("error_category"),
+                  "error_summary": error_summary or stage.get("error_summary"),
+                  "warnings": [*stage.get("warnings", []), *warning_values],
+                  "metrics": {**(stage.get("metrics", {}) if isinstance(stage.get("metrics"), dict) else {}), **(metrics or {})},
+                  "operator": operator.strip(), "notes": notes or stage.get("notes")})
+    updated_run = dict(run)
+    updated_run.update({"revision": run_revision + 1, "stages": stages})
+    report = validate_pipeline_run(updated_run, job=job)
+    if not report["valid"]:
+        raise PipelineRunError("pipeline run validation failed", report["issues"])
+    event = _append_run_event(job, events, "PIPELINE_RUN_STAGE_UPDATED", message=f"Stage {stage_id} marked {status}",
+                              operator=operator.strip(), run_id=run_id,
+                              metadata={"stage_id": stage_id, "stage_status": status},
+                              artifacts=[str(run_path), *output_refs], source=source)
+    new_events = [*events, event]
+    updated_job = dict(job)
+    updated_job.update({"revision": job_revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "latest_event": {"event_id": event["event_id"], "timestamp": event["timestamp"],
+                                         "event_type": event["event_type"], "previous_state": job.get("current_state"),
+                                         "new_state": job.get("current_state"), "message": event["message"]}})
+    _write_run_and_job(run_path, updated_run, record_path, updated_job, events_path, new_events)
+    return {"job": updated_job, "run": updated_run, "run_path": str(run_path)}
+
+
+def finish_pipeline_run(job_id: str, run_id: str, *, status: str, operator: str, summary: str,
+                        jobs_dir: str | Path | None = None, expected_job_revision: int | None = None,
+                        expected_run_revision: int | None = None, failure_category: str | None = None,
+                        failure_summary: str | None = None, partial_success_explanation: str | None = None,
+                        source: str = "pilot_job.runs.finish") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    run_path = _pipeline_run_path(job_id, run_id, jobs_dir_path)
+    run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
+    job_revision = _normalized_revision(job)
+    run_revision = _normalized_run_revision(run)
+    if expected_job_revision is not None and expected_job_revision != job_revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {job_revision}; no run finish recorded")
+    if expected_run_revision is not None and expected_run_revision != run_revision:
+        raise JobRevisionError(f"pipeline run '{run_id}' stale revision: expected {expected_run_revision}, current revision {run_revision}; no run finish recorded")
+    if run.get("status") != "STARTED":
+        raise PipelineRunError(f"pipeline run '{run_id}' must be STARTED before finish; current status is '{run.get('status')}'")
+    if status not in PIPELINE_RUN_FINAL_STATUSES:
+        raise PipelineRunError(f"run finish status '{status}' is not allowed; allowed statuses: {', '.join(sorted(PIPELINE_RUN_FINAL_STATUSES))}")
+    if not operator or not operator.strip() or not summary or not summary.strip():
+        raise PipelineRunError("operator and completion summary are required to finish a run")
+    _validate_metadata({"operator": operator, "summary": summary, "failure_summary": failure_summary or "", "partial_success_explanation": partial_success_explanation or ""})
+    counts = _stage_counts(run)
+    if status == "SUCCEEDED" and counts.get("FAILED", 0):
+        raise PipelineRunError("successful runs cannot contain failed stages")
+    if status == "SUCCEEDED" and counts.get("SUCCEEDED", 0) == 0:
+        raise PipelineRunError("successful runs require at least one succeeded stage")
+    if status == "PARTIALLY_SUCCEEDED" and not partial_success_explanation:
+        raise PipelineRunError("partial success requires partial_success_explanation")
+    if status == "FAILED":
+        if not failure_category or not failure_summary:
+            raise PipelineRunError("failed runs require failure_category and failure_summary")
+        if failure_category.upper() not in FAILURE_CATEGORIES:
+            raise PipelineRunError(f"failure_category must be one of {', '.join(sorted(FAILURE_CATEGORIES))}")
+    now = _now_iso()
+    updated_run = dict(run)
+    updated_run.update({"status": status, "completed_at": now, "revision": run_revision + 1,
+                        "completion_summary": summary.strip(), "failure_category": failure_category.upper() if failure_category else None,
+                        "failure_summary": failure_summary, "partial_success_explanation": partial_success_explanation})
+    report = validate_pipeline_run(updated_run, job=job)
+    if not report["valid"]:
+        raise PipelineRunError("pipeline run validation failed", report["issues"])
+    event = _append_run_event(job, events, "PIPELINE_RUN_FINISHED", message=f"Pipeline run {run_id} finished as {status}",
+                              operator=operator.strip(), run_id=run_id, metadata={"run_status": status},
+                              artifacts=[str(run_path)], source=source)
+    new_events = [*events, event]
+    updated_job = dict(job)
+    updated_job.update({"revision": job_revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "latest_event": {"event_id": event["event_id"], "timestamp": event["timestamp"],
+                                         "event_type": event["event_type"], "previous_state": job.get("current_state"),
+                                         "new_state": job.get("current_state"), "message": event["message"]}})
+    _write_run_and_job(run_path, updated_run, record_path, updated_job, events_path, new_events)
+    return {"job": updated_job, "run": updated_run, "run_path": str(run_path)}
+
+
+def list_pipeline_runs(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, _ = _load_job_and_events(job_id, jobs_dir_path)
+    rows = []
+    for run_id in _job_run_ids(job, jobs_dir_path):
+        try:
+            run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
+        except PipelineRunError:
+            continue
+        rows.append({"run_id": run_id, "status": run.get("status", ""), "entry_point": run.get("entry_point", ""),
+                     "revision": _normalized_run_revision(run), "created_at": run.get("created_at", "")})
+    return rows
+
+
+def show_pipeline_run(job_id: str, run_id: str, jobs_dir: str | Path | None = None) -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
+    return {"run_id": run.get("run_id", run_id), "job_id": run.get("job_id", job_id), "status": run.get("status", ""),
+            "revision": _normalized_run_revision(run), "entry_point": run.get("entry_point", ""),
+            "command_args": run.get("command_args", []), "dry_run": run.get("dry_run"),
+            "repository_commit": run.get("repository_commit"), "repository_dirty": run.get("repository_dirty"),
+            "started_at": run.get("started_at"), "completed_at": run.get("completed_at"),
+            "stages": [{"stage_id": s.get("stage_id"), "status": s.get("status"), "started_at": s.get("started_at"),
+                        "completed_at": s.get("completed_at"), "warning_count": len(s.get("warnings", [])) if isinstance(s.get("warnings"), list) else 0,
+                        "output_count": len(s.get("output_references", [])) if isinstance(s.get("output_references"), list) else 0}
+                       for s in run.get("stages", []) if isinstance(s, dict)]}
+
+
+def _registered_output_manifest_ids_for_run(job_id: str, run_id: str, jobs_dir: Path) -> list[str]:
+    _, _, job, _ = _load_job_and_events(job_id, jobs_dir)
+    manifest_ids = []
+    for manifest_id in _job_output_manifest_ids(job, jobs_dir):
+        manifest = _read_output_manifest(job_id, manifest_id, jobs_dir)
+        if manifest.get("run_id") == run_id:
+            manifest_ids.append(manifest_id)
+    return sorted(manifest_ids)
+
+
+def pipeline_run_summary(job_id: str, run_id: str, jobs_dir: str | Path | None = None) -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
+    outputs: list[str] = []
+    warning_count = 0
+    failed_stage = None
+    for stage in run.get("stages", []):
+        if not isinstance(stage, dict):
+            continue
+        outputs.extend(stage.get("output_references", []) if isinstance(stage.get("output_references"), list) else [])
+        warning_count += len(stage.get("warnings", [])) if isinstance(stage.get("warnings"), list) else 0
+        if stage.get("status") == "FAILED" and failed_stage is None:
+            failed_stage = stage.get("stage_id")
+    duration = None
+    if run.get("started_at") and run.get("completed_at"):
+        try:
+            duration = (_dt.datetime.fromisoformat(run["completed_at"]) - _dt.datetime.fromisoformat(run["started_at"])).total_seconds()
+        except ValueError:
+            duration = None
+    provenance = run.get("provenance") if isinstance(run.get("provenance"), dict) else {}
+    validation = provenance.get("validation") if isinstance(provenance.get("validation"), dict) else {}
+    return {"run_id": run_id, "run_status": run.get("status", ""), "entry_point": run.get("entry_point", ""),
+            "repository_commit": run.get("repository_commit"), "source_id": run.get("source_id"),
+            "started_at": run.get("started_at"), "completed_at": run.get("completed_at"), "duration_seconds": duration,
+            "stage_counts_by_status": _stage_counts(run), "failed_stage": failed_stage, "warning_count": warning_count,
+            "referenced_outputs": sorted(set(outputs)), "registered_output_manifest_ids": _registered_output_manifest_ids_for_run(job_id, run_id, jobs_dir_path),
+            "job_revision": _normalized_revision(read_job(job_id, jobs_dir=jobs_dir_path)), "run_revision": _normalized_run_revision(run),
+            "source_provenance_complete": bool(provenance.get("source_media") and validation.get("source_ready")),
+            "configuration_provenance_complete": bool(provenance.get("project_configuration") and provenance.get("brand_profile") and provenance.get("export_profiles")),
+            "eligible_for_output_registration": run.get("status") in {"SUCCEEDED", "PARTIALLY_SUCCEEDED"}}
+
+
 # ── Output manifests ─────────────────────────────────────────────────────────
 
 _OUTPUT_MANIFEST_KEYS = (
     "schema_version", "manifest_id", "job_id", "pilot_id", "project_id", "source_id",
-    "created_at", "created_by", "source_clip_manifest_path", "revision", "outputs",
+    "created_at", "created_by", "source_clip_manifest_path", "revision", "run_id", "outputs",
 )
 _OUTPUT_KEYS = (
     "output_id", "output_type", "local_path", "filename", "export_profile", "platform",
@@ -1762,6 +2385,21 @@ def _job_output_manifest_ids(job: dict, jobs_dir: Path) -> list[str]:
     return sorted(path.stem for path in directory.glob("*.json"))
 
 
+def _validate_manifest_run_link(job_id: str, manifest_data: dict, jobs_dir: Path) -> None:
+    run_id = manifest_data.get("run_id")
+    if run_id is None or run_id == "":
+        return
+    if not isinstance(run_id, str) or not _is_valid_id(run_id):
+        raise OutputManifestError("manifest.run_id must be a valid run identifier")
+    run = _read_pipeline_run(job_id, run_id, jobs_dir)
+    if run.get("job_id") != job_id:
+        raise OutputManifestError(f"pipeline run '{run_id}' does not belong to job '{job_id}'")
+    if run.get("status") not in {"SUCCEEDED", "PARTIALLY_SUCCEEDED"}:
+        raise OutputManifestError(
+            f"pipeline run '{run_id}' must be SUCCEEDED or PARTIALLY_SUCCEEDED before linking outputs; current status is '{run.get('status')}'"
+        )
+
+
 def register_output_manifest(job_id: str, manifest_data: object, *, jobs_dir: str | Path | None = None,
                              expected_revision: int | None = None, operator: str | None = None,
                              source: str = "pilot_job.outputs.register") -> dict:
@@ -1780,6 +2418,7 @@ def register_output_manifest(job_id: str, manifest_data: object, *, jobs_dir: st
     report = validate_output_manifest(manifest_data, job=job)
     if not report["valid"]:
         raise OutputManifestError("output manifest validation failed", report["issues"])
+    _validate_manifest_run_link(job_id, manifest_data, jobs_dir_path)
     manifest_id = manifest_data["manifest_id"]
     manifest_path = _output_manifest_path(job_id, manifest_id, jobs_dir_path)
     if manifest_path.exists():
@@ -1841,6 +2480,7 @@ def list_output_manifests(job_id: str, jobs_dir: str | Path | None = None) -> li
         rows.append({
             "manifest_id": manifest_id,
             "revision": manifest.get("revision", 0),
+            "run_id": manifest.get("run_id"),
             "output_count": len(manifest.get("outputs", [])) if isinstance(manifest.get("outputs"), list) else 0,
             "created_at": manifest.get("created_at", ""),
         })
@@ -1854,6 +2494,7 @@ def show_output_manifest(job_id: str, manifest_id: str, jobs_dir: str | Path | N
         "manifest_id": manifest.get("manifest_id", manifest_id),
         "job_id": manifest.get("job_id", job_id),
         "revision": manifest.get("revision", 0),
+        "run_id": manifest.get("run_id"),
         "output_count": len(manifest.get("outputs", [])) if isinstance(manifest.get("outputs"), list) else 0,
         "outputs": [
             {
@@ -2074,10 +2715,10 @@ _DELIVERY_PACKAGE_KEYS = (
     "created_at", "created_by", "job_revision_used", "package_revision",
     "delivery_method", "delivery_destination", "package_label", "internal_notes",
     "rights_verification_timestamp", "rights_status_at_generation",
-    "approval_verification_timestamp", "deliverables", "summary",
+    "approval_verification_timestamp", "represented_run_ids", "deliverables", "summary",
 )
 _DELIVERABLE_KEYS = (
-    "deliverable_id", "output_manifest_id", "output_id", "output_type", "local_path",
+    "deliverable_id", "output_manifest_id", "run_id", "output_id", "output_type", "local_path",
     "filename", "platform", "export_profile", "operational_category",
     "editorial_labels", "clip_id", "duration", "caption_path", "thumbnail_path",
     "metadata_path", "checksum", "approval_reviewer", "approval_timestamp",
@@ -2148,11 +2789,13 @@ def _approved_included_outputs(job_id: str, jobs_dir: Path) -> list[dict]:
     for manifest_id in _job_output_manifest_ids(job, jobs_dir):
         manifest = _read_output_manifest(job_id, manifest_id, jobs_dir)
         manifest_revision = manifest.get("revision", 0) if isinstance(manifest.get("revision"), int) else 0
+        manifest_run_id = manifest.get("run_id") if isinstance(manifest.get("run_id"), str) else None
         for output in manifest.get("outputs", []):
             if not isinstance(output, dict):
                 continue
             if output.get("review_status") == "APPROVED" and output.get("include_in_delivery") is True:
-                rows.append({"manifest_id": manifest_id, "manifest_revision": manifest_revision, "output": output})
+                rows.append({"manifest_id": manifest_id, "manifest_revision": manifest_revision,
+                             "manifest_run_id": manifest_run_id, "output": output})
     return rows
 
 
@@ -2245,6 +2888,7 @@ def generate_delivery_package(job_id: str, *, package_id: str, operator: str, de
         deliverables.append({
             "deliverable_id": f"{package_id}_{sequence:03d}",
             "output_manifest_id": row["manifest_id"],
+            "run_id": row.get("manifest_run_id"),
             "output_id": output.get("output_id", ""),
             "output_type": output.get("output_type", ""),
             "local_path": output.get("local_path", ""),
@@ -2286,6 +2930,7 @@ def generate_delivery_package(job_id: str, *, package_id: str, operator: str, de
         "rights_verification_timestamp": now,
         "rights_status_at_generation": rights["status"],
         "approval_verification_timestamp": now,
+        "represented_run_ids": sorted({d["run_id"] for d in deliverables if isinstance(d.get("run_id"), str) and d.get("run_id")}),
         "deliverables": deliverables,
         "summary": _package_summary(deliverables, missing_file_count=0, checksum_verified_count=checksum_verified,
                                     rights_valid=rights["rights_valid"], human_review_complete=summary["human_review_recorded"]),
@@ -2378,6 +3023,12 @@ def validate_delivery_package(data: object, *, job: dict | None = None, jobs_dir
         issues.append(_output_issue("package.package_revision", "BAD_TYPE", "expected package revision 0"))
     if job is not None and data.get("job_id") != job.get("job_id"):
         issues.append(_output_issue("package.job_id", "JOB_MISMATCH", f"does not match target job '{job.get('job_id')}'"))
+    represented = data.get("represented_run_ids")
+    if represented is None:
+        represented = []
+    if not isinstance(represented, list) or any(not isinstance(v, str) or not _is_valid_id(v) for v in represented):
+        issues.append(_output_issue("package.represented_run_ids", "BAD_TYPE", "expected a list of valid run identifiers"))
+        represented = []
 
     deliverables = data.get("deliverables")
     if not isinstance(deliverables, list) or not deliverables:
@@ -2385,6 +3036,7 @@ def validate_delivery_package(data: object, *, job: dict | None = None, jobs_dir
         deliverables = []
     seen_ids: set[str] = set()
     seen_sequences: set[int] = set()
+    deliverable_run_ids: set[str] = set()
     total_duration = 0.0
     has_duration = False
     checksum_verified = 0
@@ -2413,6 +3065,11 @@ def validate_delivery_package(data: object, *, job: dict | None = None, jobs_dir
             issues.append(_output_issue(f"{path}.delivery_sequence", "DUPLICATE_SEQUENCE", "delivery sequence values must be unique"))
         else:
             seen_sequences.add(sequence)
+        if item.get("run_id") is not None:
+            if not isinstance(item.get("run_id"), str) or not _is_valid_id(item.get("run_id")):
+                issues.append(_output_issue(f"{path}.run_id", "BAD_ID", "expected a valid run identifier or null"))
+            else:
+                deliverable_run_ids.add(item["run_id"])
         output_type = item.get("output_type") if item.get("output_type") in OUTPUT_TYPES else "OTHER"
         if item.get("output_type") not in OUTPUT_TYPES:
             issues.append(_output_issue(f"{path}.output_type", "UNKNOWN_OUTPUT_TYPE", "output type is not supported"))
@@ -2443,6 +3100,8 @@ def validate_delivery_package(data: object, *, job: dict | None = None, jobs_dir
                     issues.append(_output_issue(f"{path}.approval_metadata", "APPROVAL_MISMATCH", "approval metadata no longer matches the source output manifest"))
     if seen_sequences and sorted(seen_sequences) != list(range(1, len(seen_sequences) + 1)):
         issues.append(_output_issue("package.deliverables", "SEQUENCE_ORDER", "delivery sequences must be contiguous starting at 1"))
+    if sorted(deliverable_run_ids) != sorted(represented):
+        issues.append(_output_issue("package.represented_run_ids", "RUN_ID_MISMATCH", "does not match deliverable run IDs"))
 
     summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     if not summary:
@@ -2540,7 +3199,9 @@ def list_delivery_packages(job_id: str, jobs_dir: str | Path | None = None) -> l
         except DeliveryPackageError:
             continue
         rows.append({"package_id": package_id, "package_revision": package.get("package_revision", 0),
-                     "deliverable_count": len(package.get("deliverables", [])), "created_at": package.get("created_at", "")})
+                     "deliverable_count": len(package.get("deliverables", [])),
+                     "represented_run_ids": package.get("represented_run_ids", []),
+                     "created_at": package.get("created_at", "")})
     return rows
 
 
@@ -2550,9 +3211,10 @@ def show_delivery_package(job_id: str, package_id: str, jobs_dir: str | Path | N
     return {"package_id": package.get("package_id", package_id), "job_id": package.get("job_id", job_id),
             "package_revision": package.get("package_revision", 0), "delivery_method": package.get("delivery_method", ""),
             "delivery_destination": package.get("delivery_destination", ""),
-            "deliverable_count": len(package.get("deliverables", [])), "summary": package.get("summary", {}),
+            "deliverable_count": len(package.get("deliverables", [])), "represented_run_ids": package.get("represented_run_ids", []),
+            "summary": package.get("summary", {}),
             "deliverables": [{"deliverable_id": d.get("deliverable_id"), "filename": d.get("filename"),
-                              "platform": d.get("platform"), "output_type": d.get("output_type"),
+                              "platform": d.get("platform"), "output_type": d.get("output_type"), "run_id": d.get("run_id"),
                               "delivery_sequence": d.get("delivery_sequence")} for d in package.get("deliverables", []) if isinstance(d, dict)]}
 
 

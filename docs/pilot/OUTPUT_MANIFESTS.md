@@ -8,6 +8,7 @@ replace existing CSV clip manifests and do not run export scripts.
 Existing clip manifest
 -> existing export scripts
 -> generated files
+-> optional manual pipeline run record
 -> pilot output manifest
 -> manual output review
 -> explicit job approval
@@ -39,6 +40,7 @@ Top-level fields:
 - `created_at`, `created_by`: operational provenance.
 - `source_clip_manifest_path`: optional reference to an existing CSV/JSON clip manifest.
 - `revision`: integer manifest revision, incremented on each output review.
+- `run_id`: optional link to a completed manual pipeline run for the same job.
 - `outputs`: non-empty list of output records.
 
 Each output includes an `output_id`, `output_type`, `local_path`, `filename`,
@@ -99,6 +101,10 @@ Registration is allowed only for jobs in `RUNNING`, `REVIEW_REQUIRED`,
 job output directory, links the manifest ID in the job record, increments the
 job revision, and appends one job event. Duplicate manifest IDs and stale job
 revisions are rejected.
+
+When `run_id` is present, registration verifies that the run exists, belongs to
+the same job, and is `SUCCEEDED` or `PARTIALLY_SUCCEEDED`. Existing manifests
+without `run_id` remain valid.
 
 Review actions update manifest review state only. Approvals can include the
 output in delivery. Rejections, changes requested, exclusions, and reset to

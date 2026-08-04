@@ -16,10 +16,12 @@
   "rights_verification_timestamp": "2026-08-04T00:00:00+00:00",
   "rights_status_at_generation": "CONFIRMED",
   "approval_verification_timestamp": "2026-08-04T00:00:00+00:00",
+  "represented_run_ids": [],
   "deliverables": [
     {
       "deliverable_id": "world_cup_pilot_delivery_v1_001",
       "output_manifest_id": "world_cup_outputs_valid",
+      "run_id": null,
       "output_id": "clip_001_tiktok",
       "output_type": "VIDEO_CLIP",
       "local_path": "docs/pilot/examples/outputs/fixtures/sample_clip.mp4",

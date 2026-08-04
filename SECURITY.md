@@ -42,6 +42,12 @@ ignored by Git; they are never committed.
   commands, base64 media, environment dumps, or unnecessary personal
   information. Output registration and review never copy, move, edit, delete,
   upload, publish, or process the referenced files.
+- Pipeline run records describe manual operator actions only. They reject API
+  keys, tokens, passwords, cookies, credential URLs, signed URLs, shell
+  substitutions, command separators, pipes, redirections, environment dumps,
+  arbitrary executable paths, and embedded media. Run creation/start/stage/finish
+  never execute commands, invoke FFmpeg, call models, process media, start
+  background work, or store raw subprocess output.
 - Delivery package manifests, generated checklists, and confirmation records
   are operational metadata only. They must not contain credentials, API keys,
   social tokens, cookies, payment details, credential URLs, shell commands,

@@ -53,6 +53,8 @@ python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
 - Generation is allowed only from `APPROVED` or `DELIVERY_READY` jobs.
 - Only outputs with `review_status: APPROVED` and `include_in_delivery: true` are included.
 - Rejected, excluded, pending, and changes-requested outputs are omitted.
+- If included outputs come from run-linked output manifests, the package records
+  `represented_run_ids` and each deliverable's `run_id`.
 - Every included file path is revalidated, including optional checksum checks.
 - Current rights are revalidated from the stored intake.
 - Duplicate package IDs and stale expected revisions are rejected.
