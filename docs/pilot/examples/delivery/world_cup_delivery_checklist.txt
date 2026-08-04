@@ -1,0 +1,54 @@
+Pilot Delivery Handoff Checklist
+================================
+
+Job Verification
+- Job ID: world_cup_pilot_source_alpha
+- Pilot ID: world_cup_pilot
+- Project ID: football
+- Current revision at generation: 6
+- Current state at generation: APPROVED
+- Package ID: world_cup_pilot_delivery_v1
+
+Rights Verification
+- Rights status: CONFIRMED
+- Rights checked: 2026-08-04T00:00:00+00:00
+- Expiration date: none recorded
+- Publishing permitted: no
+- Distribution limitations: internal pilot only
+
+Review Verification
+- Human review complete: yes
+- Reviewers: reviewer
+- Approved deliverable count: 1
+- Excluded/rejected count: 1
+- Output paths revalidated: yes
+- Missing-file count: 0
+- Checksum-verified count: 0
+
+Brand and Export Verification
+- Platforms: TikTok
+- Export profiles: vertical_clean
+- Operational categories: EMOTION
+- Expected naming: use listed filenames exactly; do not rename files during delivery.
+
+Delivery Verification
+- Delivery method: manual
+- Delivery destination: operator handoff folder
+- Deliverable count: 1
+- File list:
+  1. sample_clip.mp4 :: docs/pilot/examples/outputs/fixtures/sample_clip.mp4
+     caption: docs/pilot/examples/outputs/fixtures/sample_caption.txt
+     thumbnail: docs/pilot/examples/outputs/fixtures/sample_thumbnail.jpg
+
+Manual actions still required:
+- No files have been copied by this command.
+- No files have been uploaded by this command.
+- No files have been sent by this command.
+- No publishing has occurred.
+- The operator must manually complete delivery through the agreed destination.
+
+Operator confirmation fields:
+- Delivery completed by: __________________
+- Delivery completed at: __________________
+- Client acknowledgment/reference: __________________
+- Notes: __________________

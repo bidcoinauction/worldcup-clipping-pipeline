@@ -54,6 +54,8 @@ INTAKE_SCHEMA_VERSION = 1
 JOB_SCHEMA_VERSION = 1
 EVENT_SCHEMA_VERSION = 1
 OUTPUT_MANIFEST_SCHEMA_VERSION = 1
+DELIVERY_PACKAGE_SCHEMA_VERSION = 1
+DELIVERY_CONFIRMATION_SCHEMA_VERSION = 1
 
 # Runtime roots. `data/pilot/` is gitignored; client intake and job records
 # are never committed.
@@ -124,6 +126,7 @@ OUTPUT_FILE_EXTENSIONS = {
     "OTHER": frozenset({".txt", ".json", ".csv", ".pdf", ".zip"}),
 }
 DIRECTORY_OUTPUT_TYPES = frozenset({"REVIEW_DASHBOARD", "OTHER"})
+DELIVERY_PACKAGE_STATES = frozenset({"APPROVED", "DELIVERY_READY"})
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -220,6 +223,14 @@ class JobRevisionError(JobTransitionError):
 
 class OutputManifestError(JobRecordError):
     """Raised for expected output-manifest registration/review failures."""
+
+    def __init__(self, message: str, issues: list[dict] | None = None) -> None:
+        self.issues = issues or []
+        super().__init__(message)
+
+
+class DeliveryPackageError(JobRecordError):
+    """Raised for expected delivery-package and confirmation failures."""
 
     def __init__(self, message: str, issues: list[dict] | None = None) -> None:
         self.issues = issues or []
@@ -1296,11 +1307,23 @@ def _validate_transition_requirements(job: dict, current: str, target: str, meta
         return None, artifacts
 
     if target == "DELIVERY_READY":
-        _require_non_empty(metadata, "delivery_method", job_id, current, target)
-        _require_non_empty(metadata, "delivery_destination", job_id, current, target)
         deliverable_count = _require_positive_int(metadata, "deliverable_count", job_id, current, target)
+        package = _require_delivery_package_ready(
+            job, deliverable_count, target, jobs_dir=jobs_dir, intake_root=intake_root,
+            package_id=metadata.get("delivery_package_id") if isinstance(metadata.get("delivery_package_id"), str) else None,
+        )
+        metadata["delivery_package_id"] = package["package_id"]
+        metadata.setdefault("delivery_method", package.get("delivery_method"))
+        metadata.setdefault("delivery_destination", package.get("delivery_destination"))
+        for key in ("delivery_method", "delivery_destination"):
+            if metadata.get(key) != package.get(key):
+                raise JobTransitionError(_transition_error(job_id, current, target, f"{key} must match delivery package"))
         if not artifacts:
-            artifacts = [metadata["delivery_destination"]]
+            jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+            artifacts = [
+                str(_delivery_package_path(job_id, package["package_id"], jobs_dir_path)),
+                str(_delivery_checklist_path(job_id, package["package_id"], jobs_dir_path)),
+            ]
         report = _require_intake_readiness(job, target, intake_root=intake_root)
         _require_output_readiness(job_id, deliverable_count, target, intake_root=intake_root, jobs_dir=jobs_dir)
         return report, artifacts
@@ -1308,9 +1331,20 @@ def _validate_transition_requirements(job: dict, current: str, target: str, meta
     if target == "DELIVERED":
         _require_non_empty(metadata, "operator", job_id, current, target)
         _require_non_empty(metadata, "confirmation", job_id, current, target)
-        _require_non_empty(metadata, "delivery_destination", job_id, current, target)
         delivered_count = _require_positive_int(metadata, "delivered_item_count", job_id, current, target)
-        metadata["delivery_timestamp"] = _now_iso()
+        package = _require_delivery_confirmation_ready(
+            job, delivered_count, target, jobs_dir=jobs_dir, intake_root=intake_root,
+            package_id=metadata.get("delivery_package_id") if isinstance(metadata.get("delivery_package_id"), str) else None,
+        )
+        metadata["delivery_package_id"] = package["package_id"]
+        metadata.setdefault("delivery_method", package.get("delivery_method"))
+        metadata.setdefault("delivery_destination", package.get("delivery_destination"))
+        if not artifacts:
+            jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+            artifacts = [
+                str(_delivery_package_path(job_id, package["package_id"], jobs_dir_path)),
+                str(_delivery_confirmation_path(job_id, package["package_id"], jobs_dir_path)),
+            ]
         report = _require_intake_readiness(job, target, intake_root=intake_root)
         _require_output_readiness(job_id, delivered_count, target, intake_root=intake_root, jobs_dir=jobs_dir)
         return report, artifacts
@@ -2031,6 +2065,603 @@ def output_summary(job_id: str, jobs_dir: str | Path | None = None, *, intake_ro
         "issues": issues,
         "rights_issues": rights_codes,
     }
+
+
+# ── Delivery packages ────────────────────────────────────────────────────────
+
+_DELIVERY_PACKAGE_KEYS = (
+    "schema_version", "package_id", "job_id", "pilot_id", "project_id", "source_id",
+    "created_at", "created_by", "job_revision_used", "package_revision",
+    "delivery_method", "delivery_destination", "package_label", "internal_notes",
+    "rights_verification_timestamp", "rights_status_at_generation",
+    "approval_verification_timestamp", "deliverables", "summary",
+)
+_DELIVERABLE_KEYS = (
+    "deliverable_id", "output_manifest_id", "output_id", "output_type", "local_path",
+    "filename", "platform", "export_profile", "operational_category",
+    "editorial_labels", "clip_id", "duration", "caption_path", "thumbnail_path",
+    "metadata_path", "checksum", "approval_reviewer", "approval_timestamp",
+    "approval_statement", "delivery_sequence", "client_label", "client_note",
+)
+
+
+def _delivery_package_dir(job_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(job_id):
+        raise JobPathError(f"invalid job identifier '{job_id}'")
+    directory = Path(jobs_dir) / f"{job_id}.delivery"
+    if not _within_dir(directory, Path(jobs_dir)):
+        raise JobPathError(f"delivery package directory for '{job_id}' would escape '{jobs_dir}'")
+    return directory
+
+
+def _delivery_package_path(job_id: str, package_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(package_id):
+        raise DeliveryPackageError(f"package_id '{package_id}' is invalid; use letters, digits, '_' or '-'")
+    path = _delivery_package_dir(job_id, jobs_dir) / f"{package_id}.json"
+    if not _within_dir(path, Path(jobs_dir)):
+        raise JobPathError(f"delivery package path for '{job_id}/{package_id}' would escape '{jobs_dir}'")
+    return path
+
+
+def _delivery_checklist_path(job_id: str, package_id: str, jobs_dir: Path) -> Path:
+    return _delivery_package_dir(job_id, jobs_dir) / f"{package_id}.checklist.txt"
+
+
+def _delivery_confirmation_path(job_id: str, package_id: str, jobs_dir: Path) -> Path:
+    return _delivery_package_dir(job_id, jobs_dir) / f"{package_id}.confirmation.json"
+
+
+def _validate_delivery_destination(destination: object, issues: list[dict], path: str) -> str | None:
+    if not isinstance(destination, str) or not destination.strip():
+        issues.append(_output_issue(path, "MISSING_KEY", "expected a non-empty delivery destination"))
+        return None
+    value = destination.strip()
+    if _URL_CREDENTIAL_RE.match(value):
+        issues.append(_output_issue(path, "CREDENTIAL_URL", "delivery destination must not contain embedded credentials"))
+    if _URL_RE.match(value):
+        issues.append(_output_issue(path, "URL_NOT_ALLOWED", "record a local path or human-readable shared-folder description, not a URL"))
+    if _SECRET_VALUE_RE.search(value) or _BASE64_MEDIA_RE.fullmatch(value):
+        issues.append(_output_issue(path, "SECRET_VALUE", "delivery destination must not contain secrets or embedded data"))
+    if ".." in Path(value).parts:
+        issues.append(_output_issue(path, "PATH_TRAVERSAL", "delivery destination must not contain '..' traversal"))
+    return value
+
+
+def _rights_snapshot(job: dict, *, intake_root: str | None = None) -> tuple[dict, dict]:
+    intake = _load_stored_intake(job)
+    report = validate_intake(intake, intake_root=intake_root, check_source=False, check_rights=True)
+    rights = intake.get("rights") if isinstance(intake.get("rights"), dict) else {}
+    uses = rights.get("permitted_uses") if isinstance(rights.get("permitted_uses"), list) else []
+    return {
+        "status": rights.get("status", ""),
+        "expiration_date": rights.get("expiration_date"),
+        "publishing_permitted": any(str(u).lower() in {"publish", "public_distribution"} for u in uses),
+        "distribution_limitations": rights.get("distribution_limitations", []),
+        "rights_valid": report["rights_cleared"],
+        "validation_codes": report["validation_codes"],
+    }, report
+
+
+def _approved_included_outputs(job_id: str, jobs_dir: Path) -> list[dict]:
+    _, _, job, _ = _load_job_and_events(job_id, jobs_dir)
+    rows: list[dict] = []
+    for manifest_id in _job_output_manifest_ids(job, jobs_dir):
+        manifest = _read_output_manifest(job_id, manifest_id, jobs_dir)
+        manifest_revision = manifest.get("revision", 0) if isinstance(manifest.get("revision"), int) else 0
+        for output in manifest.get("outputs", []):
+            if not isinstance(output, dict):
+                continue
+            if output.get("review_status") == "APPROVED" and output.get("include_in_delivery") is True:
+                rows.append({"manifest_id": manifest_id, "manifest_revision": manifest_revision, "output": output})
+    return rows
+
+
+def _package_summary(deliverables: list[dict], *, missing_file_count: int, checksum_verified_count: int,
+                     rights_valid: bool, human_review_complete: bool) -> dict:
+    counts_by_type: dict[str, int] = {}
+    counts_by_platform: dict[str, int] = {}
+    counts_by_profile: dict[str, int] = {}
+    counts_by_category: dict[str, int] = {}
+    total_duration = 0.0
+    has_duration = False
+    for item in deliverables:
+        for key, target in (("output_type", counts_by_type), ("platform", counts_by_platform),
+                            ("export_profile", counts_by_profile), ("operational_category", counts_by_category)):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                target[value] = target.get(value, 0) + 1
+        duration = item.get("duration")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            total_duration += float(duration)
+            has_duration = True
+    return {
+        "total_deliverable_count": len(deliverables),
+        "counts_by_output_type": counts_by_type,
+        "counts_by_platform": counts_by_platform,
+        "counts_by_export_profile": counts_by_profile,
+        "counts_by_operational_category": counts_by_category,
+        "total_video_duration": total_duration if has_duration else None,
+        "missing_file_count": missing_file_count,
+        "checksum_verified_count": checksum_verified_count,
+        "rights_valid": rights_valid,
+        "human_review_complete": human_review_complete,
+        "delivery_ready": bool(deliverables) and missing_file_count == 0 and rights_valid and human_review_complete,
+    }
+
+
+def generate_delivery_package(job_id: str, *, package_id: str, operator: str, delivery_method: str,
+                              delivery_destination: str, jobs_dir: str | Path | None = None,
+                              expected_revision: int | None = None, package_label: str | None = None,
+                              internal_notes: str | None = None, intake_root: str | None = None,
+                              source: str = "pilot_job.delivery.generate") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    current = job.get("current_state", "")
+    if current not in DELIVERY_PACKAGE_STATES:
+        raise DeliveryPackageError(f"job '{job_id}' in state '{current}' cannot generate a delivery package; allowed states: {', '.join(sorted(DELIVERY_PACKAGE_STATES))}")
+    revision = _normalized_revision(job)
+    if expected_revision is not None and expected_revision != revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_revision}, current revision {revision}; no delivery package generated")
+    if not _is_valid_id(package_id):
+        raise DeliveryPackageError(f"package_id '{package_id}' is invalid; use letters, digits, '_' or '-'")
+    if not operator or not operator.strip():
+        raise DeliveryPackageError("operator is required for delivery package generation")
+    _validate_metadata({"operator": operator, "delivery_method": delivery_method, "delivery_destination": delivery_destination,
+                        "package_label": package_label or "", "internal_notes": internal_notes or ""})
+    issues: list[dict] = []
+    destination = _validate_delivery_destination(delivery_destination, issues, "delivery.destination")
+    if delivery_method not in DELIVERY_METHODS:
+        issues.append(_output_issue("delivery.method", "BAD_TYPE", f"expected one of {', '.join(sorted(DELIVERY_METHODS))}"))
+    if issues:
+        raise DeliveryPackageError("delivery package validation failed", issues)
+    package_path = _delivery_package_path(job_id, package_id, jobs_dir_path)
+    checklist_path = _delivery_checklist_path(job_id, package_id, jobs_dir_path)
+    if package_path.exists() or checklist_path.exists():
+        raise DeliveryPackageError(f"delivery package '{package_id}' already exists for job '{job_id}'")
+
+    summary = output_summary(job_id, jobs_dir=jobs_dir_path, intake_root=intake_root)
+    if not summary["review_complete"]:
+        raise DeliveryPackageError(f"job '{job_id}' is not ready for delivery packaging", summary.get("issues", []))
+    rights, rights_report = _rights_snapshot(job, intake_root=intake_root)
+    if not rights["rights_valid"]:
+        raise DeliveryPackageError(f"job '{job_id}' rights are not valid for delivery package generation")
+    rows = _approved_included_outputs(job_id, jobs_dir_path)
+    if not rows:
+        raise DeliveryPackageError(f"job '{job_id}' has no approved delivery-included outputs")
+
+    deliverables: list[dict] = []
+    missing = 0
+    checksum_verified = 0
+    for sequence, row in enumerate(rows, start=1):
+        output = row["output"]
+        path_issues: list[dict] = []
+        _validate_output_path(output.get("local_path"), output.get("output_type", "OTHER"), path_issues, f"deliverables[{sequence}].local_path", checksum=output.get("checksum"))
+        if path_issues:
+            missing += sum(1 for issue in path_issues if issue["code"] == "OUTPUT_MISSING")
+            raise DeliveryPackageError("included output path failed validation", path_issues)
+        if output.get("checksum"):
+            checksum_verified += 1
+        approval = output.get("approval_metadata") if isinstance(output.get("approval_metadata"), dict) else {}
+        deliverables.append({
+            "deliverable_id": f"{package_id}_{sequence:03d}",
+            "output_manifest_id": row["manifest_id"],
+            "output_id": output.get("output_id", ""),
+            "output_type": output.get("output_type", ""),
+            "local_path": output.get("local_path", ""),
+            "filename": output.get("filename", ""),
+            "platform": output.get("platform", ""),
+            "export_profile": output.get("export_profile", ""),
+            "operational_category": output.get("operational_category", ""),
+            "editorial_labels": list(output.get("editorial_labels", [])) if isinstance(output.get("editorial_labels"), list) else [],
+            "clip_id": output.get("clip_id"),
+            "duration": output.get("duration"),
+            "caption_path": output.get("caption_path"),
+            "thumbnail_path": output.get("thumbnail_path"),
+            "metadata_path": output.get("metadata_path"),
+            "checksum": output.get("checksum"),
+            "approval_reviewer": approval.get("approved_by", ""),
+            "approval_timestamp": approval.get("approval_timestamp", ""),
+            "approval_statement": approval.get("approval_statement", ""),
+            "delivery_sequence": sequence,
+            "client_label": None,
+            "client_note": None,
+        })
+
+    now = _now_iso()
+    package = {
+        "schema_version": DELIVERY_PACKAGE_SCHEMA_VERSION,
+        "package_id": package_id,
+        "job_id": job_id,
+        "pilot_id": job.get("pilot_id", ""),
+        "project_id": job.get("project_id", ""),
+        "source_id": job.get("source_id", ""),
+        "created_at": now,
+        "created_by": operator.strip(),
+        "job_revision_used": revision,
+        "package_revision": 0,
+        "delivery_method": delivery_method,
+        "delivery_destination": destination,
+        "package_label": package_label,
+        "internal_notes": internal_notes,
+        "rights_verification_timestamp": now,
+        "rights_status_at_generation": rights["status"],
+        "approval_verification_timestamp": now,
+        "deliverables": deliverables,
+        "summary": _package_summary(deliverables, missing_file_count=0, checksum_verified_count=checksum_verified,
+                                    rights_valid=rights["rights_valid"], human_review_complete=summary["human_review_recorded"]),
+    }
+    report = validate_delivery_package(package, job=job, jobs_dir=jobs_dir_path, intake_root=intake_root)
+    if not report["valid"]:
+        raise DeliveryPackageError("delivery package validation failed", report["issues"])
+    checklist = render_delivery_checklist(package, job=job, rights=rights, output_summary=summary)
+
+    sequence = _next_event_sequence(events)
+    event = {
+        "event_schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": _event_id(job_id, sequence, "DELIVERY_PACKAGE_GENERATED"),
+        "job_id": job_id,
+        "sequence": sequence,
+        "timestamp": now,
+        "event_type": "DELIVERY_PACKAGE_GENERATED",
+        "previous_state": current,
+        "new_state": current,
+        "operator": operator.strip(),
+        "message": f"Generated delivery package {package_id}",
+        "metadata": {"package_id": package_id, "deliverable_count": len(deliverables)},
+        "source": source,
+        "related_codes": rights_report["validation_codes"],
+        "artifact_references": [str(package_path), str(checklist_path)],
+    }
+    new_events = [*events, event]
+    package_ids = [v for v in job.get("delivery_packages", []) if isinstance(v, str)] if isinstance(job.get("delivery_packages"), list) else []
+    package_ids.append(package_id)
+    updated_job = dict(job)
+    updated_job.update({
+        "revision": revision + 1,
+        "updated_at": now,
+        "event_count": len(new_events),
+        "delivery_packages": sorted(set(package_ids)),
+        "active_delivery_package_id": package_id,
+        "latest_event": {"event_id": event["event_id"], "timestamp": now, "event_type": event["event_type"],
+                         "previous_state": current, "new_state": current, "message": event["message"]},
+    })
+    package_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(package_path, package)
+    _atomic_write_text(checklist_path, checklist)
+    _atomic_write_json(events_path, new_events)
+    _atomic_write_json(record_path, updated_job)
+    return {"job": updated_job, "package": package, "package_path": str(package_path), "checklist_path": str(checklist_path)}
+
+
+def _read_delivery_package(job_id: str, package_id: str, jobs_dir: Path) -> dict:
+    path = _delivery_package_path(job_id, package_id, jobs_dir)
+    if not path.exists():
+        raise DeliveryPackageError(f"delivery package '{package_id}' not found for job '{job_id}'")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise DeliveryPackageError(f"delivery package '{package_id}' root must be an object")
+    return data
+
+
+def _job_delivery_package_ids(job: dict, jobs_dir: Path) -> list[str]:
+    values = job.get("delivery_packages")
+    if isinstance(values, list):
+        return [v for v in values if isinstance(v, str)]
+    directory = _delivery_package_dir(job.get("job_id", ""), jobs_dir)
+    if not directory.exists():
+        return []
+    return sorted(path.stem for path in directory.glob("*.json") if not path.name.endswith(".confirmation.json"))
+
+
+def validate_delivery_package(data: object, *, job: dict | None = None, jobs_dir: str | Path | None = None,
+                              intake_root: str | None = None) -> dict:
+    issues: list[dict] = []
+    if not isinstance(data, dict):
+        issues.append(_output_issue("package", "BAD_TYPE", "root must be an object"))
+        return {"valid": False, "issues": issues, "validation_codes": ["BAD_TYPE"]}
+    _output_secret_scan(data, "package", issues)
+    _reject_output_unknown(data, _DELIVERY_PACKAGE_KEYS, "package", issues)
+    if data.get("schema_version") != DELIVERY_PACKAGE_SCHEMA_VERSION:
+        issues.append(_output_issue("package.schema_version", "BAD_SCHEMA_VERSION", f"expected {DELIVERY_PACKAGE_SCHEMA_VERSION}"))
+    package_id = data.get("package_id")
+    if not _is_valid_id(package_id):
+        issues.append(_output_issue("package.package_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+    for key in ("job_id", "pilot_id", "project_id", "source_id", "created_at", "created_by", "delivery_method", "delivery_destination"):
+        if not isinstance(data.get(key), str) or not data.get(key, "").strip():
+            issues.append(_output_issue(f"package.{key}", "MISSING_KEY", "expected a non-empty string"))
+    if isinstance(data.get("delivery_method"), str) and data["delivery_method"] not in DELIVERY_METHODS:
+        issues.append(_output_issue("package.delivery_method", "BAD_TYPE", f"expected one of {', '.join(sorted(DELIVERY_METHODS))}"))
+    _validate_delivery_destination(data.get("delivery_destination"), issues, "package.delivery_destination")
+    if isinstance(data.get("job_revision_used"), bool) or not isinstance(data.get("job_revision_used"), int):
+        issues.append(_output_issue("package.job_revision_used", "BAD_TYPE", "expected an integer"))
+    if data.get("package_revision") != 0:
+        issues.append(_output_issue("package.package_revision", "BAD_TYPE", "expected package revision 0"))
+    if job is not None and data.get("job_id") != job.get("job_id"):
+        issues.append(_output_issue("package.job_id", "JOB_MISMATCH", f"does not match target job '{job.get('job_id')}'"))
+
+    deliverables = data.get("deliverables")
+    if not isinstance(deliverables, list) or not deliverables:
+        issues.append(_output_issue("package.deliverables", "MISSING_KEY", "expected a non-empty deliverable list"))
+        deliverables = []
+    seen_ids: set[str] = set()
+    seen_sequences: set[int] = set()
+    total_duration = 0.0
+    has_duration = False
+    checksum_verified = 0
+    job_outputs: dict[tuple[str, str], dict] = {}
+    if job is not None:
+        jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+        for row in _approved_included_outputs(job.get("job_id", ""), jobs_dir_path):
+            job_outputs[(row["manifest_id"], row["output"].get("output_id", ""))] = row["output"]
+    for index, item in enumerate(deliverables):
+        path = f"package.deliverables[{index}]"
+        if not isinstance(item, dict):
+            issues.append(_output_issue(path, "BAD_TYPE", "expected an object"))
+            continue
+        _reject_output_unknown(item, _DELIVERABLE_KEYS, path, issues)
+        deliverable_id = item.get("deliverable_id")
+        if not _is_valid_id(deliverable_id):
+            issues.append(_output_issue(f"{path}.deliverable_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+        elif deliverable_id in seen_ids:
+            issues.append(_output_issue(f"{path}.deliverable_id", "DUPLICATE_DELIVERABLE_ID", "deliverable IDs must be unique"))
+        else:
+            seen_ids.add(deliverable_id)
+        sequence = item.get("delivery_sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
+            issues.append(_output_issue(f"{path}.delivery_sequence", "BAD_SEQUENCE", "expected a positive integer sequence"))
+        elif sequence in seen_sequences:
+            issues.append(_output_issue(f"{path}.delivery_sequence", "DUPLICATE_SEQUENCE", "delivery sequence values must be unique"))
+        else:
+            seen_sequences.add(sequence)
+        output_type = item.get("output_type") if item.get("output_type") in OUTPUT_TYPES else "OTHER"
+        if item.get("output_type") not in OUTPUT_TYPES:
+            issues.append(_output_issue(f"{path}.output_type", "UNKNOWN_OUTPUT_TYPE", "output type is not supported"))
+        checksum = item.get("checksum") if isinstance(item.get("checksum"), str) else None
+        if checksum:
+            checksum_verified += 1
+        _validate_output_path(item.get("local_path"), output_type, issues, f"{path}.local_path", checksum=checksum)
+        for ref_key, ref_type in (("caption_path", "CAPTION"), ("thumbnail_path", "THUMBNAIL"), ("metadata_path", "METADATA")):
+            if item.get(ref_key):
+                _validate_output_path(item[ref_key], ref_type, issues, f"{path}.{ref_key}")
+        try:
+            resolve_export_profile(item.get("export_profile", ""))
+        except ConfigurationError as exc:
+            issues.append(_output_issue(f"{path}.export_profile", C_CONFIG_UNKNOWN_EXPORT, str(exc)))
+        if isinstance(item.get("platform"), str) and item["platform"].lower() not in _known_platforms(data.get("project_id", "football")):
+            issues.append(_output_issue(f"{path}.platform", "UNKNOWN_PLATFORM", "platform is not configured"))
+        duration = item.get("duration")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            total_duration += float(duration)
+            has_duration = True
+        if job_outputs:
+            original = job_outputs.get((item.get("output_manifest_id"), item.get("output_id")))
+            if not original:
+                issues.append(_output_issue(f"{path}.output_id", "OUTPUT_NOT_APPROVED", "referenced output is not currently approved and included"))
+            else:
+                approval = original.get("approval_metadata") if isinstance(original.get("approval_metadata"), dict) else {}
+                if item.get("approval_reviewer") != approval.get("approved_by") or item.get("approval_timestamp") != approval.get("approval_timestamp") or item.get("approval_statement") != approval.get("approval_statement"):
+                    issues.append(_output_issue(f"{path}.approval_metadata", "APPROVAL_MISMATCH", "approval metadata no longer matches the source output manifest"))
+    if seen_sequences and sorted(seen_sequences) != list(range(1, len(seen_sequences) + 1)):
+        issues.append(_output_issue("package.deliverables", "SEQUENCE_ORDER", "delivery sequences must be contiguous starting at 1"))
+
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    if not summary:
+        issues.append(_output_issue("package.summary", "MISSING_KEY", "summary is required"))
+    elif summary.get("total_deliverable_count") != len(deliverables):
+        issues.append(_output_issue("package.summary.total_deliverable_count", "COUNT_MISMATCH", "does not match deliverable count"))
+    if has_duration and summary.get("total_video_duration") is not None and abs(float(summary.get("total_video_duration")) - total_duration) > 0.001:
+        issues.append(_output_issue("package.summary.total_video_duration", "DURATION_MISMATCH", "does not match deliverable durations"))
+    if summary and summary.get("checksum_verified_count") != checksum_verified:
+        issues.append(_output_issue("package.summary.checksum_verified_count", "COUNT_MISMATCH", "does not match checksum-bearing deliverables"))
+    if job is not None:
+        try:
+            rights, _ = _rights_snapshot(job, intake_root=intake_root)
+            if not rights["rights_valid"] or data.get("rights_status_at_generation") != rights["status"]:
+                issues.append(_output_issue("package.rights_status_at_generation", "RIGHTS_NOT_CURRENT", "rights status is not current or not valid"))
+        except JobRecordError as exc:
+            issues.append(_output_issue("package.rights_status_at_generation", "RIGHTS_NOT_CURRENT", str(exc)))
+    return {"valid": not issues, "issues": issues, "validation_codes": [issue["code"] for issue in issues] or [C_INTAKE_OK]}
+
+
+def render_delivery_checklist(package: dict, *, job: dict, rights: dict, output_summary: dict) -> str:
+    reviewers = sorted({d.get("approval_reviewer", "") for d in package.get("deliverables", []) if d.get("approval_reviewer")})
+    lines = [
+        "Pilot Delivery Handoff Checklist",
+        "================================",
+        "",
+        "Job Verification",
+        f"- Job ID: {package.get('job_id')}",
+        f"- Pilot ID: {package.get('pilot_id')}",
+        f"- Project ID: {package.get('project_id')}",
+        f"- Current revision at generation: {job.get('revision')}",
+        f"- Current state at generation: {job.get('current_state')}",
+        f"- Package ID: {package.get('package_id')}",
+        "",
+        "Rights Verification",
+        f"- Rights status: {rights.get('status')}",
+        f"- Rights checked: {package.get('rights_verification_timestamp')}",
+        f"- Expiration date: {rights.get('expiration_date') or 'none recorded'}",
+        f"- Publishing permitted: {'yes' if rights.get('publishing_permitted') else 'no'}",
+        f"- Distribution limitations: {', '.join(rights.get('distribution_limitations') or []) or 'none recorded'}",
+        "",
+        "Review Verification",
+        f"- Human review complete: {'yes' if output_summary.get('human_review_recorded') else 'no'}",
+        f"- Reviewers: {', '.join(reviewers) or 'none'}",
+        f"- Approved deliverable count: {package.get('summary', {}).get('total_deliverable_count')}",
+        f"- Excluded/rejected count: {output_summary.get('counts_by_review_status', {}).get('EXCLUDED', 0) + output_summary.get('counts_by_review_status', {}).get('REJECTED', 0)}",
+        f"- Output paths revalidated: yes",
+        f"- Missing-file count: {package.get('summary', {}).get('missing_file_count')}",
+        f"- Checksum-verified count: {package.get('summary', {}).get('checksum_verified_count')}",
+        "",
+        "Brand and Export Verification",
+        f"- Platforms: {', '.join(package.get('summary', {}).get('counts_by_platform', {}).keys())}",
+        f"- Export profiles: {', '.join(package.get('summary', {}).get('counts_by_export_profile', {}).keys())}",
+        f"- Operational categories: {', '.join(package.get('summary', {}).get('counts_by_operational_category', {}).keys())}",
+        "- Expected naming: use listed filenames exactly; do not rename files during delivery.",
+        "",
+        "Delivery Verification",
+        f"- Delivery method: {package.get('delivery_method')}",
+        f"- Delivery destination: {package.get('delivery_destination')}",
+        f"- Deliverable count: {package.get('summary', {}).get('total_deliverable_count')}",
+        "- File list:",
+    ]
+    for deliverable in package.get("deliverables", []):
+        lines.append(f"  {deliverable.get('delivery_sequence')}. {deliverable.get('filename')} :: {deliverable.get('local_path')}")
+        if deliverable.get("caption_path"):
+            lines.append(f"     caption: {deliverable.get('caption_path')}")
+        if deliverable.get("thumbnail_path"):
+            lines.append(f"     thumbnail: {deliverable.get('thumbnail_path')}")
+    lines.extend([
+        "",
+        "Manual actions still required:",
+        "- No files have been copied by this command.",
+        "- No files have been uploaded by this command.",
+        "- No files have been sent by this command.",
+        "- No publishing has occurred.",
+        "- The operator must manually complete delivery through the agreed destination.",
+        "",
+        "Operator confirmation fields:",
+        "- Delivery completed by: __________________",
+        "- Delivery completed at: __________________",
+        "- Client acknowledgment/reference: __________________",
+        "- Notes: __________________",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def list_delivery_packages(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, _ = _load_job_and_events(job_id, jobs_dir_path)
+    rows = []
+    for package_id in _job_delivery_package_ids(job, jobs_dir_path):
+        try:
+            package = _read_delivery_package(job_id, package_id, jobs_dir_path)
+        except DeliveryPackageError:
+            continue
+        rows.append({"package_id": package_id, "package_revision": package.get("package_revision", 0),
+                     "deliverable_count": len(package.get("deliverables", [])), "created_at": package.get("created_at", "")})
+    return rows
+
+
+def show_delivery_package(job_id: str, package_id: str, jobs_dir: str | Path | None = None) -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    package = _read_delivery_package(job_id, package_id, jobs_dir_path)
+    return {"package_id": package.get("package_id", package_id), "job_id": package.get("job_id", job_id),
+            "package_revision": package.get("package_revision", 0), "delivery_method": package.get("delivery_method", ""),
+            "delivery_destination": package.get("delivery_destination", ""),
+            "deliverable_count": len(package.get("deliverables", [])), "summary": package.get("summary", {}),
+            "deliverables": [{"deliverable_id": d.get("deliverable_id"), "filename": d.get("filename"),
+                              "platform": d.get("platform"), "output_type": d.get("output_type"),
+                              "delivery_sequence": d.get("delivery_sequence")} for d in package.get("deliverables", []) if isinstance(d, dict)]}
+
+
+def read_delivery_checklist(job_id: str, package_id: str, jobs_dir: str | Path | None = None) -> str:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    path = _delivery_checklist_path(job_id, package_id, jobs_dir_path)
+    if not path.exists():
+        raise DeliveryPackageError(f"delivery checklist for package '{package_id}' not found for job '{job_id}'")
+    return path.read_text(encoding="utf-8")
+
+
+def _require_delivery_package_ready(job: dict, expected_count: int, target: str, *, jobs_dir: str | Path | None,
+                                    intake_root: str | None, package_id: str | None = None) -> dict:
+    job_id = job.get("job_id", "")
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    selected = package_id or job.get("active_delivery_package_id")
+    if not isinstance(selected, str) or not selected:
+        raise JobTransitionError(f"job '{job_id}' cannot transition to '{target}': no active delivery package is linked")
+    package = _read_delivery_package(job_id, selected, jobs_dir_path)
+    report = validate_delivery_package(package, job=job, jobs_dir=jobs_dir_path, intake_root=intake_root)
+    if not report["valid"]:
+        codes = ", ".join(issue["code"] for issue in report["issues"][:5])
+        raise JobTransitionError(f"job '{job_id}' cannot transition to '{target}': delivery package '{selected}' is invalid; {codes}")
+    count = len(package.get("deliverables", []))
+    if count != expected_count:
+        raise JobTransitionError(f"job '{job_id}' cannot transition to '{target}': count {expected_count} does not match delivery package count {count}")
+    return package
+
+
+def _require_delivery_confirmation_ready(job: dict, expected_count: int, target: str, *, jobs_dir: str | Path | None,
+                                         intake_root: str | None, package_id: str | None = None) -> dict:
+    job_id = job.get("job_id", "")
+    package = _require_delivery_package_ready(job, expected_count, target, jobs_dir=jobs_dir, intake_root=intake_root,
+                                              package_id=package_id)
+    selected = package["package_id"]
+    confirmation = job.get("delivery_confirmation") if isinstance(job.get("delivery_confirmation"), dict) else {}
+    confirmed_package = confirmation.get("package_id")
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    confirmation_path = _delivery_confirmation_path(job_id, selected, jobs_dir_path)
+    if confirmed_package != selected or not confirmation_path.exists():
+        raise JobTransitionError(
+            f"job '{job_id}' cannot transition to '{target}': delivery package '{selected}' has no recorded confirmation"
+        )
+    try:
+        record = json.loads(confirmation_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise JobTransitionError(
+            f"job '{job_id}' cannot transition to '{target}': delivery confirmation for package '{selected}' is unreadable"
+        ) from exc
+    if not isinstance(record, dict) or record.get("schema_version") != DELIVERY_CONFIRMATION_SCHEMA_VERSION:
+        raise JobTransitionError(
+            f"job '{job_id}' cannot transition to '{target}': delivery confirmation for package '{selected}' is invalid"
+        )
+    if record.get("package_id") != selected or record.get("delivered_item_count") != expected_count:
+        raise JobTransitionError(
+            f"job '{job_id}' cannot transition to '{target}': delivery confirmation does not match package/count"
+        )
+    return package
+
+
+def confirm_delivery(job_id: str, package_id: str, *, operator: str, confirmation: str, delivered_count: int,
+                     jobs_dir: str | Path | None = None, expected_revision: int | None = None,
+                     client_acknowledgment: str | None = None, notes: str | None = None,
+                     intake_root: str | None = None, source: str = "pilot_job.delivery.confirm") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    current = job.get("current_state", "")
+    if current != "DELIVERY_READY":
+        raise DeliveryPackageError(f"job '{job_id}' must be DELIVERY_READY before delivery confirmation; current state is '{current}'")
+    revision = _normalized_revision(job)
+    if expected_revision is not None and expected_revision != revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_revision}, current revision {revision}; no delivery confirmation recorded")
+    if not operator or not operator.strip() or not confirmation or not confirmation.strip():
+        raise DeliveryPackageError("operator and confirmation are required for delivery confirmation")
+    if isinstance(delivered_count, bool) or not isinstance(delivered_count, int) or delivered_count <= 0:
+        raise DeliveryPackageError("delivered_count must be a positive integer")
+    _validate_metadata({"operator": operator, "confirmation": confirmation, "client_acknowledgment": client_acknowledgment or "", "notes": notes or ""})
+    package = _require_delivery_package_ready(job, delivered_count, "DELIVERED", jobs_dir=jobs_dir_path, intake_root=intake_root, package_id=package_id)
+    if package_id in job.get("delivered_package_ids", []):
+        raise DeliveryPackageError(f"delivery package '{package_id}' has already been used for a delivery event")
+    confirmation_path = _delivery_confirmation_path(job_id, package_id, jobs_dir_path)
+    if confirmation_path.exists():
+        raise DeliveryPackageError(f"delivery confirmation already exists for package '{package_id}'")
+    now = _now_iso()
+    record = {"schema_version": DELIVERY_CONFIRMATION_SCHEMA_VERSION, "job_id": job_id, "package_id": package_id,
+              "operator": operator.strip(), "delivery_timestamp": now, "delivery_method": package.get("delivery_method"),
+              "delivery_destination": package.get("delivery_destination"), "delivered_item_count": delivered_count,
+              "confirmation_statement": confirmation.strip(), "client_acknowledgment_reference": client_acknowledgment,
+              "notes": notes, "job_revision": revision, "package_revision": package.get("package_revision", 0)}
+    sequence = _next_event_sequence(events)
+    event = {"event_schema_version": EVENT_SCHEMA_VERSION, "event_id": _event_id(job_id, sequence, "DELIVERY_CONFIRMED"),
+             "job_id": job_id, "sequence": sequence, "timestamp": now, "event_type": "DELIVERY_CONFIRMED",
+             "previous_state": current, "new_state": current, "operator": operator.strip(),
+             "message": confirmation.strip(), "metadata": {"package_id": package_id, "delivered_item_count": delivered_count,
+                                                               "delivery_confirmation_path": str(confirmation_path)},
+             "source": source, "related_codes": [], "artifact_references": [str(_delivery_package_path(job_id, package_id, jobs_dir_path)), str(confirmation_path)]}
+    new_events = [*events, event]
+    delivered_ids = [v for v in job.get("delivered_package_ids", []) if isinstance(v, str)] if isinstance(job.get("delivered_package_ids"), list) else []
+    delivered_ids.append(package_id)
+    updated_job = dict(job)
+    updated_job.update({"current_state": current, "revision": revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "delivered_package_ids": sorted(set(delivered_ids)), "delivery_confirmation": {"package_id": package_id, "path": str(confirmation_path), "timestamp": now},
+                        "latest_event": {"event_id": event["event_id"], "timestamp": now, "event_type": event["event_type"],
+                                         "previous_state": current, "new_state": current, "message": event["message"]}})
+    confirmation_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(confirmation_path, record)
+    _atomic_write_json(events_path, new_events)
+    _atomic_write_json(record_path, updated_job)
+    return {"job": updated_job, "confirmation": record, "confirmation_path": str(confirmation_path)}
 
 
 def list_jobs(jobs_dir: str | Path | None = None) -> list[dict]:

@@ -155,21 +155,26 @@ python3 scripts/pilot_job.py transition JOB_ID APPROVED \
 
 ### 11. Prepare delivery
 
-Stage the approved deliverables and verify them against
-`DELIVERY_CHECKLIST.md`. Confirm the export profile, naming, and expected clip
-count. `outputs summary` reports delivery readiness but does not transition the
-job automatically.
+Generate a delivery package from the approved, delivery-included outputs. This
+writes JSON and a handoff checklist under `JOB_ID.delivery/`; it does not copy,
+move, upload, send, publish, or process media.
 
 ```bash
 python3 scripts/pilot_job.py outputs summary JOB_ID
 ```
 
 ```bash
-python3 scripts/pilot_job.py transition JOB_ID DELIVERY_READY \
+python3 scripts/pilot_job.py delivery generate JOB_ID PACKAGE_ID \
+  --operator YOUR_NAME \
   --delivery-method shared_folder \
   --delivery-destination FootballArchive/EXPORTS/JOB_ID \
-  --deliverable-count 8 \
-  --artifact docs/pilot/DELIVERY_CHECKLIST.md
+  --expected-revision REVISION_FROM_SHOW
+
+python3 scripts/pilot_job.py delivery checklist JOB_ID PACKAGE_ID
+
+python3 scripts/pilot_job.py transition JOB_ID DELIVERY_READY \
+  --delivery-package-id PACKAGE_ID \
+  --deliverable-count 8
 ```
 
 ### 12. Deliver through the agreed folder
@@ -180,21 +185,29 @@ Copy approved deliverables into the agreed shared folder or local directory
 
 ### 13. Record delivery
 
-Update the job record with the delivery event (approximate or exact delivery
-time and destination). This is a manual operator action.
+After manual handoff is complete, record delivery confirmation for the package,
+then transition the job to `DELIVERED`. Confirmation is a record only; it does
+not upload, send, or publish files.
 
 ```bash
-python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
+python3 scripts/pilot_job.py delivery confirm JOB_ID PACKAGE_ID \
   --operator YOUR_NAME \
   --confirmation "Delivered through agreed shared folder" \
-  --delivery-destination FootballArchive/EXPORTS/JOB_ID \
+  --delivered-count 8
+
+python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
+  --operator YOUR_NAME \
+  --confirmation "Client received package" \
+  --delivery-package-id PACKAGE_ID \
   --delivered-item-count 8
 ```
 
 ### 14. Archive operational records
 
-Keep the intake manifest and job record on disk under `data/pilot/` (gitignored).
-These are the provenance record: intake -> rights -> validation -> job -> outputs.
+Keep the intake manifest, job record, output manifests, delivery package,
+checklist, and confirmation on disk under `data/pilot/` (gitignored). These are
+the provenance record: intake -> rights -> validation -> job -> outputs ->
+delivery package -> confirmation.
 
 ### 15. Handle failure or cancellation
 

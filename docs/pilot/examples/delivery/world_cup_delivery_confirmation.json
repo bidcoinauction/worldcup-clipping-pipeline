@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "job_id": "world_cup_pilot_source_alpha",
+  "package_id": "world_cup_pilot_delivery_v1",
+  "operator": "operator",
+  "delivery_timestamp": "2026-08-04T00:10:00+00:00",
+  "delivery_method": "manual",
+  "delivery_destination": "operator handoff folder",
+  "delivered_item_count": 1,
+  "confirmation_statement": "Manual handoff completed",
+  "client_acknowledgment_reference": "sample acknowledgement",
+  "notes": "Fictitious tracked example; no client data.",
+  "job_revision": 8,
+  "package_revision": 0
+}

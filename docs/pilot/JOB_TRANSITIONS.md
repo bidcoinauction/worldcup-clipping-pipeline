@@ -10,8 +10,8 @@ copy files, upload files, deliver files, publish posts, or call network services
 - `RUNNING` — an operator has started the existing pipeline manually.
 - `REVIEW_REQUIRED` — outputs or review artifacts are ready for human review.
 - `APPROVED` — a human reviewer approved the deliverables.
-- `DELIVERY_READY` — approved deliverables are staged for manual delivery.
-- `DELIVERED` — delivery completion was recorded.
+- `DELIVERY_READY` — an approved delivery package is ready for manual handoff.
+- `DELIVERED` — delivery confirmation was recorded and the job was closed.
 - `FAILED` — a blocking failure was recorded.
 - `CANCELLED` — the pilot job was cancelled.
 - `AWAITING_RIGHTS` — source is ready but rights are not cleared.
@@ -43,8 +43,8 @@ allowed next states. Failed transitions append no events.
 - `RUNNING`: `--operator`; from `FAILED` also `--recovery-reason` and `--recovery-confirmed`.
 - `REVIEW_REQUIRED`: `--operator`, `--reason`, and at least one `--artifact`.
 - `APPROVED`: `--operator`, `--approval-statement`, and `--deliverable-count`.
-- `DELIVERY_READY`: `--delivery-method`, `--delivery-destination`, and `--deliverable-count`.
-- `DELIVERED`: `--operator`, `--confirmation`, `--delivery-destination`, and `--delivered-item-count`.
+- `DELIVERY_READY`: `--delivery-package-id` and `--deliverable-count`.
+- `DELIVERED`: `--operator`, `--confirmation`, `--delivery-package-id`, and `--delivered-item-count`.
 - `FAILED`: `--operator`, `--reason`, `--failure-category`, and `--retry-allowed yes|no`.
 - `CANCELLED`: `--operator`, `--reason`, and `--client-requested yes|no`.
 - `READY` from `FAILED`: `--operator`, `--recovery-reason`, and `--recovery-confirmed`.
@@ -57,11 +57,14 @@ Failure categories: `SOURCE`, `CONFIGURATION`, `RIGHTS`, `PROCESSING`,
 manifests. Jobs without output manifests cannot pass these delivery-related
 checks. The deliverable count must equal the number of approved,
 delivery-included outputs, and included output files must still validate.
+`DELIVERY_READY` additionally requires a generated delivery package. `DELIVERED`
+requires a prior `delivery confirm` record for that package.
 
 ## Revision Guard
 
 Each job has an integer `revision`. New jobs start at `0`. Every successful
-transition increments the revision by one. Operators may pass
+transition, output review, delivery package generation, and delivery
+confirmation increments the revision by one. Operators may pass
 `--expected-revision N`; stale revisions are rejected without appending events
 or changing files.
 
@@ -79,6 +82,37 @@ Transitions into `READY`, `RUNNING`, `DELIVERY_READY`, and `DELIVERED` re-read
 the stored intake manifest and revalidate rights status and expiration. `READY`
 and `RUNNING` also require the source file to remain valid. The intake manifest
 is never modified by transition validation.
+
+## Delivery Packages
+
+Delivery packages are generated from approved, delivery-included output
+manifests and stored under `JOB_ID.delivery/` with a paired checklist. They are
+text/JSON records only and contain the file list, approval metadata, rights
+snapshot, destination description, and summary counts. Package generation fails
+when approved files are missing, rights are stale, the expected revision is
+stale, or the package ID already exists.
+
+```bash
+python3 scripts/pilot_job.py delivery generate JOB_ID PACKAGE_ID \
+  --operator tyler \
+  --delivery-method shared_folder \
+  --delivery-destination FootballArchive/EXPORTS/JOB_ID
+
+python3 scripts/pilot_job.py transition JOB_ID DELIVERY_READY \
+  --delivery-package-id PACKAGE_ID \
+  --deliverable-count 8
+
+python3 scripts/pilot_job.py delivery confirm JOB_ID PACKAGE_ID \
+  --operator tyler \
+  --confirmation "Manual delivery completed" \
+  --delivered-count 8
+
+python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
+  --operator tyler \
+  --confirmation "Client received package" \
+  --delivery-package-id PACKAGE_ID \
+  --delivered-item-count 8
+```
 
 ## Event History
 
@@ -106,6 +140,8 @@ credential-like values. It does not create, copy, upload, or delete artifacts.
 
 - `RUNNING` does not execute media processing.
 - `APPROVED` records human approval only.
+- `delivery generate` does not stage, copy, move, upload, send, publish, or process files.
 - `DELIVERY_READY` does not stage or copy files.
+- `delivery confirm` does not upload, send, or publish files.
 - `DELIVERED` does not upload, send, or publish files.
 - `CANCELLED` does not delete source media or outputs.

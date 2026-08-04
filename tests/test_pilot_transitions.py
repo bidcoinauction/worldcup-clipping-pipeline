@@ -10,7 +10,9 @@ import pytest
 from pipeline.pilot import (
     JobRevisionError,
     JobTransitionError,
+    confirm_delivery,
     create_job,
+    generate_delivery_package,
     read_history,
     read_job,
     register_output_manifest,
@@ -83,16 +85,25 @@ def test_complete_manual_transition_path(media_file: Path, tmp_path: Path, jobs_
                          expected_revision=5, jobs_dir=jobs_root)
     assert job["current_state"] == "APPROVED"
 
+    result = generate_delivery_package(job_id, package_id="pkg_alpha", operator="op", delivery_method="shared_folder",
+                                       delivery_destination="deliveries/job-alpha", expected_revision=6,
+                                       jobs_dir=jobs_root)
+    assert result["job"]["revision"] == 7
+
     job = transition_job(job_id, "DELIVERY_READY",
-                         metadata={"delivery_method": "shared_folder", "delivery_destination": "deliveries/job-alpha", "deliverable_count": 2},
-                         artifact_references=["docs/pilot/DELIVERY_CHECKLIST.md"], expected_revision=6, jobs_dir=jobs_root)
+                         metadata={"delivery_package_id": "pkg_alpha", "deliverable_count": 2},
+                         artifact_references=["docs/pilot/DELIVERY_CHECKLIST.md"], expected_revision=7, jobs_dir=jobs_root)
     assert job["current_state"] == "DELIVERY_READY"
 
+    confirmed = confirm_delivery(job_id, "pkg_alpha", operator="op", confirmation="Delivery recorded",
+                                 delivered_count=2, expected_revision=8, jobs_dir=jobs_root)
+    assert confirmed["job"]["current_state"] == "DELIVERY_READY"
+
     job = transition_job(job_id, "DELIVERED",
-                         metadata={"operator": "op", "confirmation": "Delivery recorded", "delivery_destination": "deliveries/job-alpha", "delivered_item_count": 2},
-                         expected_revision=7, jobs_dir=jobs_root)
+                         metadata={"operator": "op", "confirmation": "Client received package", "delivery_package_id": "pkg_alpha", "delivered_item_count": 2},
+                         expected_revision=9, jobs_dir=jobs_root)
     assert job["current_state"] == "DELIVERED"
-    assert job["revision"] == 8
+    assert job["revision"] == 10
 
     history = read_history(job_id, jobs_dir=jobs_root)
     transitions = [event["new_state"] for event in history if event["event_type"] in {"CREATED", "TRANSITION"}]

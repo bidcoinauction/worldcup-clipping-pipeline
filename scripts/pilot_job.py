@@ -32,21 +32,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from pipeline.config_errors import ConfigurationError  # noqa: E402
 from pipeline.pilot import (  # noqa: E402
+    DeliveryPackageError,
     JobExistsError,
     JobNotFoundError,
     JobPathError,
     JobRecordError,
     OutputManifestError,
+    confirm_delivery,
     create_job,
+    generate_delivery_package,
     read_history,
+    read_job,
+    list_delivery_packages,
     list_jobs,
     list_output_manifests,
     output_summary,
+    read_delivery_checklist,
     register_output_manifest,
     review_output,
     show_job,
+    show_delivery_package,
     show_output_manifest,
     transition_job,
+    validate_delivery_package,
     validate_output_manifest,
     validate_intake,
 )
@@ -163,6 +171,7 @@ def _cmd_transition(args: argparse.Namespace) -> int:
         "confirmation": args.confirmation,
         "delivery_method": args.delivery_method,
         "delivery_destination": args.delivery_destination,
+        "delivery_package_id": args.delivery_package_id,
         "failure_category": args.failure_category,
         "retry_allowed": _parse_bool(args.retry_allowed) if args.retry_allowed is not None else None,
         "client_requested": _parse_bool(args.client_requested) if args.client_requested is not None else None,
@@ -316,7 +325,123 @@ def _cmd_outputs_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_delivery_generate(args: argparse.Namespace) -> int:
+    try:
+        result = generate_delivery_package(
+            args.job_id,
+            package_id=args.package_id,
+            operator=args.operator,
+            delivery_method=args.delivery_method,
+            delivery_destination=args.delivery_destination,
+            package_label=args.package_label,
+            internal_notes=args.internal_notes,
+            expected_revision=args.expected_revision,
+            jobs_dir=args.jobs_dir,
+            intake_root=args.intake_root,
+        )
+    except (DeliveryPackageError, JobRecordError, JobPathError) as exc:
+        _print_delivery_error(exc)
+        return 1
+    package = result["package"]
+    print(f"DELIVERY PACKAGE GENERATED: {package['package_id']}")
+    print(f"  job: {package['job_id']}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  deliverables: {len(package.get('deliverables', []))}")
+    print(f"  package_path: {result['package_path']}")
+    print(f"  checklist_path: {result['checklist_path']}")
+    return 0
+
+
+def _cmd_delivery_validate(args: argparse.Namespace) -> int:
+    data = _load_json_object(Path(args.package), "delivery package")
+    job = None
+    if args.job_id:
+        try:
+            job = read_job(args.job_id, jobs_dir=args.jobs_dir)
+        except (JobRecordError, JobPathError) as exc:
+            _print_delivery_error(exc)
+            return 1
+    report = validate_delivery_package(data, job=job, jobs_dir=args.jobs_dir, intake_root=args.intake_root)
+    print(f"DELIVERY PACKAGE: valid={_yesno(report['valid'])}")
+    if report["issues"]:
+        print("ISSUES:")
+        for issue in report["issues"]:
+            print(f"  {issue['path']} [{issue['code']}]: {issue['message']}")
+    return 0 if report["valid"] else 1
+
+
+def _cmd_delivery_list(args: argparse.Namespace) -> int:
+    try:
+        rows = list_delivery_packages(args.job_id, jobs_dir=args.jobs_dir)
+    except (DeliveryPackageError, JobRecordError, JobPathError) as exc:
+        _print_delivery_error(exc)
+        return 1
+    if not rows:
+        print(f"No delivery packages recorded for {args.job_id}.")
+        return 0
+    for row in rows:
+        print(f"{row['package_id']}\trevision={row['package_revision']}\tdeliverables={row['deliverable_count']}\tcreated={row['created_at']}")
+    return 0
+
+
+def _cmd_delivery_show(args: argparse.Namespace) -> int:
+    try:
+        data = show_delivery_package(args.job_id, args.package_id, jobs_dir=args.jobs_dir)
+    except (DeliveryPackageError, JobRecordError, JobPathError) as exc:
+        _print_delivery_error(exc)
+        return 1
+    print(f"DELIVERY PACKAGE: {data['package_id']}")
+    print(f"  job: {data['job_id']}")
+    print(f"  revision: {data['package_revision']}")
+    print(f"  delivery_method: {data['delivery_method']}")
+    print(f"  delivery_destination: {data['delivery_destination']}")
+    print(f"  deliverables: {data['deliverable_count']}")
+    for deliverable in data["deliverables"]:
+        print(f"    {deliverable['delivery_sequence']} {deliverable['deliverable_id']} {deliverable['output_type']} {deliverable['platform']} {deliverable['filename']}")
+    return 0
+
+
+def _cmd_delivery_checklist(args: argparse.Namespace) -> int:
+    try:
+        print(read_delivery_checklist(args.job_id, args.package_id, jobs_dir=args.jobs_dir), end="")
+    except (DeliveryPackageError, JobRecordError, JobPathError) as exc:
+        _print_delivery_error(exc)
+        return 1
+    return 0
+
+
+def _cmd_delivery_confirm(args: argparse.Namespace) -> int:
+    try:
+        result = confirm_delivery(
+            args.job_id,
+            args.package_id,
+            operator=args.operator,
+            confirmation=args.confirmation,
+            delivered_count=args.delivered_count,
+            client_acknowledgment=args.client_acknowledgment,
+            notes=args.notes,
+            expected_revision=args.expected_revision,
+            jobs_dir=args.jobs_dir,
+            intake_root=args.intake_root,
+        )
+    except (DeliveryPackageError, JobRecordError, JobPathError) as exc:
+        _print_delivery_error(exc)
+        return 1
+    print(f"DELIVERY CONFIRMED: {result['confirmation']['package_id']}")
+    print(f"  job: {result['confirmation']['job_id']}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  delivered_item_count: {result['confirmation']['delivered_item_count']}")
+    print(f"  confirmation_path: {result['confirmation_path']}")
+    return 0
+
+
 def _print_output_error(exc: OutputManifestError) -> None:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    for issue in getattr(exc, "issues", [])[:20]:
+        print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
+
+
+def _print_delivery_error(exc: Exception) -> None:
     print(f"ERROR: {exc}", file=sys.stderr)
     for issue in getattr(exc, "issues", [])[:20]:
         print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
@@ -380,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     transition_p.add_argument("--delivered-item-count", type=int, default=None, help="Delivered item count")
     transition_p.add_argument("--delivery-method", default=None, help="Delivery method")
     transition_p.add_argument("--delivery-destination", default=None, help="Delivery destination")
+    transition_p.add_argument("--delivery-package-id", default=None, help="Delivery package identifier")
     transition_p.add_argument("--failure-category", default=None, help="Failure category")
     transition_p.add_argument("--retry-allowed", default=None, help="Whether retry is allowed: yes/no")
     transition_p.add_argument("--client-requested", default=None, help="Whether cancellation was client-requested: yes/no")
@@ -440,6 +566,59 @@ def main(argv: list[str] | None = None) -> int:
     outputs_summary.add_argument("--jobs-dir", default=None, help="Job-record directory")
     outputs_summary.add_argument("--intake-root", default=None, help="Allowed source intake root")
     outputs_summary.set_defaults(func=_cmd_outputs_summary)
+
+    delivery_p = subparsers.add_parser("delivery", help="Generate, inspect, and confirm delivery packages.")
+    delivery_sub = delivery_p.add_subparsers(dest="delivery_command", required=True)
+
+    delivery_generate = delivery_sub.add_parser("generate", help="Generate a text/JSON delivery package from approved outputs.")
+    delivery_generate.add_argument("job_id", help="Job identifier")
+    delivery_generate.add_argument("package_id", help="Delivery package identifier")
+    delivery_generate.add_argument("--operator", required=True, help="Operator identifier")
+    delivery_generate.add_argument("--delivery-method", required=True, help="Delivery method")
+    delivery_generate.add_argument("--delivery-destination", required=True, help="Delivery destination")
+    delivery_generate.add_argument("--package-label", default=None, help="Optional package label")
+    delivery_generate.add_argument("--internal-notes", default=None, help="Optional internal notes")
+    delivery_generate.add_argument("--expected-revision", type=int, default=None, help="Expected job revision")
+    delivery_generate.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    delivery_generate.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    delivery_generate.set_defaults(func=_cmd_delivery_generate)
+
+    delivery_validate = delivery_sub.add_parser("validate", help="Validate a delivery package JSON (read-only).")
+    delivery_validate.add_argument("package", help="Path to delivery package JSON")
+    delivery_validate.add_argument("--job-id", default=None, help="Job identifier for current-state validation")
+    delivery_validate.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    delivery_validate.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    delivery_validate.set_defaults(func=_cmd_delivery_validate)
+
+    delivery_list = delivery_sub.add_parser("list", help="List delivery packages for a job.")
+    delivery_list.add_argument("job_id", help="Job identifier")
+    delivery_list.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    delivery_list.set_defaults(func=_cmd_delivery_list)
+
+    delivery_show = delivery_sub.add_parser("show", help="Show a privacy-safe delivery package summary.")
+    delivery_show.add_argument("job_id", help="Job identifier")
+    delivery_show.add_argument("package_id", help="Delivery package identifier")
+    delivery_show.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    delivery_show.set_defaults(func=_cmd_delivery_show)
+
+    delivery_checklist = delivery_sub.add_parser("checklist", help="Print the generated handoff checklist.")
+    delivery_checklist.add_argument("job_id", help="Job identifier")
+    delivery_checklist.add_argument("package_id", help="Delivery package identifier")
+    delivery_checklist.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    delivery_checklist.set_defaults(func=_cmd_delivery_checklist)
+
+    delivery_confirm = delivery_sub.add_parser("confirm", help="Record manual delivery confirmation for a package.")
+    delivery_confirm.add_argument("job_id", help="Job identifier")
+    delivery_confirm.add_argument("package_id", help="Delivery package identifier")
+    delivery_confirm.add_argument("--operator", required=True, help="Operator identifier")
+    delivery_confirm.add_argument("--confirmation", required=True, help="Confirmation statement")
+    delivery_confirm.add_argument("--delivered-count", type=int, required=True, help="Delivered item count")
+    delivery_confirm.add_argument("--client-acknowledgment", default=None, help="Optional client acknowledgment reference")
+    delivery_confirm.add_argument("--notes", default=None, help="Optional confirmation notes")
+    delivery_confirm.add_argument("--expected-revision", type=int, default=None, help="Expected job revision")
+    delivery_confirm.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    delivery_confirm.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    delivery_confirm.set_defaults(func=_cmd_delivery_confirm)
 
     args = parser.parse_args(argv)
     return args.func(args)

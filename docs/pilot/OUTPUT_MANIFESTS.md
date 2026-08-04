@@ -11,7 +11,8 @@ Existing clip manifest
 -> pilot output manifest
 -> manual output review
 -> explicit job approval
--> manual delivery
+-> delivery package/checklist
+-> manual delivery confirmation
 ```
 
 ## Runtime Storage
@@ -122,4 +123,5 @@ Review completion requires:
 
 The system reports eligibility for `APPROVED` and `DELIVERY_READY`, but it does
 not automatically transition the job. The operator must still run
-`pilot_job.py transition`.
+`pilot_job.py delivery generate` followed by `pilot_job.py transition`. See
+`docs/pilot/DELIVERY_PACKAGES.md` for package and confirmation records.

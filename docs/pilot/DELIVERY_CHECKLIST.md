@@ -2,6 +2,10 @@
 
 Confirm every item before delivering pilot outputs.
 
+The generated checklist from `pilot_job.py delivery checklist JOB_ID PACKAGE_ID`
+is the package-specific handoff record. Use this document as the operator-level
+control list before and after that generated checklist.
+
 ## Job and source
 
 - [ ] Correct job (`show JOB_ID`) — matches the intended pilot and source.
@@ -18,6 +22,8 @@ Confirm every item before delivering pilot outputs.
 - [ ] Output manifest registered for the correct job.
 - [ ] `outputs summary JOB_ID` shows no missing or invalid included files.
 - [ ] Delivery-included count matches the planned deliverable count.
+- [ ] Delivery package generated from approved outputs.
+- [ ] Generated checklist reviewed against the actual file list.
 
 ## Rights and review
 
@@ -26,14 +32,14 @@ Confirm every item before delivering pilot outputs.
 - [ ] Every delivery-included output is `APPROVED` in the output manifest.
 - [ ] Rejected, changes-requested, excluded, or pending outputs are not included in delivery.
 - [ ] Approval recorded.
-- [ ] `APPROVED -> DELIVERY_READY` transition recorded before handoff.
+- [ ] `APPROVED -> DELIVERY_READY` transition recorded with `--delivery-package-id` before handoff.
 - [ ] Publishing not performed unless explicitly permitted.
 
 ## Destination and privacy
 
 - [ ] Shared-folder / local-directory destination verified.
 - [ ] No accidental source-media exposure (only approved deliverables leave).
-- [ ] Delivery recorded in the job event log.
+- [ ] Delivery confirmation recorded with `delivery confirm` after manual handoff.
 - [ ] `DELIVERED` transition recorded only after manual handoff is complete.
 - [ ] `history JOB_ID` shows the expected append-only sequence.
 

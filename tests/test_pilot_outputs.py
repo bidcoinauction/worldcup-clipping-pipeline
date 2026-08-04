@@ -16,7 +16,9 @@ from pipeline.pilot import (
     JobRevisionError,
     JobTransitionError,
     OutputManifestError,
+    confirm_delivery,
     create_job,
+    generate_delivery_package,
     output_summary,
     register_output_manifest,
     review_output,
@@ -301,10 +303,13 @@ def test_summary_and_transition_integration(media_file: Path, tmp_path: Path, jo
     with pytest.raises(JobTransitionError):
         transition_job(job["job_id"], "APPROVED", metadata={"operator": "r", "approval_statement": "Approved", "deliverable_count": 2}, jobs_dir=jobs_root)
     transition_job(job["job_id"], "APPROVED", metadata={"operator": "r", "approval_statement": "Approved", "deliverable_count": 1}, jobs_dir=jobs_root)
-    transition_job(job["job_id"], "DELIVERY_READY", metadata={"delivery_method": "shared_folder", "delivery_destination": "exports", "deliverable_count": 1}, jobs_dir=jobs_root)
+    generate_delivery_package(job["job_id"], package_id="pkg_outputs", operator="op", delivery_method="shared_folder",
+                              delivery_destination="exports", jobs_dir=jobs_root)
+    transition_job(job["job_id"], "DELIVERY_READY", metadata={"delivery_package_id": "pkg_outputs", "deliverable_count": 1}, jobs_dir=jobs_root)
     with pytest.raises(JobTransitionError):
         transition_job(job["job_id"], "DELIVERED", metadata={"operator": "op", "confirmation": "done", "delivery_destination": "exports", "delivered_item_count": 2}, jobs_dir=jobs_root)
-    transition_job(job["job_id"], "DELIVERED", metadata={"operator": "op", "confirmation": "done", "delivery_destination": "exports", "delivered_item_count": 1}, jobs_dir=jobs_root)
+    confirm_delivery(job["job_id"], "pkg_outputs", operator="op", confirmation="done", delivered_count=1, jobs_dir=jobs_root)
+    transition_job(job["job_id"], "DELIVERED", metadata={"operator": "op", "confirmation": "done", "delivery_package_id": "pkg_outputs", "delivered_item_count": 1}, jobs_dir=jobs_root)
 
 
 def test_missing_approved_file_blocks_readiness(media_file: Path, tmp_path: Path, jobs_root: Path):

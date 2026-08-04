@@ -42,6 +42,13 @@ ignored by Git; they are never committed.
   commands, base64 media, environment dumps, or unnecessary personal
   information. Output registration and review never copy, move, edit, delete,
   upload, publish, or process the referenced files.
+- Delivery package manifests, generated checklists, and confirmation records
+  are operational metadata only. They must not contain credentials, API keys,
+  social tokens, cookies, payment details, credential URLs, shell commands,
+  base64/embedded media, environment dumps, path traversal, or full rights
+  statements. Package generation revalidates current rights and approved output
+  file paths, but never copies, moves, uploads, sends, publishes, deletes, or
+  processes media. Delivery confirmation records manual handoff only.
 
 ## Reporting a vulnerability
 
