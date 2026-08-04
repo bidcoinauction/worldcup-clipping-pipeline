@@ -5,7 +5,8 @@ import argparse
 import json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pipeline.config import get_clip_mode, get_default_clip_mode, load_config
+from pipeline.config import get_clip_mode, get_default_clip_mode
+from pipeline.configurator import render_template, resolve_project_identity
 from pipeline.condense_transcript import condense_timestamps
 from pipeline.utils import ROOT, slugify
 
@@ -236,35 +237,6 @@ def _build_match_brief_block(research_path: Path | None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-PROMPT_TEMPLATE = """You are an elite short-form football clipping strategist for a US-targeted 2026 World Cup account.
-
-Account positioning:
-"{account_positioning}"
-
-Goal:
-{goal}
-
-Analyze the timestamped transcript below and produce a JSON array of clip candidates.
-
-Prioritize these categories:
-1. EMOTION: crowd eruption, anthem moments, crying fans, tunnel walks, national pride, heartbreak, pressure.
-2. AURA: Messi, Ronaldo, Mbappe, Bellingham, Vinicius, Neymar, cold reactions, legacy, intimidation.
-3. CHAOS: VAR controversy, fights, red cards, meltdowns, tactical collapses.
-4. AMERICA: US audience entry point, MLS/Messi, football culture shock, why soccer feels different.
-
-{category_rule}{clip_schema}
-
-{rules_block}
-
-{story_targets_block}{research_block}{brief_block}Match name:
-{match_name}
-
-Timestamped transcript (video duration: {duration_seconds}s):
-\"\"\"
-{timestamped_transcript}
-\"\"\"
-"""
-
 def _segments_to_transcript(segments):
     lines = []
     for seg in segments:
@@ -341,19 +313,22 @@ def main():
     story_targets_block = _build_story_targets_block(research_path)
     brief_block = _build_match_brief_block(research_path)
     clip_schema = _build_clip_schema(mode)
-    account_positioning = load_config().get("account_positioning", "America Discovers Football")
-    prompt = PROMPT_TEMPLATE.format(
-        match_name=args.match_name,
-        timestamped_transcript=timestamped_transcript,
-        duration_seconds=duration,
-        rules_block=rules_block,
-        goal=goal,
-        research_block=research_block,
-        category_rule=category_rule,
-        story_targets_block=story_targets_block,
-        brief_block=brief_block,
-        clip_schema=clip_schema,
-        account_positioning=account_positioning,
+    account_positioning = resolve_project_identity()["positioning"]
+    prompt = render_template(
+        "prompt",
+        variables={
+            "match_name": args.match_name,
+            "timestamped_transcript": timestamped_transcript,
+            "duration_seconds": duration,
+            "rules_block": rules_block,
+            "goal": goal,
+            "research_block": research_block,
+            "category_rule": category_rule,
+            "story_targets_block": story_targets_block,
+            "brief_block": brief_block,
+            "clip_schema": clip_schema,
+            "account_positioning": account_positioning,
+        },
     )
 
     out_file = ROOT / "PROMPTS" / f"{slugify(args.match_name)}_claude_prompt.txt"

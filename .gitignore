@@ -23,6 +23,11 @@ TOP_PERFORMERS/
 
 # Generated pipeline artifacts
 PROMPTS/*.txt
+# NOTE: on macOS (case-insensitive filesystem) the PROMPTS/*.txt rule also
+# matches the lowercase prompts/ template directory. The tracked detection
+# templates under prompts/ (world_cup_detection_prompt.txt,
+# basketball_detection_prompt.txt, thumbnail_prompt_template.txt) are committed
+# with `git add -f` and must stay tracked.
 DETECTION/
 DETECTIONS/
 CLIP_MANIFESTS/*.csv

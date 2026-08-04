@@ -59,7 +59,32 @@ Do not commit `.env` or files under `secrets/`.
 
 The additive structured layer in `pipeline/configurator.py` resolves project identity, taxonomy, templates, platforms, and the canonical archive root (`FOOTBALL_ARCHIVE_ROOT`, falling back to `C:\FootballArchive` / `FootballArchive`). Unknown profile, taxonomy, or template selections raise `pipeline.config_errors.ConfigurationError`.
 
-`config/examples/basketball.json` is a **non-production example** proving the structured boundary for a second sport. It is never registered as a default profile and is not loaded at runtime.
+### Archive-root precedence
+
+`FOOTBALL_ARCHIVE_ROOT` wins; otherwise the platform default (`C:\FootballArchive` on Windows, `FootballArchive` elsewhere). Explicit CLI arguments (e.g. `--output`, `--staging-dir`, `--ready-dir`, `--watch-dir`) always win over the resolved root. The canonical `resolve_archive_root`/`resolve_archive_path` in `pipeline/configurator.py` are used by `pipeline/stadium_signal.py`, `scripts/record_live.py`, and `scripts/live_watch.py` (each keeps a thin `archive_root`/`archive_path` wrapper that delegates to the canonical functions).
+
+### Positioning precedence
+
+`pipeline/configurator.resolve_project_identity()` resolves account positioning in this order:
+
+1. Explicit structured project configuration
+2. Legacy `account_positioning` in `config/pipeline_config.json`
+3. `ACCOUNT_POSITIONING` environment variable (legacy fallback)
+4. Historical default `America Discovers Football`
+
+Configuration always wins over the environment variable. `scripts/generate_claude_prompt.py` routes through this resolver and no longer carries its own fallback.
+
+### Detection template
+
+The World Cup detection prompt is a tracked, registered template:
+
+```text
+prompts/world_cup_detection_prompt.txt
+```
+
+It is rendered by `pipeline/configurator.render_template()` (standard library only, no Jinja). Only registered templates can be rendered; unknown template IDs, missing files, missing required variables, and path-traversal attempts raise `ConfigurationError` with the template identifier and no silent fallback. Rendering is read-only (no network access, no file mutation) and deterministic.
+
+`config/examples/basketball.json` is a **non-production example** proving the structured boundary for a second sport. It is never registered as a default profile and is not loaded at runtime. Its detection template (`prompts/basketball_detection_prompt.txt`) resolves for validation but is not registered for rendering.
 
 Validate any configuration file (read-only, no network, no file mutation):
 
@@ -76,10 +101,10 @@ pytest
 python3 scripts/validate_config.py config/pipeline_config.json
 ```
 
-Verified Phase 0 baseline on macOS:
+Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 541 passed, 1 skipped, 2 warnings.
+- `pytest`: 597 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 

@@ -1,0 +1,23 @@
+# NON-PRODUCTION EXAMPLE TEMPLATE.
+# This basketball detection template is an example only. It is not registered
+# for rendering and NOT part of the production World Cup deployment. It exists
+# only to prove the template boundary resolves for a second sport. No media,
+# API, or network access is required.
+
+You are an example short-form basketball clipping strategist archivist.
+
+Account positioning:
+"{account_positioning}"
+
+Analyze the timestamped transcript below and produce a JSON array of clip candidates.
+
+Prioritize these categories:
+{categories}
+
+Match name:
+{match_name}
+
+Timestamped transcript (video duration: {duration_seconds}s):
+"""
+{timestamped_transcript}
+"""

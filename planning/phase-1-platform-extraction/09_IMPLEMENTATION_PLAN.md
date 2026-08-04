@@ -87,6 +87,19 @@ The first config-extraction slice is implemented and merged:
 
 Verification: `python3 scripts/validate_data.py` passes; `pytest` 570 passed, 1 skipped (baseline 541 passed / 1 skipped preserved); both `validate_config.py` fixtures pass; an intentionally invalid fixture exits nonzero with the complete field path and without file mutation.
 
+## Status — Phase 1 Second Slice (Complete: Resolver Adoption + Prompt Boundary)
+
+The remaining duplicated archive-root and positioning logic is consolidated, and the missing detection-template stub is replaced with a real registered template:
+
+- `scripts/record_live.py` and `scripts/live_watch.py` — local `archive_root`/`archive_path` replaced with thin delegates to the canonical `pipeline.configurator.resolve_archive_root`/`resolve_archive_path`; explicit CLI args (`--output`, `--staging-dir`, `--ready-dir`, `--watch-dir`) still win.
+- `scripts/generate_claude_prompt.py` — account positioning now resolved via `resolve_project_identity()` (explicit config → legacy `account_positioning` → `ACCOUNT_POSITIONING` env → default); the independent `load_config().get("account_positioning", ...)` fallback is removed.
+- `prompts/world_cup_detection_prompt.txt` — new tracked, registered World Cup detection template, byte-identical to the previous `PROMPT_TEMPLATE` body; the nonexistent `prompts/claude_detection_prompt.stub` reference is gone.
+- `pipeline/configurator.py` — added `render_template()` (standard library, deterministic, read-only), the registered-template variable registry, and traversal-safe `resolve_profile_template_path()`/`_resolve_template_path()`.
+- `prompts/basketball_detection_prompt.txt` — example-only template that resolves for validation but is not registered for rendering.
+- Tests: `test_template_resolver.py` (byte-for-byte equivalence fixture, section preservation, error handling, traversal), `test_resolver_adoption.py` (canonical adoption, precedence, no independent fallback).
+
+Verification: `pytest` 597 passed, 1 skipped (baseline 570 / 1 preserved); `validate_data.py` passes; both config fixtures validate; invalid template selection raises `ConfigurationError` with the template identifier and no silent fallback; render performs no network access and no file mutation.
+
 ## Gate Before Merge
 
 - `git diff --check` clean.

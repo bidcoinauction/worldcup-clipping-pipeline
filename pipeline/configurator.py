@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path, PureWindowsPath
 
 from .config import load_config
@@ -25,6 +26,8 @@ from .config_errors import ConfigurationError
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_POSITIONING = "America Discovers Football"
+
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 # Top-level keys recognized in a structured profile file.
 _PROFILE_KEYS = ("name", "project", "taxonomies", "templates", "platforms", "outputs")
@@ -144,7 +147,7 @@ def _football_profile()-> dict:
             "emotional_kinds": list(cfg.get("categories", [])),  # complementary; see clip_modes
         },
         "templates": {
-            "prompt": "prompts/claude_detection_prompt.stub",
+            "prompt": "prompts/world_cup_detection_prompt.txt",
             "assets": cfg.get("paths", {}).get("thumbnail_template", "prompts/thumbnail_prompt_template.txt"),
         },
         "platforms": list(cfg.get("platforms", ["TikTok", "Reels", "Shorts"])),
@@ -200,13 +203,114 @@ def resolve_template(name: str, profile: str = "football", root: str | Path | No
     if name not in templates:
         raise ConfigurationError(f"template '{name}' is not configured for profile '{profile}'")
     root_path = Path(root) if root is not None else _REPO_ROOT
-    raw = templates[name]
+    return _resolve_template_path(templates[name], name, source=f"{profile}.templates.{name}", root=root_path)
+
+
+def _resolve_template_path(raw: str, name: str, source: str, root: Path) -> Path:
+    """Resolve a repository-relative template path with traversal protection.
+
+    Absolute paths and ``..`` escape attempts are rejected with
+    :class:`ConfigurationError`. The resolved file must exist.
+    """
     candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = root_path / candidate
-    if not candidate.exists():
-        raise ConfigurationError(f"template file not found at '{candidate}' for profile '{profile}' template '{name}'")
-    return candidate
+    if candidate.is_absolute():
+        raise ConfigurationError(
+            f"{source}: template '{name}' must be a repository-relative path, got absolute '{raw}'"
+        )
+    if ".." in candidate.parts:
+        raise ConfigurationError(
+            f"{source}: template '{name}' path traversal is not allowed: '{raw}'"
+        )
+    resolved = (root / candidate).resolve()
+    if not resolved.exists():
+        raise ConfigurationError(
+            f"{source}: template file not found at '{resolved}' for template '{name}'"
+        )
+    return resolved
+
+
+def resolve_profile_template_path(
+    templates: dict, name: str, source: str, root: str | Path | None = None
+) -> Path:
+    """Resolve a template path from an already-validated structured profile's
+    ``templates`` map. Unknown template name, unsafe path, or missing file
+    raise :class:`ConfigurationError`."""
+    if not isinstance(templates, dict) or name not in templates:
+        raise ConfigurationError(f"{source}: template '{name}' is not configured")
+    raw = templates[name]
+    if not isinstance(raw, str) or not raw:
+        raise ConfigurationError(f"{source}.{name}: expected a non-empty template path string")
+    root_path = Path(root) if root is not None else _REPO_ROOT
+    return _resolve_template_path(raw, name, source=f"{source}.{name}", root=root_path)
+
+
+# Registered renderable templates and their exact required variables. Only
+# these template IDs can be rendered; anything else is rejected as unregistered.
+_TEMPLATE_VARIABLES: dict[str, dict[str, frozenset[str]]] = {
+    "football": {
+        "prompt": frozenset({
+            "account_positioning",
+            "goal",
+            "category_rule",
+            "clip_schema",
+            "rules_block",
+            "story_targets_block",
+            "research_block",
+            "brief_block",
+            "match_name",
+            "duration_seconds",
+            "timestamped_transcript",
+        }),
+    },
+}
+
+
+def render_template(
+    name: str,
+    profile: str = "football",
+    variables: dict | None = None,
+    root: str | Path | None = None,
+) -> str:
+    """Render a registered template with the provided variables.
+
+    The template is read from a repository-relative tracked file and only its
+    registered placeholders are substituted. Unknown template IDs, unknown or
+    missing variables, missing files, and unsafe paths raise
+    :class:`ConfigurationError`. Read-only: no network access, no file mutation.
+    """
+    if profile not in _PROFILES:
+        raise ConfigurationError(
+            f"render for unknown profile '{profile}'; known profiles: {', '.join(sorted(_PROFILES))}"
+        )
+    profile_templates = _TEMPLATE_VARIABLES.get(profile, {})
+    if name not in profile_templates:
+        registered = ", ".join(sorted(profile_templates)) if profile_templates else "(none registered)"
+        raise ConfigurationError(
+            f"render for unregistered template '{name}' on profile '{profile}'; registered templates: {registered}"
+        )
+    required = profile_templates[name]
+
+    template_path = resolve_template(name, profile, root)
+    text = template_path.read_text(encoding="utf-8")
+
+    provided = dict(variables or {})
+    missing = sorted(required - set(provided))
+    if missing:
+        raise ConfigurationError(
+            f"render template '{name}' on profile '{profile}': missing required variable(s): {', '.join(missing)}"
+        )
+
+    found = set(_PLACEHOLDER_RE.findall(text))
+    unknown = sorted(found - required)
+    if unknown:
+        raise ConfigurationError(
+            f"render template '{name}' on profile '{profile}': unknown variable(s) in template: {', '.join(unknown)}"
+        )
+
+    result = text
+    for var in found:
+        result = result.replace("{" + var + "}", str(provided[var]))
+    return result
 
 
 def select_platforms(profile: str = "football") -> list[str]:

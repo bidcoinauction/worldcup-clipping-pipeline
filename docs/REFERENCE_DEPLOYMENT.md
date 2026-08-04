@@ -143,9 +143,20 @@ Configuration is the first extracted boundary. It is **additive** — the World 
 
 - `pipeline/config_errors.py` — `ConfigurationError` for all configuration failures.
 - `pipeline/config.py` — strict validation (`validate_config_dict`, `load_validated_config`) over the legacy allowlist `KNOWN_LEGACY_KEYS`; existing accessors unchanged.
-- `pipeline/configurator.py` — structured project identity, explicit taxonomy registry, template resolution, platform/output selection, and canonical archive-root resolution.
+- `pipeline/configurator.py` — structured project identity, explicit taxonomy registry, template resolution + rendering, platform/output selection, and canonical archive-root resolution.
 - `scripts/validate_config.py` — read-only validator (no network, no file mutation); exits nonzero with the full failing field path on invalid config.
 - `config/examples/basketball.json` — non-production structured example for a second sport; never auto-loaded.
+
+### Resolver adoption (complete)
+
+The duplicated archive-root and positioning logic has been consolidated onto the canonical resolvers:
+
+- `pipeline/stadium_signal.py`, `scripts/record_live.py`, `scripts/live_watch.py` all delegate `archive_root`/`archive_path` to `pipeline.configurator.resolve_archive_root`/`resolve_archive_path`. Precedence: explicit CLI argument (`--output`, `--staging-dir`, `--ready-dir`, `--watch-dir`) → `FOOTBALL_ARCHIVE_ROOT` → platform default.
+- `scripts/generate_claude_prompt.py` resolves account positioning via `resolve_project_identity()` (explicit config → legacy `account_positioning` → `ACCOUNT_POSITIONING` env → default), removing its independent fallback. Configuration always wins over the environment variable.
+
+### Detection-template boundary
+
+The World Cup detection prompt body is extracted to a registered, tracked template `prompts/world_cup_detection_prompt.txt`, rendered by `pipeline.configurator.render_template()` (standard library, deterministic, read-only). Registered templates only; unknown IDs, missing files, missing variables, and path traversal raise `ConfigurationError`. The `prompts/claude_detection_prompt.stub` reference has been removed from active configuration. The basketball example template (`prompts/basketball_detection_prompt.txt`) resolves for validation but is not registered for rendering.
 
 Reference contract rules 1-4 above determine what is extracted vs. kept. The basketball example exists only to prove the structured boundary; it is not selected by default.
 

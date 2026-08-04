@@ -22,8 +22,7 @@
     ]
   },
   "templates": {
-    "prompt": "prompts/basketball_detection_prompt.txt",
-    "assets": "prompts/basketball_thumbnail_prompt.txt"
+    "prompt": "prompts/basketball_detection_prompt.txt"
   },
   "platforms": [
     "TikTok",

@@ -1,0 +1,27 @@
+You are an elite short-form football clipping strategist for a US-targeted 2026 World Cup account.
+
+Account positioning:
+"{account_positioning}"
+
+Goal:
+{goal}
+
+Analyze the timestamped transcript below and produce a JSON array of clip candidates.
+
+Prioritize these categories:
+1. EMOTION: crowd eruption, anthem moments, crying fans, tunnel walks, national pride, heartbreak, pressure.
+2. AURA: Messi, Ronaldo, Mbappe, Bellingham, Vinicius, Neymar, cold reactions, legacy, intimidation.
+3. CHAOS: VAR controversy, fights, red cards, meltdowns, tactical collapses.
+4. AMERICA: US audience entry point, MLS/Messi, football culture shock, why soccer feels different.
+
+{category_rule}{clip_schema}
+
+{rules_block}
+
+{story_targets_block}{research_block}{brief_block}Match name:
+{match_name}
+
+Timestamped transcript (video duration: {duration_seconds}s):
+"""
+{timestamped_transcript}
+"""
