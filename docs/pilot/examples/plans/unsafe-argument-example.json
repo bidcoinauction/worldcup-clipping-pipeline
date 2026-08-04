@@ -1,0 +1,7 @@
+{
+  "blocked": true,
+  "job_id": "example_pilot_source",
+  "plan_id": "unsafe-plan",
+  "unsafe_arguments": ["scripts/process_match.py;rm", "$(cat secrets)", "https://token@example.invalid/media.mp4"],
+  "result": "Validation rejects shell syntax, command substitution, credential URLs, and secret-like values."
+}

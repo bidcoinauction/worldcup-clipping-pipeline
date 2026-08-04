@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 from pipeline.config_errors import ConfigurationError  # noqa: E402
 from pipeline.pilot import (  # noqa: E402
     DeliveryPackageError,
+    ExecutionPlanError,
     JobExistsError,
     JobNotFoundError,
     JobPathError,
@@ -44,7 +45,10 @@ from pipeline.pilot import (  # noqa: E402
     create_pipeline_run,
     finish_pipeline_run,
     generate_delivery_package,
+    generate_execution_plan,
+    invalidate_execution_plan,
     list_pipeline_runs,
+    list_execution_plans,
     pipeline_run_summary,
     read_history,
     read_job,
@@ -54,15 +58,18 @@ from pipeline.pilot import (  # noqa: E402
     output_summary,
     pilot_readiness_report,
     read_delivery_checklist,
+    read_execution_plan_checklist,
     register_output_manifest,
     review_output,
     show_job,
     show_delivery_package,
+    show_execution_plan,
     show_output_manifest,
     show_pipeline_run,
     start_pipeline_run,
     transition_job,
     update_pipeline_stage,
+    validate_execution_plan,
     validate_delivery_package,
     validate_output_manifest,
     validate_intake,
@@ -485,6 +492,8 @@ def _cmd_runs_create(args: argparse.Namespace) -> int:
             match_id=args.match_id,
             schedule_row=args.schedule_row,
             models=_parse_json_mapping(args.models, "models"),
+            plan_id=args.plan_id,
+            manual_deviations=args.manual_deviation or [],
             jobs_dir=args.jobs_dir,
             intake_root=args.intake_root,
         )
@@ -496,7 +505,106 @@ def _cmd_runs_create(args: argparse.Namespace) -> int:
     print(f"  status: {result['run']['status']}")
     print(f"  job_revision: {result['job']['revision']}")
     print(f"  run_revision: {result['run']['revision']}")
+    if result["run"].get("plan_id"):
+        print(f"  plan_id: {result['run']['plan_id']}")
     print(f"  run_path: {result['run_path']}")
+    return 0
+
+
+def _cmd_plans_generate(args: argparse.Namespace) -> int:
+    try:
+        result = generate_execution_plan(
+            args.job_id,
+            plan_id=args.plan_id,
+            operator=args.operator,
+            expected_job_revision=args.expected_job_revision,
+            workflow=args.workflow,
+            recording_manifest=args.recording_manifest,
+            jobs_dir=args.jobs_dir,
+            intake_root=args.intake_root,
+        )
+    except (ExecutionPlanError, JobRecordError, JobPathError) as exc:
+        _print_plan_error(exc, job_id=args.job_id, plan_id=args.plan_id)
+        return 1
+    plan = result["plan"]
+    print(f"EXECUTION PLAN GENERATED: {plan['plan_id']}")
+    print(f"  job: {plan['job_id']}")
+    print(f"  status: {plan['status']}")
+    print(f"  workflow: {plan['workflow']}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  plan_revision: {plan['revision']}")
+    print(f"  plan_path: {result['plan_path']}")
+    print(f"  checklist_path: {result['checklist_path']}")
+    return 0
+
+
+def _cmd_plans_validate(args: argparse.Namespace) -> int:
+    try:
+        plan = show_execution_plan(args.job_id, args.plan_id, jobs_dir=args.jobs_dir)
+        job = read_job(args.job_id, jobs_dir=args.jobs_dir)
+        report = validate_execution_plan(plan, job=job, jobs_dir=args.jobs_dir)
+    except (ExecutionPlanError, JobRecordError, JobPathError) as exc:
+        _print_plan_error(exc, job_id=args.job_id, plan_id=args.plan_id)
+        return 1
+    print(f"EXECUTION PLAN: valid={_yesno(report['valid'])}")
+    if report["issues"]:
+        print("ISSUES:")
+        for issue in report["issues"]:
+            print(f"  {issue['path']} [{issue['code']}]: {issue['message']}")
+    return 0 if report["valid"] else 1
+
+
+def _cmd_plans_list(args: argparse.Namespace) -> int:
+    try:
+        rows = list_execution_plans(args.job_id, jobs_dir=args.jobs_dir)
+    except (ExecutionPlanError, JobRecordError, JobPathError) as exc:
+        _print_plan_error(exc, job_id=args.job_id, plan_id="-")
+        return 1
+    if not rows:
+        print(f"No execution plans recorded for {args.job_id}.")
+        return 0
+    for row in rows:
+        print(f"{row['plan_id']}\tstatus={row['status']}\trevision={row['revision']}\tworkflow={row['workflow']}")
+    return 0
+
+
+def _cmd_plans_show(args: argparse.Namespace) -> int:
+    try:
+        plan = show_execution_plan(args.job_id, args.plan_id, jobs_dir=args.jobs_dir)
+    except (ExecutionPlanError, JobRecordError, JobPathError) as exc:
+        _print_plan_error(exc, job_id=args.job_id, plan_id=args.plan_id)
+        return 1
+    print(json.dumps(plan, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_plans_checklist(args: argparse.Namespace) -> int:
+    try:
+        print(read_execution_plan_checklist(args.job_id, args.plan_id, jobs_dir=args.jobs_dir), end="")
+    except (ExecutionPlanError, JobRecordError, JobPathError) as exc:
+        _print_plan_error(exc, job_id=args.job_id, plan_id=args.plan_id)
+        return 1
+    return 0
+
+
+def _cmd_plans_invalidate(args: argparse.Namespace) -> int:
+    try:
+        result = invalidate_execution_plan(
+            args.job_id,
+            args.plan_id,
+            operator=args.operator,
+            reason=args.reason,
+            expected_job_revision=args.expected_job_revision,
+            expected_plan_revision=args.expected_plan_revision,
+            jobs_dir=args.jobs_dir,
+        )
+    except (ExecutionPlanError, JobRecordError, JobPathError) as exc:
+        _print_plan_error(exc, job_id=args.job_id, plan_id=args.plan_id)
+        return 1
+    print(f"EXECUTION PLAN INVALIDATED: {args.plan_id}")
+    print(f"  job: {args.job_id}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  plan_revision: {result['plan']['revision']}")
     return 0
 
 
@@ -618,6 +726,12 @@ def _print_delivery_error(exc: Exception) -> None:
 
 def _print_run_error(exc: Exception) -> None:
     print(f"ERROR: {exc}", file=sys.stderr)
+    for issue in getattr(exc, "issues", [])[:20]:
+        print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
+
+
+def _print_plan_error(exc: Exception, *, job_id: str, plan_id: str) -> None:
+    print(f"ERROR: job={job_id} plan={plan_id}: {exc}", file=sys.stderr)
     for issue in getattr(exc, "issues", [])[:20]:
         print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
 
@@ -823,6 +937,53 @@ def main(argv: list[str] | None = None) -> int:
     delivery_confirm.add_argument("--intake-root", default=None, help="Allowed source intake root")
     delivery_confirm.set_defaults(func=_cmd_delivery_confirm)
 
+    plans_p = subparsers.add_parser("plans", help="Generate and inspect non-executing pilot execution plans.")
+    plans_sub = plans_p.add_subparsers(dest="plans_command", required=True)
+
+    plans_generate = plans_sub.add_parser("generate", help="Generate a readiness-gated execution plan manifest.")
+    plans_generate.add_argument("job_id", help="Job identifier")
+    plans_generate.add_argument("--plan-id", required=True, help="Plan identifier")
+    plans_generate.add_argument("--operator", required=True, help="Operator identifier")
+    plans_generate.add_argument("--expected-job-revision", type=int, required=True, help="Expected current job revision")
+    plans_generate.add_argument("--workflow", default="local-match-file", help="Execution workflow")
+    plans_generate.add_argument("--recording-manifest", default=None, help="Recording manifest path for recording-manifest workflow")
+    plans_generate.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    plans_generate.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    plans_generate.set_defaults(func=_cmd_plans_generate)
+
+    plans_validate = plans_sub.add_parser("validate", help="Validate an execution plan against current job state.")
+    plans_validate.add_argument("job_id", help="Job identifier")
+    plans_validate.add_argument("plan_id", help="Plan identifier")
+    plans_validate.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    plans_validate.set_defaults(func=_cmd_plans_validate)
+
+    plans_list = plans_sub.add_parser("list", help="List execution plans for a job.")
+    plans_list.add_argument("job_id", help="Job identifier")
+    plans_list.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    plans_list.set_defaults(func=_cmd_plans_list)
+
+    plans_show = plans_sub.add_parser("show", help="Show an execution plan JSON manifest.")
+    plans_show.add_argument("job_id", help="Job identifier")
+    plans_show.add_argument("plan_id", help="Plan identifier")
+    plans_show.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    plans_show.set_defaults(func=_cmd_plans_show)
+
+    plans_checklist = plans_sub.add_parser("checklist", help="Print the operator checklist for a plan.")
+    plans_checklist.add_argument("job_id", help="Job identifier")
+    plans_checklist.add_argument("plan_id", help="Plan identifier")
+    plans_checklist.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    plans_checklist.set_defaults(func=_cmd_plans_checklist)
+
+    plans_invalidate = plans_sub.add_parser("invalidate", help="Invalidate a stored execution plan.")
+    plans_invalidate.add_argument("job_id", help="Job identifier")
+    plans_invalidate.add_argument("plan_id", help="Plan identifier")
+    plans_invalidate.add_argument("--operator", required=True, help="Operator identifier")
+    plans_invalidate.add_argument("--reason", required=True, help="Invalidation reason")
+    plans_invalidate.add_argument("--expected-job-revision", type=int, required=True, help="Expected current job revision")
+    plans_invalidate.add_argument("--expected-plan-revision", type=int, required=True, help="Expected current plan revision")
+    plans_invalidate.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    plans_invalidate.set_defaults(func=_cmd_plans_invalidate)
+
     runs_p = subparsers.add_parser("runs", help="Record manual pipeline execution attempts and stage provenance.")
     runs_sub = runs_p.add_subparsers(dest="runs_command", required=True)
 
@@ -847,6 +1008,8 @@ def main(argv: list[str] | None = None) -> int:
     runs_create.add_argument("--match-id", default=None, help="Optional match identifier")
     runs_create.add_argument("--schedule-row", default=None, help="Optional schedule row reference")
     runs_create.add_argument("--models", default=None, help="Optional JSON object of model/provider identifiers")
+    runs_create.add_argument("--plan-id", default=None, help="Optional execution plan identifier to link")
+    runs_create.add_argument("--manual-deviation", action="append", default=[], help="Manually recorded deviation from the linked plan")
     runs_create.add_argument("--jobs-dir", default=None, help="Job-record directory")
     runs_create.add_argument("--intake-root", default=None, help="Allowed source intake root")
     runs_create.set_defaults(func=_cmd_runs_create)

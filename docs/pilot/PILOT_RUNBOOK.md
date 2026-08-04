@@ -91,6 +91,19 @@ valid). If the state is `AWAITING_RIGHTS`, resolve rights first; if
 
 ### 8. Run the existing pipeline manually
 
+Generate an execution plan before the manual run. This freezes the ready job's
+ordered stages, structured argument arrays, provenance, required tools, and
+operator checklist under `JOB_ID.plans/`. It does **not** run the pipeline.
+
+```bash
+python3 scripts/pilot_job.py plans generate JOB_ID \
+  --plan-id PLAN_ID \
+  --operator YOUR_NAME \
+  --expected-job-revision REVISION_FROM_SHOW
+
+python3 scripts/pilot_job.py plans checklist JOB_ID PLAN_ID
+```
+
 Record the manual run start, then use the existing World Cup workflows against
 the cleared source file. For a manifest-driven match this is
 `process_from_manifest.py`; for a single file it is `process_match.py` /
@@ -113,6 +126,7 @@ python3 scripts/pilot_job.py runs create JOB_ID \
   --entry-point process-match \
   --command-arg scripts/process_match.py \
   --command-arg path/to/source.mp4 \
+  --plan-id PLAN_ID \
   --manual-confirmed \
   --expected-job-revision REVISION_FROM_SHOW
 
@@ -253,9 +267,10 @@ python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
 ### 14. Archive operational records
 
 Keep the intake manifest, job record, output manifests, delivery package,
-pipeline run records, checklist, and confirmation on disk under `data/pilot/`
-(gitignored). These are the provenance record: intake -> rights -> validation ->
-job -> manual run -> outputs -> delivery package -> confirmation.
+execution plans, pipeline run records, checklist, and confirmation on disk under
+`data/pilot/` (gitignored). These are the provenance record: intake -> rights ->
+validation -> job -> execution plan -> manual run -> outputs -> delivery package
+-> confirmation.
 
 ### 15. Handle failure or cancellation
 
@@ -303,6 +318,7 @@ working from the same job record.
 ## What Is NOT Automated
 
 - Media processing
+- Command execution from plans or run records
 - Rights confirmation and approvals
 - Review
 - Delivery

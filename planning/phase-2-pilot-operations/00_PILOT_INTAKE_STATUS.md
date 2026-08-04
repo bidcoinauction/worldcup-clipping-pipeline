@@ -6,7 +6,8 @@ Implement the smallest operational slices for one managed local-file sports
 pilot: a validated pilot intake manifest, an explicit rights gate, read-only
 source validation, a durable local job record, explicit manual job-state
 transitions, manual pipeline run records, validated output-manifest
-registration/review, and delivery package handoff records.
+registration/review, readiness-gated execution-plan manifests, and delivery
+package handoff records.
 
 ## Built
 
@@ -24,6 +25,10 @@ registration/review, and delivery package handoff records.
   provenance, output linkage, revision guards, and CLI examples.
 - `pilot_job.py readiness` — read-only intake/run/output/delivery readiness
   reporting for one job or all jobs.
+- `pilot_job.py plans` — readiness-gated execution-plan generation, validation,
+  listing, show, checklist, and invalidation.
+- `JOB_ID.plans/PLAN_ID.json` and `.txt` runtime structure — non-executing plan
+  manifests and operator checklists stored beneath the configured job root.
 - `docs/pilot/DELIVERY_PACKAGES.md` — delivery package schema, checklist,
   confirmation, transition gates, and safety boundaries.
 - `JOB_ID.outputs/MANIFEST_ID.json` runtime structure — reviewed output
@@ -57,7 +62,7 @@ pilot intake/job record is an operational wrapper, not a replacement.
 ```text
 Client intake -> rights gate -> source validation -> job record (READY) ->
   RUNNING (manual pipeline started) -> existing export scripts -> generated files ->
-  pipeline run record -> pilot output manifest -> manual output review -> REVIEW_REQUIRED -> APPROVED ->
+  execution plan -> pipeline run record -> pilot output manifest -> manual output review -> REVIEW_REQUIRED -> APPROVED ->
   delivery package/checklist -> DELIVERY_READY -> delivery confirmation -> DELIVERED
 ```
 
@@ -76,7 +81,7 @@ recovery reason, and confirmation that the blocking issue was addressed.
 - Manual demonstrations confirm execution-ready, awaiting-rights,
   missing-source, durable READY job creation, deterministic duplicates,
   complete manual transitions, stale revision rejection, rights revalidation,
-  pipeline run creation/lifecycle/stage provenance, output registration/review/readiness, delivery package generation/checklist,
+  execution-plan generation/list/show/checklist/invalidation, linked and legacy pipeline run creation/lifecycle/stage provenance, output registration/review/readiness, delivery package generation/checklist,
   read-only readiness reporting, missing-file and duplicate-package rejection, confirmation, failure recovery,
   cancellation safety, append-only history, and no network / FFmpeg / media mutation.
 
@@ -84,7 +89,7 @@ recovery reason, and confirmation that the blocking issue was addressed.
 
 - The transition CLI records operator state only; it still does not execute,
   inspect, copy, deliver, upload, publish, or delete media/output files.
-- Run records, output manifests, and delivery packages require explicit operator
+- Execution plans, run records, output manifests, and delivery packages require explicit operator
   actions; no command execution, automatic output discovery, clip inspection,
   file copying, or delivery automation exists.
 - No supported-use check is automated for `RESTRICTED` rights (documented as a

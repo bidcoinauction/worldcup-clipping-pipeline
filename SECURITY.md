@@ -48,6 +48,15 @@ ignored by Git; they are never committed.
   arbitrary executable paths, and embedded media. Run creation/start/stage/finish
   never execute commands, invoke FFmpeg, call models, process media, start
   background work, or store raw subprocess output.
+- Execution-plan manifests describe ready-job operator plans only. They store
+  structured argument arrays, command previews, source/configuration provenance,
+  required tool names, and environment-variable names only. They reject shell
+  syntax, command substitution, arbitrary executables, credential URLs, API keys,
+  tokens, passwords, cookies, signed URLs, full environment dumps, base64 media,
+  embedded binaries, path traversal, and secret-like values. Plan generation,
+  validation, checklist, and invalidation never execute commands, invoke FFmpeg,
+  call models/APIs, access network services, process media, copy, move, delete,
+  upload, deliver, or publish files.
 - Delivery package manifests, generated checklists, and confirmation records
   are operational metadata only. They must not contain credentials, API keys,
   social tokens, cookies, payment details, credential URLs, shell commands,

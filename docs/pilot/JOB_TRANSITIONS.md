@@ -63,8 +63,9 @@ requires a prior `delivery confirm` record for that package.
 ## Revision Guard
 
 Each job has an integer `revision`. New jobs start at `0`. Every successful
-transition, output review, delivery package generation, and delivery
-confirmation increments the revision by one. Operators may pass
+transition, execution-plan generation/invalidation, output review, delivery
+package generation, and delivery confirmation increments the revision by one.
+Operators may pass
 `--expected-revision N`; stale revisions are rejected without appending events
 or changing files.
 
@@ -124,6 +125,21 @@ recorded command. Output manifests can optionally link to a completed run with
 
 See `docs/pilot/PIPELINE_RUN_RECORDS.md` for the schema and CLI.
 
+## Execution Plans
+
+Execution plans live under `JOB_ID.plans/PLAN_ID.json` with a paired text
+checklist. Generation requires a `READY` job, a current expected revision,
+current rights/source/config readiness, a supported workflow, a production
+football project, a unique plan ID, and existing repository entry-point scripts.
+Generation appends exactly one `EXECUTION_PLAN_GENERATED` event and increments
+the job revision. Failed generation appends no event and changes no job record.
+
+Invalidation requires operator, reason, expected job revision, and expected plan
+revision. It appends exactly one `EXECUTION_PLAN_INVALIDATED` event, increments
+both the plan and job revisions, and leaves the invalidated plan readable.
+
+See `docs/pilot/EXECUTION_PLANS.md` for the schema and CLI.
+
 ## Event History
 
 Every successful transition appends exactly one event to
@@ -135,6 +151,8 @@ preserved.
 Pipeline run creation, start, stage updates, and finish also append job events
 while keeping the job state unchanged. They increment both job and run revisions
 but do not execute processing.
+Execution-plan generation and invalidation also append events while keeping the
+job state unchanged.
 
 ```bash
 python3 scripts/pilot_job.py history JOB_ID
@@ -153,6 +171,7 @@ credential-like values. It does not create, copy, upload, or delete artifacts.
 ## What The System Does Not Perform
 
 - `RUNNING` does not execute media processing.
+- `plans generate`, `plans validate`, `plans show`, `plans checklist`, and `plans invalidate` do not execute commands, invoke FFmpeg, call models/APIs, access networks, process media, copy, move, delete, upload, deliver, or publish files.
 - `runs create`, `runs start`, `runs stage`, and `runs finish` do not execute commands, invoke FFmpeg, call models, or process media.
 - `APPROVED` records human approval only.
 - `delivery generate` does not stage, copy, move, upload, send, publish, or process files.

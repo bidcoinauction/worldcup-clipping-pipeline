@@ -152,10 +152,10 @@ python3 scripts/validate_config.py config/export/world_cup.json
 
 Phase 2 adds a validated **pilot intake manifest**, an explicit **rights gate**,
 read-only **source validation**, durable **job records**, output manifests,
-manual pipeline run records, delivery package manifests, handoff checklists, and
-confirmation records for one managed local-file sports pilot. It wraps the
-existing pipeline; it does not replace or modify any World Cup manifest,
-schedule, or clip workflow.
+manual pipeline run records, readiness-gated execution-plan manifests, delivery
+package manifests, handoff checklists, and confirmation records for one managed
+local-file sports pilot. It wraps the existing pipeline; it does not replace or
+modify any World Cup manifest, schedule, or clip workflow.
 
 ### Intake manifest
 
@@ -216,6 +216,12 @@ Pipeline run records capture what an operator manually ran, source/configuration
 provenance, stage outcomes, and artifact references without executing commands
 or invoking FFmpeg/models. See `docs/pilot/PIPELINE_RUN_RECORDS.md`.
 
+Execution-plan manifests freeze a ready job's ordered stages, structured entry
+points, source/configuration provenance, required tools, and environment-variable
+names under `JOB_ID.plans/`. They never execute commands, process media, call
+models/APIs, discover outputs, copy files, publish, or deliver. See
+`docs/pilot/EXECUTION_PLANS.md`.
+
 Delivery packages can be generated from approved, delivery-included outputs.
 They write JSON/checklist records under `JOB_ID.delivery/`, require current
 rights and valid files, omit rejected/excluded outputs, and gate
@@ -233,7 +239,10 @@ python3 scripts/pilot_job.py outputs validate path/to/output_manifest.json
 python3 scripts/pilot_job.py outputs register JOB_ID path/to/output_manifest.json
 python3 scripts/pilot_job.py outputs review JOB_ID MANIFEST_ID OUTPUT_ID --status APPROVED --operator REVIEWER --reason "Approved" --include-in-delivery
 python3 scripts/pilot_job.py outputs summary JOB_ID
+python3 scripts/pilot_job.py plans generate JOB_ID --plan-id PLAN_ID --operator YOUR_NAME --expected-job-revision REVISION_FROM_SHOW
+python3 scripts/pilot_job.py plans checklist JOB_ID PLAN_ID
 python3 scripts/pilot_job.py runs create JOB_ID --run-id RUN_ID --operator YOUR_NAME --entry-point process-match --command-arg scripts/process_match.py --manual-confirmed
+python3 scripts/pilot_job.py runs create JOB_ID --run-id RUN_ID --operator YOUR_NAME --plan-id PLAN_ID --entry-point process-match --command-arg scripts/process_match.py --manual-confirmed
 python3 scripts/pilot_job.py runs start JOB_ID RUN_ID --operator YOUR_NAME
 python3 scripts/pilot_job.py runs stage JOB_ID RUN_ID TRANSCRIPTION --status RUNNING --operator YOUR_NAME
 python3 scripts/pilot_job.py runs finish JOB_ID RUN_ID --status SUCCEEDED --operator YOUR_NAME --summary "Manual pipeline run completed"
@@ -251,6 +260,8 @@ network. `transition` records manual operations only: `RUNNING` does not run
 the pipeline, and `DELIVERED` does not upload or send files.
 `readiness` is read-only and composes existing intake, run, output, and delivery
 records without rewriting legacy files.
+`plans` generates and validates metadata only; it never launches the recorded
+entry points.
 
 ### Relationship to existing manifests
 

@@ -1,0 +1,18 @@
+Execution Plan Checklist: example-local-plan
+Job: example_pilot_source
+Workflow: local-match-file
+Status: READY revision=0
+
+Guardrails:
+- This plan does not execute commands.
+- This plan does not process media, call models/APIs, access network services, copy/move/delete/upload/publish files, or deliver outputs.
+- Operators must run commands manually and record execution through pipeline-run records.
+
+Stages:
+1. SOURCE_INTAKE [required] enabled
+   entry_point: process-match
+   argv: ["scripts/process_match.py", "--input", "/example/intake/source.mp4", "--league", "WORLD_CUP", "--match-name", "Example Match"]
+   evidence: Manual run record stage update for SOURCE_INTAKE
+
+Required environment variable names only:
+FOOTBALL_ARCHIVE_ROOT, OPENAI_API_KEY, ANTHROPIC_API_KEY

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "plan_id": "example-local-plan",
+  "job_id": "example_pilot_source",
+  "status": "READY",
+  "workflow": "local-match-file",
+  "revision": 0,
+  "job_revision_snapshot": 0,
+  "job_revision_after_generation": 1,
+  "created_by": "example-operator",
+  "repository": {
+    "commit": "0000000000000000000000000000000000000000",
+    "dirty": null,
+    "dirty_state": "not_checked_no_subprocess"
+  },
+  "manual_run": {
+    "entry_point": "process-match",
+    "arguments": ["scripts/process_match.py", "--input", "/example/intake/source.mp4", "--league", "WORLD_CUP", "--match-name", "Example Match"]
+  },
+  "note": "Fictitious shortened example. Runtime plans include the complete ordered stage list and provenance."
+}

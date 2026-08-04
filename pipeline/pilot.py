@@ -60,6 +60,7 @@ OUTPUT_MANIFEST_SCHEMA_VERSION = 1
 DELIVERY_PACKAGE_SCHEMA_VERSION = 1
 DELIVERY_CONFIRMATION_SCHEMA_VERSION = 1
 PIPELINE_RUN_SCHEMA_VERSION = 1
+EXECUTION_PLAN_SCHEMA_VERSION = 1
 
 # Runtime roots. `data/pilot/` is gitignored; client intake and job records
 # are never committed.
@@ -151,7 +152,12 @@ PIPELINE_ENTRY_POINTS = {
     "generate-asset-prompts": "scripts/generate_asset_prompts.py",
     "export-clips-ffmpeg": "scripts/export_clips_ffmpeg.py",
     "export-research-windows": "scripts/export_research_windows.py",
+    "build-stadium-dashboard": "scripts/build_stadium_dashboard.py",
+    "pilot-output-register": "scripts/pilot_job.py",
 }
+EXECUTION_PLAN_STATUSES = frozenset({"DRAFT", "READY", "SUPERSEDED", "INVALIDATED"})
+EXECUTION_PLAN_WORKFLOWS = frozenset({"local-match-file", "recording-manifest"})
+PRODUCTION_PROJECTS = frozenset({"football"})
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -264,6 +270,14 @@ class DeliveryPackageError(JobRecordError):
 
 class PipelineRunError(JobRecordError):
     """Raised for expected manual pipeline-run record failures."""
+
+    def __init__(self, message: str, issues: list[dict] | None = None) -> None:
+        self.issues = issues or []
+        super().__init__(message)
+
+
+class ExecutionPlanError(JobRecordError):
+    """Raised for expected execution-plan generation/lifecycle failures."""
 
     def __init__(self, message: str, issues: list[dict] | None = None) -> None:
         self.issues = issues or []
@@ -1549,12 +1563,545 @@ def read_history(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
     return history
 
 
+# ── Execution plan manifests ─────────────────────────────────────────────────
+
+_EXECUTION_PLAN_KEYS = (
+    "schema_version", "plan_id", "job_id", "pilot_id", "project_id", "source_id",
+    "created_at", "created_by", "updated_at", "revision", "job_revision_snapshot",
+    "job_revision_after_generation", "status", "workflow", "repository", "working_directory",
+    "python_executable", "readiness_snapshot", "provenance", "required_tools",
+    "required_environment_variables", "stages", "manual_run", "expected_inputs",
+    "expected_outputs", "completion_evidence", "command_previews", "supersedes_plan_id",
+    "invalidated_at", "invalidated_by", "invalidation_reason",
+)
+_PLAN_STAGE_KEYS = (
+    "sequence", "stage_id", "classification", "enabled", "skip_reason", "entry_point",
+    "script_path", "arguments", "working_directory", "inputs", "expected_outputs",
+    "configuration_references", "required_tools", "required_environment_variables",
+    "completion_evidence", "command_preview",
+)
+_PLAN_STAGE_ENTRY_POINTS = {
+    "SOURCE_INTAKE": "process-match",
+    "CONCATENATION": "process-from-manifest",
+    "TRANSCRIPTION": "transcribe-match",
+    "RESEARCH": "export-research-windows",
+    "PROMPT_GENERATION": "generate-claude-prompt",
+    "DETECTION": "run-gpt-detection",
+    "CLIP_MANIFEST": "build-clip-manifest",
+    "ASSET_PROMPTS": "generate-asset-prompts",
+    "CLIP_EXPORT": "export-clips-ffmpeg",
+    "REVIEW_DASHBOARD": "build-stadium-dashboard",
+    "OUTPUT_REGISTRATION": "pilot-output-register",
+}
+_PLAN_STAGE_CLASSIFICATIONS = {
+    "SOURCE_INTAKE": "required",
+    "CONCATENATION": "optional",
+    "TRANSCRIPTION": "required",
+    "RESEARCH": "optional",
+    "PROMPT_GENERATION": "required",
+    "DETECTION": "required",
+    "CLIP_MANIFEST": "required",
+    "ASSET_PROMPTS": "optional",
+    "CLIP_EXPORT": "required",
+    "REVIEW_DASHBOARD": "optional",
+    "OUTPUT_REGISTRATION": "required",
+}
+_PLAN_ENVIRONMENT_NAMES = ("FOOTBALL_ARCHIVE_ROOT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def _plan_issue(path: str, code: str, message: str) -> dict:
+    return {"path": path, "code": code, "message": message}
+
+
+def _execution_plan_dir(job_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(job_id):
+        raise JobPathError(f"invalid job identifier '{job_id}'")
+    directory = Path(jobs_dir) / f"{job_id}.plans"
+    if not _within_dir(directory, Path(jobs_dir)):
+        raise JobPathError(f"execution plan directory for '{job_id}' would escape '{jobs_dir}'")
+    return directory
+
+
+def _execution_plan_path(job_id: str, plan_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(plan_id):
+        raise ExecutionPlanError(f"plan_id '{plan_id}' is invalid; use letters, digits, '_' or '-'")
+    path = _execution_plan_dir(job_id, jobs_dir) / f"{plan_id}.json"
+    if not _within_dir(path, Path(jobs_dir)):
+        raise JobPathError(f"execution plan path for '{job_id}/{plan_id}' would escape '{jobs_dir}'")
+    return path
+
+
+def _execution_plan_checklist_path(job_id: str, plan_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(plan_id):
+        raise ExecutionPlanError(f"plan_id '{plan_id}' is invalid; use letters, digits, '_' or '-'")
+    path = _execution_plan_dir(job_id, jobs_dir) / f"{plan_id}.txt"
+    if not _within_dir(path, Path(jobs_dir)):
+        raise JobPathError(f"execution plan checklist path for '{job_id}/{plan_id}' would escape '{jobs_dir}'")
+    return path
+
+
+def _read_execution_plan(job_id: str, plan_id: str, jobs_dir: Path) -> dict:
+    path = _execution_plan_path(job_id, plan_id, jobs_dir)
+    if not path.exists():
+        raise ExecutionPlanError(f"execution plan '{plan_id}' not found for job '{job_id}'")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ExecutionPlanError(f"execution plan '{plan_id}' root must be an object")
+    return data
+
+
+def _job_plan_ids(job: dict, jobs_dir: Path) -> list[str]:
+    values = job.get("execution_plans")
+    if isinstance(values, list):
+        return [v for v in values if isinstance(v, str)]
+    directory = _execution_plan_dir(job.get("job_id", ""), jobs_dir)
+    if not directory.exists():
+        return []
+    return sorted(path.stem for path in directory.glob("*.json"))
+
+
+def _repository_dirty_flag() -> bool | None:
+    # Dirty state is intentionally not probed through git subprocesses here.
+    # Operators can record the exact dirty flag on manual run records.
+    return None
+
+
+def _validate_plan_text(value: str, path: str) -> None:
+    if _SECRET_VALUE_RE.search(value) or _URL_CREDENTIAL_RE.match(value):
+        raise ExecutionPlanError(f"{path}: secret-like values and credential URLs are not allowed")
+    if _BASE64_MEDIA_RE.fullmatch(value.strip()):
+        raise ExecutionPlanError(f"{path}: embedded base64 media or binary data is not allowed")
+
+
+def _require_plan_safe_args(entry_point: str, args: list[str], *, path: str = "arguments") -> list[str]:
+    try:
+        return _validate_command_args(entry_point, args)
+    except PipelineRunError as exc:
+        raise ExecutionPlanError(f"{path}: {exc}") from exc
+
+
+def _entry_point_script(entry_point: str) -> str:
+    script = PIPELINE_ENTRY_POINTS.get(entry_point)
+    if not script:
+        raise ExecutionPlanError(f"entry_point '{entry_point}' is not recognized")
+    if not (ROOT / script).is_file():
+        raise ExecutionPlanError(f"entry_point '{entry_point}' references missing repository script {script}")
+    return script
+
+
+def _plan_args(entry_point: str, script: str, *, job: dict, intake: dict, workflow: str,
+               recording_manifest: str | None) -> list[str]:
+    media = intake.get("media") if isinstance(intake.get("media"), dict) else {}
+    config = intake.get("configuration") if isinstance(intake.get("configuration"), dict) else {}
+    source_path = str(media.get("local_file_path", ""))
+    match_name = str(media.get("match_or_event_name") or job.get("source_id") or job.get("job_id"))
+    project = str(config.get("project") or job.get("project_id") or "football")
+    exports = config.get("export_profiles") if isinstance(config.get("export_profiles"), list) else []
+    first_export = str(exports[0]) if exports else "vertical_clean"
+    recording_ref = recording_manifest or "data/manifests/REPLACE_WITH_RECORDING_MANIFEST.json"
+    clip_manifest = f"data/clip_manifests/{job['job_id']}.csv"
+    transcript = f"data/transcripts/{job['job_id']}.json"
+    research = f"data/research/{job['job_id']}_research.json"
+    output_manifest = f"data/pilot/output_manifests/{job['job_id']}.json"
+    mapping = {
+        "process-match": [script, "--input", source_path, "--league", "WORLD_CUP", "--match-name", match_name],
+        "process-from-manifest": [script, "--manifest", recording_ref],
+        "transcribe-match": [script, source_path, "--match-id", job["job_id"]],
+        "export-research-windows": [script, "--research", research, "--source", source_path],
+        "generate-claude-prompt": [script, "--transcript", transcript, "--match-id", job["job_id"]],
+        "run-gpt-detection": [script, "--prompt", f"prompts/generated/{job['job_id']}.txt", "--output", clip_manifest],
+        "build-clip-manifest": [script, "--detections", f"data/detections/{job['job_id']}.json", "--output", clip_manifest],
+        "generate-asset-prompts": [script, "--clip-manifest", clip_manifest, "--output-dir", f"data/asset_prompts/{job['job_id']}"],
+        "export-clips-ffmpeg": [script, "--clip-manifest", clip_manifest, "--profile", first_export],
+        "build-stadium-dashboard": [script, "--clip-manifest", clip_manifest, "--output", f"data/review/{job['job_id']}.html"],
+        "pilot-output-register": [script, "outputs", "register", job["job_id"], output_manifest, "--operator", "REPLACE_WITH_OPERATOR"],
+    }
+    if workflow == "recording-manifest" and entry_point == "process-match":
+        return [script, "--input", f"RAW/WORLD_CUP/{job['job_id']}.ts", "--league", "WORLD_CUP", "--match-name", match_name]
+    return mapping[entry_point]
+
+
+def _build_plan_stages(job: dict, intake: dict, *, workflow: str, recording_manifest: str | None) -> list[dict]:
+    stages: list[dict] = []
+    config_refs = [
+        "config/pipeline_config.json",
+        "config/brands/world_cup.json",
+        "config/editorial/world_cup.json",
+        "config/export/world_cup.json",
+    ]
+    for sequence, stage_id in enumerate(PIPELINE_STAGES, start=1):
+        entry_point = _PLAN_STAGE_ENTRY_POINTS[stage_id]
+        script = _entry_point_script(entry_point)
+        enabled = True
+        skip_reason = None
+        if stage_id == "CONCATENATION" and workflow == "local-match-file":
+            enabled = False
+            skip_reason = "Local match-file workflow uses a single validated source file; no recording concat is planned."
+        args = _require_plan_safe_args(entry_point, _plan_args(entry_point, script, job=job, intake=intake,
+                                                               workflow=workflow, recording_manifest=recording_manifest),
+                                      path=f"stages[{sequence}].arguments")
+        stages.append({
+            "sequence": sequence,
+            "stage_id": stage_id,
+            "classification": _PLAN_STAGE_CLASSIFICATIONS[stage_id],
+            "enabled": enabled,
+            "skip_reason": skip_reason,
+            "entry_point": entry_point,
+            "script_path": script,
+            "arguments": args,
+            "working_directory": str(ROOT),
+            "inputs": ["validated pilot intake", "validated source media"] + (["recording manifest"] if stage_id == "CONCATENATION" else []),
+            "expected_outputs": [f"operator-recorded evidence for {stage_id}"],
+            "configuration_references": config_refs,
+            "required_tools": ["python3"] + (["ffmpeg"] if stage_id in {"CLIP_EXPORT", "CONCATENATION"} else []),
+            "required_environment_variables": list(_PLAN_ENVIRONMENT_NAMES),
+            "completion_evidence": [f"Manual run record stage update for {stage_id}"],
+            "command_preview": shlex.join(args),
+        })
+    return stages
+
+
+def _plan_provenance(job: dict, intake: dict, *, intake_root: str | None, recording_manifest: str | None) -> dict:
+    config = intake.get("configuration") if isinstance(intake.get("configuration"), dict) else {}
+    media = intake.get("media") if isinstance(intake.get("media"), dict) else {}
+    project = str(config.get("project") or job.get("project_id") or "football")
+    brand = str(config.get("brand") or "world_cup")
+    editorial = str(config.get("editorial_taxonomy") or "world_cup")
+    return {
+        "pilot_intake_manifest": _safe_file_reference(job.get("intake_manifest_path", ""), field_path="plan.provenance.pilot_intake_manifest", require_exists=True),
+        "source_media": _safe_file_reference(media.get("local_file_path"), field_path="plan.provenance.source_media", require_exists=True),
+        "recording_manifest": _optional_file_reference(recording_manifest, field_path="plan.provenance.recording_manifest"),
+        "project_configuration": _provenance_file(ROOT / "config" / "pipeline_config.json", label="project_configuration"),
+        "brand_profile": _provenance_file(ROOT / "config" / "brands" / f"{brand}.json", label="brand_profile"),
+        "editorial_taxonomy": _provenance_file(ROOT / "config" / "editorial" / f"{editorial}.json", label="editorial_taxonomy"),
+        "export_profiles": _provenance_file(ROOT / "config" / "export" / "world_cup.json", label="export_profiles"),
+        "operational_categories": {"project": project, "categories": resolve_operational_categories(project)},
+        "intake_root": intake_root,
+    }
+
+
+def _execution_plan_checklist(plan: dict) -> str:
+    lines = [
+        f"Execution Plan Checklist: {plan['plan_id']}",
+        f"Job: {plan['job_id']}",
+        f"Workflow: {plan['workflow']}",
+        f"Status: {plan['status']} revision={plan['revision']}",
+        "",
+        "Guardrails:",
+        "- This plan does not execute commands.",
+        "- This plan does not process media, call models/APIs, access network services, copy/move/delete/upload/publish files, or deliver outputs.",
+        "- Operators must run commands manually and record execution through pipeline-run records.",
+        "",
+        "Stages:",
+    ]
+    for stage in plan.get("stages", []):
+        status = "enabled" if stage.get("enabled") else f"disabled ({stage.get('skip_reason')})"
+        lines.append(f"{stage['sequence']}. {stage['stage_id']} [{stage['classification']}] {status}")
+        lines.append(f"   entry_point: {stage['entry_point']}")
+        lines.append(f"   argv: {json.dumps(stage['arguments'])}")
+        lines.append(f"   preview: {stage['command_preview']}")
+        lines.append(f"   evidence: {', '.join(stage.get('completion_evidence', []))}")
+    lines.extend(["", "Required environment variable names only:", ", ".join(plan.get("required_environment_variables", [])), ""])
+    return "\n".join(lines)
+
+
+def _write_plan_job_and_events(plan_path: Path, checklist_path: Path, plan: dict,
+                               record_path: Path, job: dict, events_path: Path, events: list[dict]) -> None:
+    _atomic_write_json(plan_path, plan)
+    _atomic_write_text(checklist_path, _execution_plan_checklist(plan))
+    _atomic_write_json(events_path, events)
+    _atomic_write_json(record_path, job)
+
+
+def validate_execution_plan(data: object, *, job: dict | None = None, jobs_dir: str | Path | None = None) -> dict:
+    issues: list[dict] = []
+    if not isinstance(data, dict):
+        issues.append(_plan_issue("plan", "BAD_TYPE", "root must be an object"))
+        return {"valid": False, "issues": issues, "validation_codes": ["BAD_TYPE"]}
+    _output_secret_scan(data, "plan", issues)
+    _reject_output_unknown(data, _EXECUTION_PLAN_KEYS, "plan", issues)
+    if data.get("schema_version") != EXECUTION_PLAN_SCHEMA_VERSION:
+        issues.append(_plan_issue("plan.schema_version", "BAD_SCHEMA_VERSION", f"expected {EXECUTION_PLAN_SCHEMA_VERSION}"))
+    for key in ("plan_id", "job_id", "pilot_id", "project_id", "source_id", "created_at", "created_by", "workflow", "working_directory", "python_executable"):
+        if not isinstance(data.get(key), str) or not data.get(key, "").strip():
+            issues.append(_plan_issue(f"plan.{key}", "MISSING_KEY", "expected a non-empty string"))
+    if not _is_valid_id(data.get("plan_id")):
+        issues.append(_plan_issue("plan.plan_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+    if data.get("workflow") not in EXECUTION_PLAN_WORKFLOWS:
+        issues.append(_plan_issue("plan.workflow", "UNSUPPORTED_WORKFLOW", f"expected one of {', '.join(sorted(EXECUTION_PLAN_WORKFLOWS))}"))
+    if data.get("status") not in EXECUTION_PLAN_STATUSES:
+        issues.append(_plan_issue("plan.status", "UNKNOWN_PLAN_STATUS", f"expected one of {', '.join(sorted(EXECUTION_PLAN_STATUSES))}"))
+    elif data.get("status") != "READY":
+        issues.append(_plan_issue("plan.status", "PLAN_NOT_READY", "only READY plans can be used for runs"))
+    for key in ("revision", "job_revision_snapshot", "job_revision_after_generation"):
+        if isinstance(data.get(key), bool) or not isinstance(data.get(key), int) or data.get(key) < 0:
+            issues.append(_plan_issue(f"plan.{key}", "BAD_TYPE", "expected a non-negative integer"))
+    if job is not None:
+        if data.get("job_id") != job.get("job_id"):
+            issues.append(_plan_issue("plan.job_id", "JOB_MISMATCH", f"does not match target job '{job.get('job_id')}'"))
+        current_revision = _normalized_revision(job)
+        if data.get("job_revision_after_generation") != current_revision:
+            issues.append(_plan_issue("plan.job_revision_after_generation", "STALE_JOB_REVISION",
+                                      f"plan expects current job revision {data.get('job_revision_after_generation')}, current revision {current_revision}"))
+    env_names = data.get("required_environment_variables")
+    if not isinstance(env_names, list) or not all(isinstance(v, str) and v and "=" not in v for v in env_names):
+        issues.append(_plan_issue("plan.required_environment_variables", "BAD_TYPE", "expected environment variable names only"))
+    stages = data.get("stages")
+    if not isinstance(stages, list) or len(stages) != len(PIPELINE_STAGES):
+        issues.append(_plan_issue("plan.stages", "BAD_STAGE_LIST", "expected the complete ordered pipeline stage list"))
+    else:
+        seen_sequences: set[int] = set()
+        seen_stages: set[str] = set()
+        for index, stage in enumerate(stages):
+            path = f"plan.stages[{index}]"
+            if not isinstance(stage, dict):
+                issues.append(_plan_issue(path, "BAD_TYPE", "expected an object"))
+                continue
+            _reject_output_unknown(stage, _PLAN_STAGE_KEYS, path, issues)
+            sequence = stage.get("sequence")
+            if sequence != index + 1 or sequence in seen_sequences:
+                issues.append(_plan_issue(f"{path}.sequence", "BAD_SEQUENCE", "stage sequence must be unique and ordered from 1"))
+            if isinstance(sequence, int):
+                seen_sequences.add(sequence)
+            stage_id = stage.get("stage_id")
+            if stage_id != PIPELINE_STAGES[index] or stage_id in seen_stages:
+                issues.append(_plan_issue(f"{path}.stage_id", "UNKNOWN_STAGE", "stage must match the supported ordered stage model"))
+            if isinstance(stage_id, str):
+                seen_stages.add(stage_id)
+            if stage.get("classification") not in {"required", "optional"}:
+                issues.append(_plan_issue(f"{path}.classification", "BAD_TYPE", "expected required or optional"))
+            if not isinstance(stage.get("enabled"), bool):
+                issues.append(_plan_issue(f"{path}.enabled", "BAD_TYPE", "expected true/false"))
+            if stage.get("enabled") is False and not stage.get("skip_reason"):
+                issues.append(_plan_issue(f"{path}.skip_reason", "MISSING_KEY", "disabled stages require a skip reason"))
+            entry_point = stage.get("entry_point")
+            if entry_point not in PIPELINE_ENTRY_POINTS:
+                issues.append(_plan_issue(f"{path}.entry_point", "UNKNOWN_ENTRY_POINT", "entry point is not recognized"))
+            else:
+                script = PIPELINE_ENTRY_POINTS[entry_point]
+                if not (ROOT / script).is_file():
+                    issues.append(_plan_issue(f"{path}.entry_point", "ENTRY_POINT_MISSING", f"script not found: {script}"))
+                if stage.get("script_path") != script:
+                    issues.append(_plan_issue(f"{path}.script_path", "ENTRY_POINT_MISMATCH", f"expected {script}"))
+                try:
+                    _require_plan_safe_args(entry_point, stage.get("arguments"), path=f"{path}.arguments")
+                except ExecutionPlanError as exc:
+                    issues.append(_plan_issue(f"{path}.arguments", "UNSAFE_ARGUMENT", str(exc)))
+            for key in ("inputs", "expected_outputs", "configuration_references", "required_tools", "required_environment_variables", "completion_evidence"):
+                if not isinstance(stage.get(key), list) or not all(isinstance(v, str) and v.strip() for v in stage.get(key, [])):
+                    issues.append(_plan_issue(f"{path}.{key}", "BAD_TYPE", "expected a list of strings"))
+            for key in ("working_directory", "command_preview"):
+                if not isinstance(stage.get(key), str) or not stage.get(key, "").strip():
+                    issues.append(_plan_issue(f"{path}.{key}", "MISSING_KEY", "expected a non-empty string"))
+    manual_run = data.get("manual_run") if isinstance(data.get("manual_run"), dict) else {}
+    if manual_run.get("entry_point") not in PIPELINE_ENTRY_POINTS:
+        issues.append(_plan_issue("plan.manual_run.entry_point", "UNKNOWN_ENTRY_POINT", "manual run entry point is not recognized"))
+    else:
+        try:
+            _require_plan_safe_args(manual_run["entry_point"], manual_run.get("arguments"), path="plan.manual_run.arguments")
+        except ExecutionPlanError as exc:
+            issues.append(_plan_issue("plan.manual_run.arguments", "UNSAFE_ARGUMENT", str(exc)))
+    return {"valid": not issues, "issues": issues, "validation_codes": [issue["code"] for issue in issues] or [C_INTAKE_OK]}
+
+
+def generate_execution_plan(job_id: str, *, plan_id: str, operator: str, expected_job_revision: int,
+                            workflow: str = "local-match-file", recording_manifest: str | None = None,
+                            jobs_dir: str | Path | None = None, intake_root: str | None = None,
+                            source: str = "pilot_job.plans.generate") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    issues: list[dict] = []
+    if not _is_valid_id(plan_id):
+        issues.append(_plan_issue("plan.plan_id", "BAD_ID", "plan ID must use letters, digits, '_' or '-'"))
+    if not operator or not operator.strip():
+        issues.append(_plan_issue("plan.operator", "MISSING_OPERATOR", "operator is required"))
+    if workflow not in EXECUTION_PLAN_WORKFLOWS:
+        issues.append(_plan_issue("plan.workflow", "unsupported_workflow", f"supported workflows: {', '.join(sorted(EXECUTION_PLAN_WORKFLOWS))}"))
+    current = job.get("current_state", "")
+    revision = _normalized_revision(job)
+    if expected_job_revision != revision:
+        raise JobRevisionError(
+            f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {revision}; no execution plan generated"
+        )
+    if current != "READY":
+        issues.append(_plan_issue("job.current_state", "job_not_ready", f"job '{job_id}' is {current}; execution plans require READY"))
+    if job.get("project_id") not in PRODUCTION_PROJECTS:
+        issues.append(_plan_issue("job.project_id", "unsupported_project", "production execution plans are limited to the football project"))
+    plan_path = _execution_plan_path(job_id, plan_id, jobs_dir_path) if _is_valid_id(plan_id) else None
+    checklist_path = _execution_plan_checklist_path(job_id, plan_id, jobs_dir_path) if _is_valid_id(plan_id) else None
+    if plan_path and (plan_path.exists() or (checklist_path and checklist_path.exists())):
+        issues.append(_plan_issue("plan.plan_id", "duplicate_plan_id", f"plan '{plan_id}' already exists for job '{job_id}'"))
+    try:
+        readiness = pilot_readiness_report(job_id, jobs_dir=jobs_dir_path, intake_root=intake_root)["jobs"][0]
+        if readiness.get("state") != "READY":
+            issues.append(_plan_issue("readiness.state", "job_not_ready", "readiness report does not show READY"))
+        for blocker in readiness.get("blockers", []):
+            issues.append(_plan_issue("readiness.blockers", blocker, "readiness blocker prevents execution-plan generation"))
+        intake_status = readiness.get("intake", {}) if isinstance(readiness.get("intake"), dict) else {}
+        if not intake_status.get("rights_cleared"):
+            issues.append(_plan_issue("readiness.intake.rights_cleared", "rights_not_cleared", "rights are not cleared"))
+        if not intake_status.get("source_ready"):
+            issues.append(_plan_issue("readiness.intake.source_ready", "source_not_ready", "source is not ready"))
+        if not intake_status.get("config_references_valid"):
+            issues.append(_plan_issue("readiness.intake.config_references_valid", "configuration_invalid", "configuration references are invalid"))
+    except JobRecordError as exc:
+        readiness = {"blockers": ["intake_unavailable"], "error": str(exc)}
+        issues.append(_plan_issue("readiness", "intake_unavailable", str(exc)))
+    try:
+        intake = _load_stored_intake(job)
+        intake_report = validate_intake(intake, intake_root=intake_root, check_source=True, check_rights=True)
+        if not intake_report["execution_ready"]:
+            for code in intake_report["validation_codes"]:
+                issues.append(_plan_issue("intake.validation", code.lower(), "stored intake is not execution-ready"))
+        if workflow == "recording-manifest" and recording_manifest:
+            _safe_file_reference(recording_manifest, field_path="plan.recording_manifest", require_exists=True)
+    except (JobRecordError, PipelineRunError) as exc:
+        intake = {}
+        issues.append(_plan_issue("intake", "intake_unavailable", str(exc)))
+    for entry_point, script in PIPELINE_ENTRY_POINTS.items():
+        if entry_point in set(_PLAN_STAGE_ENTRY_POINTS.values()) and not (ROOT / script).is_file():
+            issues.append(_plan_issue("entry_points", "entry_point_missing", f"{entry_point} -> {script}"))
+    if issues:
+        raise ExecutionPlanError(f"execution plan '{plan_id}' for job '{job_id}' is blocked", issues)
+
+    stages = _build_plan_stages(job, intake, workflow=workflow, recording_manifest=recording_manifest)
+    primary = next(stage for stage in stages if stage["enabled"])
+    now = _now_iso()
+    sequence = _next_event_sequence(events)
+    event = {"event_schema_version": EVENT_SCHEMA_VERSION, "event_id": _event_id(job_id, sequence, "EXECUTION_PLAN_GENERATED"),
+             "job_id": job_id, "sequence": sequence, "timestamp": now, "event_type": "EXECUTION_PLAN_GENERATED",
+             "previous_state": current, "new_state": current, "operator": operator.strip(),
+             "message": f"Generated execution plan {plan_id}", "metadata": {"plan_id": plan_id, "workflow": workflow},
+             "source": source, "related_codes": [C_INTAKE_OK], "artifact_references": [str(plan_path), str(checklist_path)]}
+    new_events = [*events, event]
+    updated_job = dict(job)
+    plan_ids = _job_plan_ids(job, jobs_dir_path)
+    plan_ids.append(plan_id)
+    updated_job.update({"revision": revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "execution_plans": sorted(set(plan_ids)), "active_execution_plan_id": plan_id,
+                        "latest_event": {"event_id": event["event_id"], "timestamp": now, "event_type": event["event_type"],
+                                         "previous_state": current, "new_state": current, "message": event["message"]}})
+    plan = {"schema_version": EXECUTION_PLAN_SCHEMA_VERSION, "plan_id": plan_id, "job_id": job_id,
+            "pilot_id": job.get("pilot_id", ""), "project_id": job.get("project_id", ""), "source_id": job.get("source_id", ""),
+            "created_at": now, "created_by": operator.strip(), "updated_at": now, "revision": 0,
+            "job_revision_snapshot": revision, "job_revision_after_generation": updated_job["revision"], "status": "READY",
+            "workflow": workflow, "repository": {"commit": _current_git_commit(), "dirty": _repository_dirty_flag(),
+                                                   "dirty_state": "not_checked_no_subprocess"},
+            "working_directory": str(ROOT), "python_executable": sys.executable or "python3",
+            "readiness_snapshot": readiness, "provenance": _plan_provenance(job, intake, intake_root=intake_root,
+                                                                              recording_manifest=recording_manifest),
+            "required_tools": sorted({tool for stage in stages for tool in stage.get("required_tools", [])}),
+            "required_environment_variables": list(_PLAN_ENVIRONMENT_NAMES), "stages": stages,
+            "manual_run": {"entry_point": primary["entry_point"], "arguments": primary["arguments"]},
+            "expected_inputs": ["validated pilot intake", "validated source media"],
+            "expected_outputs": ["manual run record", "stage updates", "operator-reviewed output manifest"],
+            "completion_evidence": ["pipeline run record linked by plan_id", "manual stage evidence", "registered output manifest"],
+            "command_previews": [stage["command_preview"] for stage in stages],
+            "supersedes_plan_id": None, "invalidated_at": None, "invalidated_by": None, "invalidation_reason": None}
+    report = validate_execution_plan(plan, job=updated_job, jobs_dir=jobs_dir_path)
+    if not report["valid"]:
+        raise ExecutionPlanError("execution plan validation failed", report["issues"])
+    assert plan_path is not None and checklist_path is not None
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_plan_job_and_events(plan_path, checklist_path, plan, record_path, updated_job, events_path, new_events)
+    return {"job": updated_job, "plan": plan, "plan_path": str(plan_path), "checklist_path": str(checklist_path)}
+
+
+def list_execution_plans(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, _events = _load_job_and_events(job_id, jobs_dir_path)
+    rows = []
+    for plan_id in _job_plan_ids(job, jobs_dir_path):
+        try:
+            plan = _read_execution_plan(job_id, plan_id, jobs_dir_path)
+        except ExecutionPlanError:
+            continue
+        rows.append({"plan_id": plan_id, "status": plan.get("status", ""), "revision": plan.get("revision", 0),
+                     "workflow": plan.get("workflow", ""), "created_at": plan.get("created_at", "")})
+    return rows
+
+
+def show_execution_plan(job_id: str, plan_id: str, jobs_dir: str | Path | None = None) -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    return _read_execution_plan(job_id, plan_id, jobs_dir_path)
+
+
+def read_execution_plan_checklist(job_id: str, plan_id: str, jobs_dir: str | Path | None = None) -> str:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    path = _execution_plan_checklist_path(job_id, plan_id, jobs_dir_path)
+    if not path.exists():
+        raise ExecutionPlanError(f"execution plan checklist for '{plan_id}' not found for job '{job_id}'")
+    return path.read_text(encoding="utf-8")
+
+
+def invalidate_execution_plan(job_id: str, plan_id: str, *, operator: str, reason: str,
+                              expected_job_revision: int, expected_plan_revision: int,
+                              jobs_dir: str | Path | None = None,
+                              source: str = "pilot_job.plans.invalidate") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    job_revision = _normalized_revision(job)
+    if expected_job_revision != job_revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {job_revision}; no execution plan invalidated")
+    if not operator or not operator.strip() or not reason or not reason.strip():
+        raise ExecutionPlanError("operator and reason are required to invalidate an execution plan")
+    _validate_metadata({"operator": operator, "reason": reason})
+    plan_path = _execution_plan_path(job_id, plan_id, jobs_dir_path)
+    plan = _read_execution_plan(job_id, plan_id, jobs_dir_path)
+    plan_revision = plan.get("revision", 0) if isinstance(plan.get("revision"), int) else 0
+    if expected_plan_revision != plan_revision:
+        raise JobRevisionError(f"execution plan '{plan_id}' stale revision: expected {expected_plan_revision}, current revision {plan_revision}; no execution plan invalidated")
+    if plan.get("status") == "INVALIDATED":
+        raise ExecutionPlanError(f"execution plan '{plan_id}' is already INVALIDATED for job '{job_id}'")
+    now = _now_iso()
+    updated_plan = dict(plan)
+    updated_plan.update({"status": "INVALIDATED", "revision": plan_revision + 1, "updated_at": now,
+                         "invalidated_at": now, "invalidated_by": operator.strip(), "invalidation_reason": reason.strip()})
+    sequence = _next_event_sequence(events)
+    current = job.get("current_state", "")
+    event = {"event_schema_version": EVENT_SCHEMA_VERSION, "event_id": _event_id(job_id, sequence, "EXECUTION_PLAN_INVALIDATED"),
+             "job_id": job_id, "sequence": sequence, "timestamp": now, "event_type": "EXECUTION_PLAN_INVALIDATED",
+             "previous_state": current, "new_state": current, "operator": operator.strip(), "message": reason.strip(),
+             "metadata": {"plan_id": plan_id, "plan_revision": updated_plan["revision"]}, "source": source,
+             "related_codes": [], "artifact_references": [str(plan_path)]}
+    new_events = [*events, event]
+    updated_job = dict(job)
+    updated_job.update({"revision": job_revision + 1, "updated_at": now, "event_count": len(new_events),
+                        "active_execution_plan_id": None if job.get("active_execution_plan_id") == plan_id else job.get("active_execution_plan_id"),
+                        "latest_event": {"event_id": event["event_id"], "timestamp": now, "event_type": event["event_type"],
+                                         "previous_state": current, "new_state": current, "message": event["message"]}})
+    _atomic_write_json(plan_path, updated_plan)
+    _atomic_write_text(_execution_plan_checklist_path(job_id, plan_id, jobs_dir_path), _execution_plan_checklist(updated_plan))
+    _atomic_write_json(events_path, new_events)
+    _atomic_write_json(record_path, updated_job)
+    return {"job": updated_job, "plan": updated_plan, "plan_path": str(plan_path)}
+
+
+def _require_run_plan_link(job: dict, *, plan_id: str | None, entry_point: str, command_args: list[str], jobs_dir: Path) -> dict | None:
+    if plan_id is None or plan_id == "":
+        return None
+    if not _is_valid_id(plan_id):
+        raise PipelineRunError(f"plan_id '{plan_id}' is invalid; use letters, digits, '_' or '-'")
+    plan = _read_execution_plan(job["job_id"], plan_id, jobs_dir)
+    if plan.get("job_id") != job.get("job_id"):
+        raise PipelineRunError(f"execution plan '{plan_id}' does not belong to job '{job.get('job_id')}'")
+    report = validate_execution_plan(plan, job=job, jobs_dir=jobs_dir)
+    if not report["valid"]:
+        raise PipelineRunError(f"execution plan '{plan_id}' is not valid for job '{job.get('job_id')}'", report["issues"])
+    manual_run = plan.get("manual_run") if isinstance(plan.get("manual_run"), dict) else {}
+    expected_args = manual_run.get("arguments") if isinstance(manual_run.get("arguments"), list) else []
+    if entry_point != manual_run.get("entry_point") or command_args != expected_args:
+        raise PipelineRunError(f"pipeline run arguments do not match execution plan '{plan_id}'")
+    return plan
+
+
 # ── Manual pipeline-run records ──────────────────────────────────────────────
 
 _PIPELINE_RUN_KEYS = (
     "schema_version", "run_id", "job_id", "pilot_id", "project_id", "source_id",
     "created_at", "created_by", "started_at", "completed_at", "status",
-    "revision", "job_revision_at_creation", "entry_point", "command",
+    "revision", "job_revision_at_creation", "plan_id", "plan_revision", "plan_workflow",
+    "planned_stage_ids", "manual_deviations", "entry_point", "command",
     "command_args", "working_directory", "python_executable", "operator_notes",
     "dry_run", "manual_execution_confirmed", "host_platform",
     "repository_commit", "repository_dirty", "start_reason", "provenance",
@@ -1758,6 +2305,17 @@ def validate_pipeline_run(data: object, *, job: dict | None = None) -> dict:
         issues.append(_output_issue("run.dry_run", "BAD_TYPE", "expected true/false"))
     if job is not None and data.get("job_id") != job.get("job_id"):
         issues.append(_output_issue("run.job_id", "JOB_MISMATCH", f"does not match target job '{job.get('job_id')}'"))
+    if data.get("plan_id") is not None:
+        if not _is_valid_id(data.get("plan_id")):
+            issues.append(_output_issue("run.plan_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+        if isinstance(data.get("plan_revision"), bool) or not isinstance(data.get("plan_revision"), int) or data.get("plan_revision") < 0:
+            issues.append(_output_issue("run.plan_revision", "BAD_TYPE", "expected a non-negative integer"))
+        if data.get("plan_workflow") not in EXECUTION_PLAN_WORKFLOWS:
+            issues.append(_output_issue("run.plan_workflow", "UNSUPPORTED_WORKFLOW", "workflow is not supported"))
+    if not isinstance(data.get("planned_stage_ids"), list):
+        issues.append(_output_issue("run.planned_stage_ids", "BAD_TYPE", "expected a list"))
+    if not isinstance(data.get("manual_deviations"), list):
+        issues.append(_output_issue("run.manual_deviations", "BAD_TYPE", "expected a list"))
     stages = data.get("stages")
     if not isinstance(stages, list) or not stages:
         issues.append(_output_issue("run.stages", "MISSING_KEY", "expected non-empty stage list"))
@@ -1810,6 +2368,7 @@ def create_pipeline_run(job_id: str, *, run_id: str, operator: str, entry_point:
                         start_reason: str | None = None, recording_manifest: str | None = None,
                         research_file: str | None = None, match_id: str | None = None,
                         schedule_row: str | None = None, models: dict | None = None,
+                        plan_id: str | None = None, manual_deviations: list[str] | None = None,
                         intake_root: str | None = None, source: str = "pilot_job.runs.create") -> dict:
     jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
     record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
@@ -1826,7 +2385,9 @@ def create_pipeline_run(job_id: str, *, run_id: str, operator: str, entry_point:
     if manual_confirmed is not True:
         raise PipelineRunError("manual execution confirmation is required; no command will be executed by this record")
     command_clean = _validate_command_args(entry_point, command_args)
+    plan = _require_run_plan_link(job, plan_id=plan_id, entry_point=entry_point, command_args=command_clean, jobs_dir=jobs_dir_path)
     _validate_metadata({"operator": operator, "operator_notes": operator_notes or "", "start_reason": start_reason or ""})
+    deviations = _validate_artifacts(manual_deviations or [], field_path="manual_deviations")
     if repository_dirty is not None and not isinstance(repository_dirty, bool):
         raise PipelineRunError("repository_dirty: expected true/false")
     run_path = _pipeline_run_path(job_id, run_id, jobs_dir_path)
@@ -1843,9 +2404,14 @@ def create_pipeline_run(job_id: str, *, run_id: str, operator: str, entry_point:
         raise PipelineRunError("working_directory: path traversal is not allowed")
     run = {"schema_version": PIPELINE_RUN_SCHEMA_VERSION, "run_id": run_id, "job_id": job_id,
            "pilot_id": job.get("pilot_id", ""), "project_id": job.get("project_id", ""), "source_id": job.get("source_id", ""),
-           "created_at": now, "created_by": operator.strip(), "started_at": None, "completed_at": None,
-           "status": "PLANNED", "revision": 0, "job_revision_at_creation": job_revision,
-           "entry_point": entry_point, "command": shlex.join(command_clean), "command_args": command_clean,
+            "created_at": now, "created_by": operator.strip(), "started_at": None, "completed_at": None,
+            "status": "PLANNED", "revision": 0, "job_revision_at_creation": job_revision,
+            "plan_id": plan.get("plan_id") if plan else None,
+            "plan_revision": plan.get("revision") if plan else None,
+            "plan_workflow": plan.get("workflow") if plan else None,
+            "planned_stage_ids": [stage.get("stage_id") for stage in plan.get("stages", []) if isinstance(stage, dict)] if plan else [],
+            "manual_deviations": deviations,
+            "entry_point": entry_point, "command": shlex.join(command_clean), "command_args": command_clean,
            "working_directory": working, "python_executable": python_executable or sys.executable or "python3",
            "operator_notes": operator_notes, "dry_run": bool(dry_run), "manual_execution_confirmed": True,
            "host_platform": host_platform or f"{_platform.system()} {_platform.release()} {_platform.machine()}",
@@ -1857,7 +2423,9 @@ def create_pipeline_run(job_id: str, *, run_id: str, operator: str, entry_point:
     if not report["valid"]:
         raise PipelineRunError("pipeline run validation failed", report["issues"])
     event = _append_run_event(job, events, "PIPELINE_RUN_CREATED", message=f"Created pipeline run {run_id}",
-                              operator=operator.strip(), run_id=run_id, artifacts=[str(run_path)], source=source)
+                              operator=operator.strip(), run_id=run_id,
+                              metadata={"plan_id": plan.get("plan_id")} if plan else None,
+                              artifacts=[str(run_path)], source=source)
     new_events = [*events, event]
     run_ids = [v for v in job.get("pipeline_runs", []) if isinstance(v, str)] if isinstance(job.get("pipeline_runs"), list) else []
     run_ids.append(run_id)
@@ -2079,7 +2647,9 @@ def list_pipeline_runs(job_id: str, jobs_dir: str | Path | None = None) -> list[
         except PipelineRunError:
             continue
         rows.append({"run_id": run_id, "status": run.get("status", ""), "entry_point": run.get("entry_point", ""),
-                     "revision": _normalized_run_revision(run), "created_at": run.get("created_at", "")})
+                     "revision": _normalized_run_revision(run), "created_at": run.get("created_at", ""),
+                     "plan_id": run.get("plan_id"), "plan_revision": run.get("plan_revision"),
+                     "plan_workflow": run.get("plan_workflow")})
     return rows
 
 
@@ -2088,6 +2658,9 @@ def show_pipeline_run(job_id: str, run_id: str, jobs_dir: str | Path | None = No
     run = _read_pipeline_run(job_id, run_id, jobs_dir_path)
     return {"run_id": run.get("run_id", run_id), "job_id": run.get("job_id", job_id), "status": run.get("status", ""),
             "revision": _normalized_run_revision(run), "entry_point": run.get("entry_point", ""),
+            "plan_id": run.get("plan_id"), "plan_revision": run.get("plan_revision"),
+            "plan_workflow": run.get("plan_workflow"), "planned_stage_ids": run.get("planned_stage_ids", []),
+            "manual_deviations": run.get("manual_deviations", []),
             "command_args": run.get("command_args", []), "dry_run": run.get("dry_run"),
             "repository_commit": run.get("repository_commit"), "repository_dirty": run.get("repository_dirty"),
             "started_at": run.get("started_at"), "completed_at": run.get("completed_at"),
@@ -2129,6 +2702,10 @@ def pipeline_run_summary(job_id: str, run_id: str, jobs_dir: str | Path | None =
     provenance = run.get("provenance") if isinstance(run.get("provenance"), dict) else {}
     validation = provenance.get("validation") if isinstance(provenance.get("validation"), dict) else {}
     return {"run_id": run_id, "run_status": run.get("status", ""), "entry_point": run.get("entry_point", ""),
+            "plan_id": run.get("plan_id"), "plan_revision": run.get("plan_revision"),
+            "plan_workflow": run.get("plan_workflow"), "planned_stage_ids": run.get("planned_stage_ids", []),
+            "recorded_stage_ids": [stage.get("stage_id") for stage in run.get("stages", []) if isinstance(stage, dict) and stage.get("status") != "NOT_STARTED"],
+            "manual_deviations": run.get("manual_deviations", []),
             "repository_commit": run.get("repository_commit"), "source_id": run.get("source_id"),
             "started_at": run.get("started_at"), "completed_at": run.get("completed_at"), "duration_seconds": duration,
             "stage_counts_by_status": _stage_counts(run), "failed_stage": failed_stage, "warning_count": warning_count,

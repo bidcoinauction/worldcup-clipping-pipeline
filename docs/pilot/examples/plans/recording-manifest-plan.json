@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "plan_id": "example-recording-plan",
+  "job_id": "example_pilot_source",
+  "status": "READY",
+  "workflow": "recording-manifest",
+  "revision": 0,
+  "manual_run": {
+    "entry_point": "process-from-manifest",
+    "arguments": ["scripts/process_from_manifest.py", "--manifest", "data/manifests/example_match.json"]
+  },
+  "note": "Fictitious shortened example. Runtime recording-manifest plans enable CONCATENATION."
+}

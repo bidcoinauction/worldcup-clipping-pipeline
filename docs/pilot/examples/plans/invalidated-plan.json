@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "plan_id": "example-invalidated-plan",
+  "job_id": "example_pilot_source",
+  "status": "INVALIDATED",
+  "revision": 1,
+  "invalidated_by": "example-operator",
+  "invalidation_reason": "Source file was replaced",
+  "note": "Invalidated plans remain stored and readable but cannot be linked to new runs."
+}

@@ -190,8 +190,9 @@ schedule, clip manifest, and command keeps working independently.
   rights / source), the rights gate, read-only source validation, the job
   record API (atomic writes, append-only event log), and explicit manual
   state transitions with revision checks. It also validates and registers
-  manual pipeline run records and pilot output manifests for already-generated
-  files without replacing the existing CSV clip-manifest/export workflow.
+  manual pipeline run records, readiness-gated execution-plan manifests, and
+  pilot output manifests for already-generated files without replacing the
+  existing CSV clip-manifest/export workflow.
 - `scripts/pilot_job.py` — operator CLI (`validate`, `create`, `show`, `list`,
   `transition`, `history`).
 - `docs/pilot/` — runbook and intake templates; tracked examples under
@@ -207,6 +208,10 @@ Boundaries preserved:
 - The CLI never runs the pipeline, invokes models, or processes media.
 - Run records capture operator-entered command/stage/provenance metadata only;
   they do not execute commands or start background work.
+- Execution plans freeze current readiness, source/configuration provenance,
+  ordered stage metadata, and structured arguments only; they do not execute
+  commands, process media, invoke FFmpeg, call models/APIs, access the network,
+  copy/move/delete/upload/publish files, discover outputs, or deliver.
 - Manual transitions record operator state only: `RUNNING` does not run media
   processing, and `DELIVERED` does not upload or send files.
 - Job records contain identifiers and readiness only — never intake

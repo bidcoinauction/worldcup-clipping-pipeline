@@ -48,6 +48,8 @@ Stage statuses are:
 - `generate-asset-prompts` -> `scripts/generate_asset_prompts.py`
 - `export-clips-ffmpeg` -> `scripts/export_clips_ffmpeg.py`
 - `export-research-windows` -> `scripts/export_research_windows.py`
+- `build-stadium-dashboard` -> `scripts/build_stadium_dashboard.py`
+- `pilot-output-register` -> `scripts/pilot_job.py`
 
 Commands are stored as structured arguments. The CLI records them with repeated
 `--command-arg` values; it never executes them.
@@ -81,6 +83,7 @@ python3 scripts/pilot_job.py runs create JOB_ID \
   --entry-point process-match \
   --command-arg scripts/process_match.py \
   --command-arg path/to/source.mp4 \
+  --plan-id plan-001 \
   --manual-confirmed \
   --expected-job-revision 1
 
@@ -131,6 +134,17 @@ store path, size, modified timestamp, optional SHA-256, and validation outcome.
 The record stores identifiers and file references only. It does not embed full
 configuration files, API keys, environment dumps, model responses, transcript
 contents, or raw subprocess output.
+
+## Execution Plan Linkage
+
+Run records may include optional `plan_id`. When present, creation requires the
+plan to exist, belong to the same job, be `READY`, validate against the current
+job revision, and match the run's structured `entry_point` plus `command_args`.
+The CLI still does not execute the command.
+
+Runs without `plan_id` remain valid for legacy/manual records. Run summaries
+include plan ID, plan revision, workflow, planned stages, recorded stages, and
+manually recorded deviations when supplied.
 
 ## Output Linkage
 

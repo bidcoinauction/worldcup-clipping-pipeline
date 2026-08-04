@@ -1,0 +1,13 @@
+{
+  "blocked": true,
+  "job_id": "example_pilot_source",
+  "plan_id": "blocked-rights-plan",
+  "issues": [
+    {
+      "path": "readiness.intake.rights_cleared",
+      "code": "rights_not_cleared",
+      "message": "rights are not cleared"
+    }
+  ],
+  "result": "No plan is written, no event is appended, and the job record is unchanged."
+}
