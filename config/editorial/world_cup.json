@@ -1,0 +1,31 @@
+{
+  "_note": "WORLD CUP editorial taxonomy (data-backed). This is the football editorial language that lives apart from the operational `categories` list in config/pipeline_config.json. It is consumed via configurator resolve_editorial_taxonomy/resolve_story_targets and migrated from config/emotions.yml and config/series.yml. Values are backward compatible with the reference deployment.",
+  "emotional_kinds": [
+    "EMOTION",
+    "AURA",
+    "CHAOS",
+    "AMERICA"
+  ],
+  "narrative_functions": [
+    "establish",
+    "elevate",
+    "rupture",
+    "resolve",
+    "aftermath"
+  ],
+  "story_targets": {
+    "arc_roles": [
+      "setup",
+      "pressure",
+      "rupture",
+      "aftermath"
+    ],
+    "narrative_roles": [
+      "setup",
+      "tension_builder",
+      "climax",
+      "reaction",
+      "aftermath"
+    ]
+  }
+}

@@ -100,6 +100,19 @@ The remaining duplicated archive-root and positioning logic is consolidated, and
 
 Verification: `pytest` 597 passed, 1 skipped (baseline 570 / 1 preserved); `validate_data.py` passes; both config fixtures validate; invalid template selection raises `ConfigurationError` with the template identifier and no silent fallback; render performs no network access and no file mutation.
 
+## Status — Phase 1 Third Slice (Output Resolution + Editorial Taxonomy)
+
+The structured output root now carries full precedence, and the football editorial language is separated from the operational `categories` surface as data:
+
+- `pipeline/configurator.py` — output-root resolution with precedence override -> structured `outputs.directory` -> `FOOTBALL_ARCHIVE_ROOT` -> platform default, exposed as `resolve_output_root()`, `resolve_structured_output_root()`, `resolve_archive_root()`, `resolve_archive_path()`. Roots accept absolute or repository-relative paths; invalid types and `..` traversal raise `ConfigurationError`; resolution is read-only (no mkdir, no network).
+- `pipeline/configurator.py` — editorial taxonomy tier (`operational`, `editorial` under `taxonomies`) validated in `validate_structured_profile()`; `_football_profile()` sources `emotional_kinds`/`operational` from the data-backed editorial file while keeping `get_taxonomy()` backward compatible.
+- `config/editorial/world_cup.json` — the World Cup editorial vocabulary (`emotional_kinds` EMOTION/AURA/CHAOS/AMERICA, `narrative_functions`, `story_targets` arc/narrative roles), loaded via `_load_editorial_taxonomy()` and validated by `validate_editorial_taxonomy()`.
+- `pipeline/configurator.py` — resolvers `resolve_operational_categories()`, `resolve_editorial_taxonomy()`, `resolve_story_targets()` (strict, full field paths).
+- `config/examples/basketball.json` — moved to the separated structure (`operational.categories` distinct from `editorial.emotional_kinds`); not registered, not loaded by default.
+- New tests `test_output_resolution.py` and `test_editorial_taxonomy.py` covering precedence, type/path validation, no-directory-creation, no-network, backward compatibility, and editorial-file-as-source-of-truth.
+
+Verification: `pytest` 620 passed, 1 skipped (baseline 597 / 1 preserved, 1 warning); `validate_data.py` passes; `validate_config.py` passes on the reference config and `config/examples/basketball.json`.
+
 ## Gate Before Merge
 
 - `git diff --check` clean.

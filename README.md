@@ -61,7 +61,24 @@ The additive structured layer in `pipeline/configurator.py` resolves project ide
 
 ### Archive-root precedence
 
-`FOOTBALL_ARCHIVE_ROOT` wins; otherwise the platform default (`C:\FootballArchive` on Windows, `FootballArchive` elsewhere). Explicit CLI arguments (e.g. `--output`, `--staging-dir`, `--ready-dir`, `--watch-dir`) always win over the resolved root. The canonical `resolve_archive_root`/`resolve_archive_path` in `pipeline/configurator.py` are used by `pipeline/stadium_signal.py`, `scripts/record_live.py`, and `scripts/live_watch.py` (each keeps a thin `archive_root`/`archive_path` wrapper that delegates to the canonical functions).
+The canonical `resolve_archive_root`/`resolve_output_root` in `pipeline/configurator.py` resolve the output root in this order:
+
+1. Explicit override (e.g. CLI output argument)
+2. Structured project `outputs.directory`, when a profile configures it
+3. `FOOTBALL_ARCHIVE_ROOT`
+4. Platform default (`C:\FootballArchive` on Windows, `FootballArchive` elsewhere)
+
+The built-in World Cup profile does not set `outputs.directory`, so its resolution stays environment/default. Structured output roots accept absolute or repository-relative paths; invalid types and `..` traversal are rejected with `ConfigurationError`. Resolution is read-only: it never creates directories and makes no network calls. The canonical `resolve_archive_path` is used by `pipeline/stadium_signal.py`, `scripts/record_live.py`, and `scripts/live_watch.py` (each keeps a thin `archive_root`/`archive_path` wrapper that delegates to the canonical functions).
+
+### Editorial taxonomy
+
+The World Cup editorial language is separated from the operational `categories` list as a data-backed taxonomy:
+
+```text
+config/editorial/world_cup.json
+```
+
+It holds `emotional_kinds`, `narrative_functions`, and `story_targets` (arc roles and narrative roles). `pipeline/configurator.py` resolves it via `resolve_editorial_taxonomy()`, `resolve_story_targets()`, and `resolve_operational_categories()`. Unknown keys or wrong types raise `ConfigurationError` with the full field path. This is a distinct surface from the legacy operational `categories` in `config/pipeline_config.json`, which remains intact. `config/examples/basketball.json` demonstrates the same separated taxonomy structure for a second sport (non-production).
 
 ### Positioning precedence
 
@@ -104,7 +121,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 597 passed, 1 skipped, 1 warning.
+- `pytest`: 620 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 

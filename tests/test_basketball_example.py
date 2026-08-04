@@ -23,6 +23,16 @@ def test_basketball_example_is_never_selected_by_default():
 
 def test_basketball_example_has_distinct_taxonomy():
     profile = load_structured_profile(BASKETBALL_EXAMPLE)
-    kinds = profile["taxonomies"]["match_kinds"]
-    assert "BUZZER_BEATER" in profile["taxonomies"]["emotional_kinds"]
-    assert any(kind in kinds for kind in ("FINAL_QUARTER", "OVERTIME", "PLAYOFF"))
+    operational = profile["taxonomies"]["operational"]["categories"]
+    editorial = profile["taxonomies"]["editorial"]
+    assert "BUZZER_BEATER" in editorial["emotional_kinds"]
+    assert any(kind in operational for kind in ("FINAL_QUARTER", "OVERTIME", "PLAYOFF"))
+    assert "narrative_functions" in editorial
+    assert {"arc_roles", "narrative_roles"} <= set(editorial["story_targets"])
+
+
+def test_basketball_example_taxonomy_stays_separate_from_operational():
+    profile = load_structured_profile(BASKETBALL_EXAMPLE)
+    operational = set(profile["taxonomies"]["operational"]["categories"])
+    emotional = set(profile["taxonomies"]["editorial"]["emotional_kinds"])
+    assert operational.isdisjoint(emotional)

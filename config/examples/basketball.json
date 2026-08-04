@@ -6,20 +6,46 @@
     "positioning": "Global hoops for new American fans"
   },
   "taxonomies": {
-    "match_kinds": [
-      "FINAL_QUARTER",
-      "OVERTIME",
-      "RIVALRY",
-      "PLAYOFF",
-      "ALL_STAR"
-    ],
-    "emotional_kinds": [
-      "BUZZER_BEATER",
-      "COLLAPSE",
-      "COMEBACK",
-      "STAR_POWER",
-      "MOMENTUM"
-    ]
+    "operational": {
+      "categories": [
+        "FINAL_QUARTER",
+        "OVERTIME",
+        "RIVALRY",
+        "PLAYOFF",
+        "ALL_STAR"
+      ]
+    },
+    "editorial": {
+      "emotional_kinds": [
+        "BUZZER_BEATER",
+        "COLLAPSE",
+        "COMEBACK",
+        "STAR_POWER",
+        "MOMENTUM"
+      ],
+      "narrative_functions": [
+        "establishment",
+        "elevation",
+        "rupture",
+        "resolve",
+        "aftermath"
+      ],
+      "story_targets": {
+        "arc_roles": [
+          "setup",
+          "pressure",
+          "rupture",
+          "aftermath"
+        ],
+        "narrative_roles": [
+          "setup",
+          "tension_builder",
+          "climax",
+          "reaction",
+          "aftermath"
+        ]
+      }
+    }
   },
   "templates": {
     "prompt": "prompts/basketball_detection_prompt.txt"
