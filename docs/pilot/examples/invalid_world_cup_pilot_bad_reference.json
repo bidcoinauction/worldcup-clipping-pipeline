@@ -1,0 +1,43 @@
+{
+  "_note": "INVALID EXAMPLE (bad configuration reference). configuration.brand references a brand profile that does not exist, so config_references_valid is no and the intake is not execution-ready.",
+  "intake_version": 1,
+  "pilot": {
+    "pilot_id": "world_cup_pilot_bad_reference",
+    "project": "football",
+    "reference_deployment": "world_cup",
+    "requested_clip_count": {"min": 8, "max": 15},
+    "operator_notes": "Example showing an unknown configuration reference fails clearly."
+  },
+  "media": {
+    "source_id": "wc_bad_ref_source_001",
+    "local_file_path": "FootballArchive/pilot_fixtures/sample_source.mp4",
+    "original_filename": "sample_source.mp4",
+    "media_type": "video",
+    "supplied_by_client": true
+  },
+  "rights": {
+    "status": "CONFIRMED",
+    "confirmation_statement": "You client confirms rights (fictitious).",
+    "confirmed_by": "Sample Client Contact (fictitious)",
+    "confirmation_date": "2026-08-01",
+    "permitted_uses": ["clip", "store", "review", "delivery"],
+    "distribution_limitations": ["no_broadcast_without_approval"],
+    "source_of_permission": "written client agreement (fictitious)"
+  },
+  "configuration": {
+    "project": "football",
+    "brand": "does_not_exist",
+    "editorial_taxonomy": "world_cup",
+    "operational_taxonomy": "world_cup",
+    "detection_template": "prompt",
+    "export_profiles": ["vertical_clean", "source"],
+    "delivery_destination": "EXPORTS"
+  },
+  "review_and_delivery": {
+    "human_review_required": true,
+    "approval_method": "manual",
+    "delivery_method": "shared_folder",
+    "delivery_directory": "FootballArchive/EXPORTS",
+    "publishing_included": false
+  }
+}

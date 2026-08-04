@@ -1,0 +1,40 @@
+{
+  "_note": "INVALID EXAMPLE: rights are UNCONFIRMED. This intake validates structurally but must NOT become execution-ready. Reference: docs/pilot/RIGHTS_CONFIRMATION.md.",
+  "intake_version": 1,
+  "pilot": {
+    "pilot_id": "world_cup_pilot_unconfirmed",
+    "project": "football",
+    "reference_deployment": "world_cup",
+    "requested_clip_count": {"min": 8, "max": 15},
+    "operator_notes": "Example showing UNCONFIRMED rights. Not execution-ready."
+  },
+  "media": {
+    "source_id": "wc_unconfirmed_source_001",
+    "local_file_path": "FootballArchive/pilot_fixtures/sample_source.mp4",
+    "original_filename": "sample_source.mp4",
+    "media_type": "video",
+    "supplied_by_client": true,
+    "source_validation_completed": false
+  },
+  "rights": {
+    "status": "UNCONFIRMED",
+    "permitted_uses": ["clip", "store", "review", "delivery"],
+    "notes": "No affirmative rights confirmation recorded; must not become execution-ready."
+  },
+  "configuration": {
+    "project": "football",
+    "brand": "world_cup",
+    "editorial_taxonomy": "world_cup",
+    "operational_taxonomy": "world_cup",
+    "detection_template": "prompt",
+    "export_profiles": ["vertical_clean", "source"],
+    "delivery_destination": "EXPORTS"
+  },
+  "review_and_delivery": {
+    "human_review_required": true,
+    "approval_method": "manual",
+    "delivery_method": "shared_folder",
+    "delivery_directory": "FootballArchive/EXPORTS",
+    "publishing_included": false
+  }
+}

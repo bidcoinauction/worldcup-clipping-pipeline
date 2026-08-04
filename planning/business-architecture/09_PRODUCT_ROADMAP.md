@@ -65,11 +65,17 @@ Likely scope:
 
 Priority tasks:
 
-- Create pilot runbook.
-- Make configuration explicit for one client.
-- Remove the most harmful hardcoded assumptions from the pilot path.
-- Add validation for inputs and outputs.
-- Add basic job log.
+- Create pilot runbook. **(built: `docs/pilot/PILOT_RUNBOOK.md`)**
+- Make configuration explicit for one client. **(built: validated intake + rights gate in `pipeline/pilot.py`)**
+- Remove the most harmful hardcoded assumptions from the pilot path. **(done in Phase 1 platform extraction)**
+- Add validation for inputs and outputs. **(built: read-only source validation + intake validation)**
+- Add basic job log. **(built: `scripts/pilot_job.py` job records + append-only event log)**
+
+Status:
+
+- Managed pilot intake, rights confirmation, source validation, and job
+  records are implemented. Media processing, review, approval, and delivery
+  remain manual operator steps (per the runbook).
 
 Definition of done:
 

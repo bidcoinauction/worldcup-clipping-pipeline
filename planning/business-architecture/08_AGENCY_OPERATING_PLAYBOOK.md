@@ -57,7 +57,9 @@ Minimum artifacts:
 
 Repo support:
 
-- Missing.
+- Partial. Pilot intake manifest + rights confirmation exist in `docs/pilot/`
+  and `pipeline/pilot.py`; job records via `scripts/pilot_job.py`. No
+  organization/project config records yet.
 
 ### 4. Brand Collection
 
@@ -76,7 +78,9 @@ Minimum artifacts:
 
 Repo support:
 
-- Missing except hardcoded case-study defaults.
+- Partial. Validated brand profiles exist under `config/brands/`
+  (`BRAND_INTAKE.md`); intake manifests reference a brand profile by
+  identifier instead of duplicating it.
 
 ### 5. Workflow Configuration
 
@@ -136,7 +140,8 @@ Goal:
 
 Repo support:
 
-- Missing.
+- Partial. `scripts/pilot_job.py validate` + `create` record a durable job
+  (READY / AWAITING_RIGHTS / VALIDATION_FAILED) with an append-only event log.
 
 ### 11. Reporting
 
@@ -146,7 +151,8 @@ Goal:
 
 Repo support:
 
-- Missing except manifests.
+- Partial. Job records and event logs capture intake->job provenance;
+  manifests record outputs. No reporting dashboard exists.
 
 ### 12. Billing
 

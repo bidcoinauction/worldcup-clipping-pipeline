@@ -148,6 +148,80 @@ python3 scripts/validate_config.py config/brands/world_cup.json
 python3 scripts/validate_config.py config/export/world_cup.json
 ```
 
+## Managed Pilot Operations
+
+Phase 2 adds a validated **pilot intake manifest**, an explicit **rights gate**,
+read-only **source validation**, and a durable **job record** for one managed
+local-file sports pilot. It wraps the existing pipeline; it does not replace
+or modify any World Cup manifest, schedule, or clip workflow.
+
+### Intake manifest
+
+A pilot intake is a JSON file (schema version 1) describing the pilot, the
+client-supplied media, rights confirmation, configuration references, and
+review/delivery settings. Start from the tracked non-production example:
+
+```text
+docs/pilot/examples/world_cup_pilot_example.json
+```
+
+Configuration is **referenced** by identifier (project, brand, editorial
+taxonomy, detection template, export profiles, delivery destination) and
+resolved through `pipeline/configurator.py` — never duplicated. Unknown keys,
+wrong types, credential-like keys/values, and unsafe paths are rejected with
+full field paths.
+
+### Rights gate
+
+Rights states: `UNCONFIRMED`, `CONFIRMED`, `RESTRICTED`, `EXPIRED`, `REJECTED`.
+Only `CONFIRMED` (unexpired) rights pass the execution-readiness gate.
+`RESTRICTED` validate structurally but require an explicit supported-use check.
+The gate never infers permission from public availability, stream access, file
+possession, or prior clipping. See `docs/pilot/RIGHTS_CONFIRMATION.md`.
+
+### Source validation
+
+Read-only validation of the local media file: exists, regular, readable,
+non-empty, allowed extension, optional SHA-256 checksum, optional duration via
+ffprobe (reported as an environmental limitation when ffprobe is unavailable),
+and containment within a configured intake root (`STADIUM_PILOT_INTAKE_ROOT`).
+Network URLs are rejected. Validation never modifies, moves, copies, or
+transcodes media.
+
+### Job records
+
+`create` writes a durable job record plus an append-only event log under
+`data/pilot/jobs/` (gitignored). Deterministic initial state:
+`READY` (execution-ready), `AWAITING_RIGHTS` (valid but not ready), or
+`VALIDATION_FAILED` (invalid). Duplicate job identifiers are refused. Writes
+are atomic and never leave the configured job root. The record stores
+identifiers and readiness only — never intake confirmation or personal data.
+
+### CLI
+
+```bash
+python3 scripts/pilot_job.py validate path/to/intake.json
+python3 scripts/pilot_job.py create   path/to/intake.json --operator YOUR_NAME
+python3 scripts/pilot_job.py show     JOB_ID
+python3 scripts/pilot_job.py list
+```
+
+`validate` makes no file changes and exits zero only when structurally valid.
+Expected operational errors print concise messages to stderr without
+tracebacks. The CLI never processes media, calls models, or touches the
+network.
+
+### Relationship to existing manifests
+
+```text
+Pilot intake -> rights gate -> source validation -> job record (READY)
+    -> existing World Cup pipeline (run manually) -> review -> approval -> delivery
+```
+
+The existing match manifest (`data/manifests/*.json`), schedule CSV, and clip
+manifests are unchanged and remain independently usable. Full runbook and
+intake templates: `docs/pilot/PILOT_RUNBOOK.md`.
+
 ## Validation
 
 ```bash
@@ -159,7 +233,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 660 passed, 1 skipped, 1 warning.
+- `pytest`: 723 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 
@@ -195,4 +269,4 @@ python scripts\record_live.py HASH --match-id MATCH_ID --mode full --verbose
 - Keep video/audio assets outside Git in `FootballArchive/` or another ignored archive root.
 - Confirm media rights before commercial processing or delivery.
 - Treat the World Cup implementation as the current reference deployment, not as a generic commercial platform.
-- For the next build phase, prefer a minimum viable paid pilot around local files, manual review, and shared-folder delivery.
+- Managed pilot operations are the current build phase: validated intake, rights gate, source validation, and job records exist; media processing, review, approval, and delivery remain manual operator steps.

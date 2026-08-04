@@ -17,6 +17,9 @@ EXPORTS/
 POSTED/
 TOP_PERFORMERS/
 
+# Managed pilot runtime records (client intake + job records are never committed)
+data/pilot/
+
 *.mp4
 *.mov
 *.m4a

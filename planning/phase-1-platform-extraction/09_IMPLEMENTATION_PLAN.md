@@ -130,6 +130,32 @@ Verification: `pytest` 660 passed, 1 skipped (baseline 620 / 1 preserved, 1 warn
 
 Remaining embedded assumptions (documented, not in the migrated call set): `scripts/generate_caption_bank.py` carries a static caption bank with per-category hashtags (manual bank generator, not the clipping asset path); the crop/fit filter chains live in the exporter scripts (described by profile `crop` metadata, not reproduced in config); `scripts/export_vertical_blur.py` duplicates vertical export logic and is out of the approved call set.
 
+## Status — Phase 1 Complete
+
+Phase 1 platform extraction is complete. The reference deployment keeps
+working and every extracted concept is validated data:
+
+- Validated legacy config loading (`pipeline/config.py`) with a strict key
+  allowlist.
+- Structured project identity, taxonomy registry, template resolution and
+  rendering, platform/output selection, and canonical archive-root resolution
+  (`pipeline/configurator.py`).
+- Editorial taxonomy separated from operational categories
+  (`config/editorial/world_cup.json`).
+- Brand profiles (`config/brands/world_cup.json`) and export profiles
+  (`config/export/world_cup.json`).
+- A non-production basketball example (`config/examples/basketball.json`).
+- Read-only config validation (`scripts/validate_config.py`).
+
+Verification at completion: `pytest` 660 passed, 1 skipped (baseline 620 / 1
+preserved, 1 warning); `validate_data.py` passes; `validate_config.py` passes
+on the reference config, basketball example, brand files, and export file;
+`git diff --check` clean.
+
+Phase 2 (managed pilot intake and job records) builds on this foundation as an
+operational wrapper and does not change any Phase 1 surface. See
+`planning/phase-2-pilot-operations/00_PILOT_INTAKE_STATUS.md`.
+
 ## Gate Before Merge
 
 - `git diff --check` clean.

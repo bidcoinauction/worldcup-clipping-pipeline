@@ -1,0 +1,70 @@
+{
+  "_note": "NON-PRODUCTION EXAMPLE intake for the World Cup reference deployment. All client information is fictitious. The media.local_file_path is a placeholder and must be replaced with the path to the legally cleared client source file before use. Validate with: python3 scripts/pilot_job.py validate docs/pilot/examples/world_cup_pilot_example.json",
+  "intake_version": 1,
+  "pilot": {
+    "pilot_id": "world_cup_pilot_001",
+    "project": "football",
+    "reference_deployment": "world_cup",
+    "requested_clip_count": {
+      "min": 8,
+      "max": 15
+    },
+    "requested_delivery_date": "2026-09-15",
+    "operator_notes": "Fictitious sample intake. Replace the placeholder media path with a cleared client file before any real run."
+  },
+  "media": {
+    "source_id": "wc_sample_source_001",
+    "local_file_path": "FootballArchive/pilot_fixtures/sample_source.mp4",
+    "original_filename": "sample_source.mp4",
+    "media_type": "video",
+    "match_or_event_name": "Sample Friendly Match (fictitious)",
+    "event_date": "2026-08-20",
+    "duration_seconds": null,
+    "checksum": null,
+    "supplied_by_client": true,
+    "source_validation_completed": false
+  },
+  "rights": {
+    "status": "CONFIRMED",
+    "confirmation_statement": "Sample client confirms the right to clip, store, review, and deliver derivative short-form clips of the supplied source file (fictitious).",
+    "confirmed_by": "Sample Client Contact (fictitious)",
+    "confirmation_date": "2026-08-01",
+    "permitted_uses": [
+      "clip",
+      "store",
+      "review",
+      "delivery"
+    ],
+    "distribution_limitations": [
+      "no_broadcast_broadcast_without_client_approval"
+    ],
+    "territory_limitations": "North America",
+    "expiration_date": null,
+    "source_of_permission": "written client agreement (fictitious)",
+    "notes": "Example only. Never contains real client personal data."
+  },
+  "configuration": {
+    "project": "football",
+    "brand": "world_cup",
+    "editorial_taxonomy": "world_cup",
+    "operational_taxonomy": "world_cup",
+    "detection_template": "prompt",
+    "export_profiles": [
+      "vertical_clean",
+      "source"
+    ],
+    "delivery_destination": "EXPORTS"
+  },
+  "review_and_delivery": {
+    "human_review_required": true,
+    "approval_method": "email confirmation from client contact (manual)",
+    "delivery_method": "shared_folder",
+    "delivery_directory": "FootballArchive/EXPORTS",
+    "expected_deliverables": [
+      "vertical clips",
+      "captions",
+      "thumbnail prompts"
+    ],
+    "publishing_included": false
+  }
+}

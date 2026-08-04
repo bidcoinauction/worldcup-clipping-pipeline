@@ -180,6 +180,32 @@ Values encode the historical reference behavior (1080x1920, libx264 veryfast CRF
 
 The affected CLI scripts (`generate_asset_prompts.py`, `export_clips_ffmpeg.py`, `export_research_windows.py`) surface `ConfigurationError` as a concise actionable message with a nonzero exit and no traceback for expected configuration mistakes; unexpected programming errors still raise normally.
 
+## Managed Pilot Operations (Phase 2)
+
+Phase 2 adds an operational wrapper around the reference deployment for one
+managed local-file sports pilot. It is additive: every World Cup manifest,
+schedule, clip manifest, and command keeps working independently.
+
+- `pipeline/pilot.py` — validated pilot intake (structural / configuration /
+  rights / source), the rights gate, read-only source validation, and the job
+  record API (atomic writes, append-only event log).
+- `scripts/pilot_job.py` — operator CLI (`validate`, `create`, `show`, `list`).
+- `docs/pilot/` — runbook and intake templates; tracked examples under
+  `docs/pilot/examples/` (non-production, fictitious data).
+- Runtime intake/job files live under `data/pilot/` and are gitignored.
+
+Boundaries preserved:
+
+- Only `CONFIRMED`, unexpired rights pass the execution-ready gate;
+  `RESTRICTED` requires an explicit supported-use check.
+- Source validation is read-only; network URLs are rejected; no media is
+  modified, moved, copied, or transcoded; no network requests occur.
+- The CLI never runs the pipeline, invokes models, or processes media.
+- Job records contain identifiers and readiness only — never intake
+  confirmation or personal data.
+- No database, queue, auth, users, billing, publishing, or dashboards are
+  added.
+
 ## Anti-Patterns
 
 Avoid these in extraction work:
