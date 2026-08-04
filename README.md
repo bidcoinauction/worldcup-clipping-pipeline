@@ -237,6 +237,7 @@ python3 scripts/pilot_job.py runs create JOB_ID --run-id RUN_ID --operator YOUR_
 python3 scripts/pilot_job.py runs start JOB_ID RUN_ID --operator YOUR_NAME
 python3 scripts/pilot_job.py runs stage JOB_ID RUN_ID TRANSCRIPTION --status RUNNING --operator YOUR_NAME
 python3 scripts/pilot_job.py runs finish JOB_ID RUN_ID --status SUCCEEDED --operator YOUR_NAME --summary "Manual pipeline run completed"
+python3 scripts/pilot_job.py readiness JOB_ID --verbose
 python3 scripts/pilot_job.py delivery generate JOB_ID PACKAGE_ID --operator YOUR_NAME --delivery-method manual --delivery-destination "desk handoff"
 python3 scripts/pilot_job.py delivery checklist JOB_ID PACKAGE_ID
 python3 scripts/pilot_job.py delivery confirm JOB_ID PACKAGE_ID --operator YOUR_NAME --confirmation "Delivered" --delivered-count 1
@@ -248,6 +249,8 @@ Expected operational errors print concise messages to stderr without
 tracebacks. The CLI never processes media, calls models, or touches the
 network. `transition` records manual operations only: `RUNNING` does not run
 the pipeline, and `DELIVERED` does not upload or send files.
+`readiness` is read-only and composes existing intake, run, output, and delivery
+records without rewriting legacy files.
 
 ### Relationship to existing manifests
 

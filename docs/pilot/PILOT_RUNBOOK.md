@@ -140,6 +140,13 @@ python3 scripts/pilot_job.py runs finish JOB_ID RUN_ID \
   --expected-run-revision RUN_REVISION
 ```
 
+At any point, inspect read-only readiness across intake, latest run, output
+review, and delivery package records:
+
+```bash
+python3 scripts/pilot_job.py readiness JOB_ID --verbose
+```
+
 ### 9. Review outputs
 
 Review every generated clip, caption, and thumbnail before any client sees it.

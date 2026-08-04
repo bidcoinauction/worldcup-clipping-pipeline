@@ -112,7 +112,13 @@ python3 scripts/pilot_job.py runs finish JOB_ID run-001 \
 python3 scripts/pilot_job.py runs list JOB_ID
 python3 scripts/pilot_job.py runs show JOB_ID run-001
 python3 scripts/pilot_job.py runs summary JOB_ID run-001
+
+python3 scripts/pilot_job.py readiness JOB_ID --verbose
 ```
+
+`readiness` is read-only. It summarizes current job state, intake validity,
+latest run status, output review readiness, delivery package readiness, and
+blockers without mutating records.
 
 ## Provenance
 

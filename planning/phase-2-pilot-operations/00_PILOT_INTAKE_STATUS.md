@@ -22,6 +22,8 @@ registration/review, and delivery package handoff records.
   review actions, summary/readiness behavior, and CLI examples.
 - `docs/pilot/PIPELINE_RUN_RECORDS.md` — manual run-record schema, stage model,
   provenance, output linkage, revision guards, and CLI examples.
+- `pilot_job.py readiness` — read-only intake/run/output/delivery readiness
+  reporting for one job or all jobs.
 - `docs/pilot/DELIVERY_PACKAGES.md` — delivery package schema, checklist,
   confirmation, transition gates, and safety boundaries.
 - `JOB_ID.outputs/MANIFEST_ID.json` runtime structure — reviewed output
@@ -75,7 +77,7 @@ recovery reason, and confirmation that the blocking issue was addressed.
   missing-source, durable READY job creation, deterministic duplicates,
   complete manual transitions, stale revision rejection, rights revalidation,
   pipeline run creation/lifecycle/stage provenance, output registration/review/readiness, delivery package generation/checklist,
-  missing-file and duplicate-package rejection, confirmation, failure recovery,
+  read-only readiness reporting, missing-file and duplicate-package rejection, confirmation, failure recovery,
   cancellation safety, append-only history, and no network / FFmpeg / media mutation.
 
 ## Remaining pilot-operation gaps

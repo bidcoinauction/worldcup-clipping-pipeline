@@ -52,6 +52,7 @@ from pipeline.pilot import (  # noqa: E402
     list_jobs,
     list_output_manifests,
     output_summary,
+    pilot_readiness_report,
     read_delivery_checklist,
     register_output_manifest,
     review_output,
@@ -631,6 +632,27 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_readiness(args: argparse.Namespace) -> int:
+    try:
+        report = pilot_readiness_report(args.job_id, jobs_dir=args.jobs_dir, intake_root=args.intake_root)
+    except (JobRecordError, JobPathError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"PILOT READINESS: jobs={report['job_count']}")
+    for row in report["jobs"]:
+        latest_run = row.get("latest_run") or {}
+        run_text = f"{latest_run.get('run_id')}:{latest_run.get('status')}" if latest_run else "-"
+        blockers = ",".join(row.get("blockers", [])) or "-"
+        print(f"{row['job_id']}\tstate={row['state']}\trevision={row['revision']}\trun={run_text}\toutputs={row['outputs']['manifest_count']}\treview_complete={_yesno(row['outputs']['review_complete'])}\tdelivery_package={row['delivery'].get('active_package_id') or '-'}\tblockers={blockers}")
+        if args.verbose:
+            print(f"  intake: source={_yesno(row['intake']['source_ready'])} rights={_yesno(row['intake']['rights_cleared'])} config={_yesno(row['intake']['config_references_valid'])}")
+            print(f"  outputs: approved_included={row['outputs']['approved_delivery_included_count']} missing={row['outputs']['missing_file_count']} invalid={row['outputs']['invalid_reference_count']}")
+            print(f"  delivery: packages={row['delivery']['package_count']} active_valid={_yesno(row['delivery']['active_package_valid'])} ready={_yesno(row['delivery']['delivery_ready'])}")
+            if row['delivery'].get('represented_run_ids'):
+                print(f"  represented_run_ids: {', '.join(row['delivery']['represented_run_ids'])}")
+    return 0
+
+
 def _yesno(value: bool) -> str:
     return "yes" if value else "no"
 
@@ -667,6 +689,13 @@ def main(argv: list[str] | None = None) -> int:
     list_p = subparsers.add_parser("list", help="List job records.")
     list_p.add_argument("--jobs-dir", default=None, help="Job-record directory")
     list_p.set_defaults(func=_cmd_list)
+
+    readiness_p = subparsers.add_parser("readiness", help="Show read-only job/run/output/delivery readiness.")
+    readiness_p.add_argument("job_id", nargs="?", default=None, help="Optional job identifier")
+    readiness_p.add_argument("--verbose", action="store_true", help="Show detailed readiness fields")
+    readiness_p.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    readiness_p.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    readiness_p.set_defaults(func=_cmd_readiness)
 
     transition_p = subparsers.add_parser("transition", help="Record a validated manual job-state transition.")
     transition_p.add_argument("job_id", help="Job identifier")

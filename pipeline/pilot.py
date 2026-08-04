@@ -3326,6 +3326,117 @@ def confirm_delivery(job_id: str, package_id: str, *, operator: str, confirmatio
     return {"job": updated_job, "confirmation": record, "confirmation_path": str(confirmation_path)}
 
 
+def _latest_pipeline_run_for_job(job: dict, jobs_dir: Path) -> dict | None:
+    latest: dict | None = None
+    for run_id in _job_run_ids(job, jobs_dir):
+        try:
+            run = _read_pipeline_run(job.get("job_id", ""), run_id, jobs_dir)
+        except PipelineRunError:
+            continue
+        if latest is None or str(run.get("created_at", "")) >= str(latest.get("created_at", "")):
+            latest = run
+    return latest
+
+
+def _delivery_readiness_for_job(job: dict, jobs_dir: Path, *, intake_root: str | None = None) -> dict:
+    package_ids = _job_delivery_package_ids(job, jobs_dir)
+    active_id = job.get("active_delivery_package_id") if isinstance(job.get("active_delivery_package_id"), str) else None
+    active_valid = False
+    delivery_ready = False
+    represented_run_ids: list[str] = []
+    issues: list[str] = []
+    if active_id:
+        try:
+            package = _read_delivery_package(job.get("job_id", ""), active_id, jobs_dir)
+            report = validate_delivery_package(package, job=job, jobs_dir=jobs_dir, intake_root=intake_root)
+            active_valid = report["valid"]
+            delivery_ready = bool(package.get("summary", {}).get("delivery_ready")) and active_valid
+            represented_run_ids = [v for v in package.get("represented_run_ids", []) if isinstance(v, str)]
+            issues = [issue["code"] for issue in report.get("issues", [])[:5]]
+        except JobRecordError as exc:
+            issues = [str(exc)]
+    return {"package_count": len(package_ids), "active_package_id": active_id, "active_package_valid": active_valid,
+            "delivery_ready": delivery_ready, "represented_run_ids": represented_run_ids, "issues": issues}
+
+
+def pilot_readiness_report(job_id: str | None = None, *, jobs_dir: str | Path | None = None,
+                           intake_root: str | None = None) -> dict:
+    """Return a read-only operational readiness report for one or all jobs.
+
+    This composes existing intake, run, output, and delivery records. It never
+    writes records, executes commands, processes media, or creates directories.
+    """
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    job_ids = [job_id] if job_id else [row["job_id"] for row in list_jobs(jobs_dir=jobs_dir_path)]
+    rows: list[dict] = []
+    for current_job_id in job_ids:
+        _, _, job, _events = _load_job_and_events(current_job_id, jobs_dir_path)
+        blockers: list[str] = []
+        intake_status = {"structurally_valid": False, "source_ready": False, "rights_cleared": False,
+                         "config_references_valid": False, "execution_ready": False, "issues": []}
+        try:
+            intake = _load_stored_intake(job)
+            intake_report = validate_intake(intake, intake_root=intake_root, check_source=True, check_rights=True)
+            intake_status = {"structurally_valid": intake_report["structurally_valid"],
+                             "source_ready": intake_report["source_ready"],
+                             "rights_cleared": intake_report["rights_cleared"],
+                             "config_references_valid": intake_report["config_references_valid"],
+                             "execution_ready": intake_report["execution_ready"],
+                             "issues": intake_report["validation_codes"]}
+            if not intake_report["rights_cleared"]:
+                blockers.append("rights_not_cleared")
+            if not intake_report["source_ready"]:
+                blockers.append("source_not_ready")
+            if not intake_report["config_references_valid"]:
+                blockers.append("configuration_invalid")
+        except JobRecordError as exc:
+            intake_status["issues"] = [str(exc)]
+            blockers.append("intake_unavailable")
+
+        latest_run = _latest_pipeline_run_for_job(job, jobs_dir_path)
+        latest_run_summary = None
+        if latest_run:
+            latest_run_summary = {"run_id": latest_run.get("run_id"), "status": latest_run.get("status"),
+                                  "revision": _normalized_run_revision(latest_run), "entry_point": latest_run.get("entry_point"),
+                                  "started_at": latest_run.get("started_at"), "completed_at": latest_run.get("completed_at")}
+            if latest_run.get("status") in {"FAILED", "ABORTED"}:
+                blockers.append(f"latest_run_{str(latest_run.get('status')).lower()}")
+
+        try:
+            outputs = output_summary(current_job_id, jobs_dir=jobs_dir_path, intake_root=intake_root)
+        except JobRecordError as exc:
+            outputs = {"manifest_count": 0, "review_complete": False, "eligible_for_approved": False,
+                       "eligible_for_delivery_ready": False, "approved_delivery_included_count": 0,
+                       "missing_file_count": 0, "invalid_reference_count": 0, "issues": [], "rights_issues": [str(exc)]}
+        if outputs.get("manifest_count", 0) == 0 and job.get("current_state") in {"RUNNING", "REVIEW_REQUIRED", "APPROVED", "DELIVERY_READY"}:
+            blockers.append("no_output_manifests")
+        if outputs.get("missing_file_count", 0):
+            blockers.append("output_files_missing")
+        if outputs.get("invalid_reference_count", 0):
+            blockers.append("output_references_invalid")
+        if job.get("current_state") in {"REVIEW_REQUIRED", "APPROVED", "DELIVERY_READY"} and not outputs.get("review_complete"):
+            blockers.append("output_review_incomplete")
+
+        delivery = _delivery_readiness_for_job(job, jobs_dir_path, intake_root=intake_root)
+        if job.get("current_state") == "APPROVED" and not delivery["active_package_valid"]:
+            blockers.append("delivery_package_missing_or_invalid")
+        if job.get("current_state") == "DELIVERY_READY" and not job.get("delivery_confirmation"):
+            blockers.append("delivery_confirmation_missing")
+
+        rows.append({"job_id": current_job_id, "state": job.get("current_state", ""), "revision": _normalized_revision(job),
+                     "allowed_next_states": allowed_next_states(job.get("current_state", "")),
+                     "intake": intake_status, "latest_run": latest_run_summary,
+                     "outputs": {"manifest_count": outputs.get("manifest_count", 0),
+                                 "review_complete": outputs.get("review_complete", False),
+                                 "approved_delivery_included_count": outputs.get("approved_delivery_included_count", 0),
+                                 "missing_file_count": outputs.get("missing_file_count", 0),
+                                 "invalid_reference_count": outputs.get("invalid_reference_count", 0),
+                                 "eligible_for_approved": outputs.get("eligible_for_approved", False),
+                                 "eligible_for_delivery_ready": outputs.get("eligible_for_delivery_ready", False)},
+                     "delivery": delivery, "blockers": sorted(set(blockers))})
+    return {"generated_at": _now_iso(), "job_count": len(rows), "jobs": rows}
+
+
 def list_jobs(jobs_dir: str | Path | None = None) -> list[dict]:
     """List job records in the configured job-record root (read-only)."""
     jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
