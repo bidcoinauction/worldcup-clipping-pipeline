@@ -39,6 +39,7 @@
     "approval_method": "manual",
     "delivery_method": "shared_folder",
     "delivery_directory": "FootballArchive/EXPORTS",
+    "expected_deliverables": ["vertical clips", "captions", "thumbnail prompts"],
     "publishing_included": false
   }
 }

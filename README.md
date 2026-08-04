@@ -192,10 +192,11 @@ transcodes media.
 
 `create` writes a durable job record plus an append-only event log under
 `data/pilot/jobs/` (gitignored). Deterministic initial state:
-`READY` (execution-ready), `AWAITING_RIGHTS` (valid but not ready), or
-`VALIDATION_FAILED` (invalid). Duplicate job identifiers are refused. Writes
-are atomic and never leave the configured job root. The record stores
-identifiers and readiness only — never intake confirmation or personal data.
+`READY` (execution-ready), `AWAITING_RIGHTS` (source-ready but rights not
+cleared), or `VALIDATION_FAILED` (structural/config/source validation failure).
+Duplicate job identifiers are refused. Writes are atomic and never leave the
+configured job root. The record stores identifiers and readiness only — never
+intake confirmation or personal data.
 
 ### CLI
 

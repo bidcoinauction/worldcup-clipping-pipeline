@@ -13,7 +13,8 @@
     "local_file_path": "FootballArchive/pilot_fixtures/sample_source.mp4",
     "original_filename": "sample_source.mp4",
     "media_type": "video",
-    "supplied_by_client": true
+    "supplied_by_client": true,
+    "source_validation_completed": false
   },
   "rights": {
     "status": "CONFIRMED",
@@ -38,6 +39,7 @@
     "approval_method": "manual",
     "delivery_method": "shared_folder",
     "delivery_directory": "FootballArchive/EXPORTS",
+    "expected_deliverables": ["vertical clips", "captions", "thumbnail prompts"],
     "publishing_included": false
   }
 }

@@ -129,6 +129,7 @@ C_SOURCE_UNSUPPORTED_EXTENSION = "SOURCE_UNSUPPORTED_EXTENSION"
 C_SOURCE_CHECKSUM_MISMATCH = "SOURCE_CHECKSUM_MISMATCH"
 C_SOURCE_DURATION_MISMATCH = "SOURCE_DURATION_MISMATCH"
 C_SOURCE_OUTSIDE_ROOT = "SOURCE_OUTSIDE_INTAKE_ROOT"
+C_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
 
 
 # ── Exceptions ───────────────────────────────────────────────────────────────
@@ -340,8 +341,8 @@ def _validate_media_section(data: dict, issues: list) -> None:
         if not isinstance(checksum, str) or not _CHECKSUM_RE.fullmatch(checksum):
             issues.append(_issue(f"{path}.checksum", C_BAD_CHECKSUM,
                                  "expected a 64-character hex SHA-256 checksum (optionally prefixed with 'sha256:')"))
-    _bool_field(data, "supplied_by_client", issues, path, optional=True)
-    _bool_field(data, "source_validation_completed", issues, path, optional=True)
+    _bool_field(data, "supplied_by_client", issues, path)
+    _bool_field(data, "source_validation_completed", issues, path)
 
 
 def _validate_rights_section(data: dict, issues: list) -> None:
@@ -407,7 +408,10 @@ def _validate_config_section(data: dict, issues: list) -> None:
 def _validate_review_section(data: dict, issues: list) -> None:
     path = "review_and_delivery"
     _reject_unknown(data, _REVIEW_KEYS, path, issues)
-    _bool_field(data, "human_review_required", issues, path, optional=True)
+    _bool_field(data, "human_review_required", issues, path)
+    if data.get("human_review_required") is False:
+        issues.append(_issue(f"{path}.human_review_required", C_REVIEW_REQUIRED,
+                             "managed pilot operations require human review before approval or delivery"))
     _str_field(data, "approval_method", issues, path)
     delivery_method = data.get("delivery_method")
     if delivery_method is None:
@@ -416,7 +420,7 @@ def _validate_review_section(data: dict, issues: list) -> None:
         issues.append(_issue(f"{path}.delivery_method", C_BAD_TYPE,
                              f"expected one of {', '.join(sorted(DELIVERY_METHODS))}"))
     _str_field(data, "delivery_directory", issues, path)
-    _str_list(data, "expected_deliverables", issues, path, required=False)
+    _str_list(data, "expected_deliverables", issues, path, required=True)
     _bool_field(data, "publishing_included", issues, path, optional=True)
 
 
@@ -566,6 +570,7 @@ def _evaluate_rights(data: dict) -> tuple[bool, str | None, list[dict]]:
                 issues.append(_issue("rights.permitted_uses", C_PUBLISHING_NOT_PERMITTED,
                                      "publishing is requested but 'publish'/'public_distribution' is not a permitted use"))
             if publishing and not (rights.get("distribution_limitations") or []):
+                cleared = False
                 issues.append(_issue("rights.distribution_limitations", C_PUBLISHING_MISSING_DISTRIBUTION,
                                      "publishing is requested but no distribution limitations are recorded"))
         if not cleared:
@@ -703,9 +708,7 @@ def _validate_source(data: dict, *, intake_root: str | None = None) -> tuple[boo
                 issues.append(_issue("media.duration_seconds", C_SOURCE_DURATION_MISMATCH,
                                      f"recorded duration {provided_duration}s does not match probed duration {actual:.1f}s"))
 
-    ok = not any(
-        i["code"] not in (C_SOURCE_DURATION_MISMATCH,) for i in issues
-    )
+    ok = not issues
     return ok, issues, duration_checked, duration_limitation
 
 
@@ -858,7 +861,8 @@ def create_job(intake_data: object, *, intake_path: str | Path | None = None,
     State decision (deterministic):
 
     * structurally valid + execution-ready -> ``READY``
-    * structurally valid but not execution-ready -> ``AWAITING_RIGHTS``
+    * structurally valid + source-ready but rights not cleared -> ``AWAITING_RIGHTS``
+    * structurally valid but source/config validation failed -> ``VALIDATION_FAILED``
     * not structurally valid (and identifiers derivable) -> ``VALIDATION_FAILED``
 
     Refuses duplicate job identifiers. Writes nothing outside *jobs_dir*.
@@ -883,9 +887,12 @@ def create_job(intake_data: object, *, intake_path: str | Path | None = None,
         if report["execution_ready"]:
             state = "READY"
             message = "Intake validated as execution-ready; job created and ready to run."
-        else:
+        elif report["source_ready"] and not report["rights_cleared"]:
             state = "AWAITING_RIGHTS"
-            message = "Intake is structurally valid but not execution-ready; job created awaiting rights/source resolution."
+            message = "Intake is structurally valid and source-ready, but rights are not cleared."
+        else:
+            state = "VALIDATION_FAILED"
+            message = "Intake failed source validation; job record created for tracing."
     else:
         state = "VALIDATION_FAILED"
         message = "Intake failed structural or configuration validation; job record created for tracing."

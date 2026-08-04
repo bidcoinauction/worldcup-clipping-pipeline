@@ -68,6 +68,12 @@ def test_invalid_config_reference_creates_validation_failed(media_file: Path, jo
     assert job["current_state"] == "VALIDATION_FAILED"
 
 
+def test_missing_source_creates_validation_failed(tmp_path: Path, jobs_root: Path):
+    job = create_job(build_intake(str(tmp_path / "missing.mp4")), source="test")
+    assert job["current_state"] == "VALIDATION_FAILED"
+    assert job["readiness_summary"]["source_ready"] is False
+
+
 def test_initial_event_recorded(media_file: Path, jobs_root: Path):
     job = create_job(build_intake(str(media_file)), source="test")
     events_path = jobs_root / f"{job['job_id']}.events.json"

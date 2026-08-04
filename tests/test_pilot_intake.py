@@ -34,6 +34,7 @@ def build_intake(source_path: str | None = None, *, overrides: dict | None = Non
             "original_filename": "source.mp4",
             "media_type": "video",
             "supplied_by_client": True,
+            "source_validation_completed": False,
         },
         "rights": {
             "status": "CONFIRMED",
@@ -57,6 +58,7 @@ def build_intake(source_path: str | None = None, *, overrides: dict | None = Non
             "approval_method": "email",
             "delivery_method": "shared_folder",
             "delivery_directory": "FootballArchive/EXPORTS",
+            "expected_deliverables": ["vertical clips", "captions"],
             "publishing_included": False,
         },
     }
@@ -299,6 +301,23 @@ def test_publishing_allowed_when_permitted(media_file: Path):
     assert report["execution_ready"]
 
 
+def test_publishing_requires_distribution_limitations(media_file: Path):
+    intake = build_intake(str(media_file), overrides={
+        "review_and_delivery": {"publishing_included": True},
+        "rights": {"permitted_uses": ["clip", "publish"], "distribution_limitations": []},
+    })
+    report = validate_intake(intake)
+    assert not report["execution_ready"]
+    assert "PUBLISHING_MISSING_DISTRIBUTION_LIMITS" in _codes(report)
+
+
+def test_human_review_required(media_file: Path):
+    intake = build_intake(str(media_file), overrides={"review_and_delivery": {"human_review_required": False}})
+    report = validate_intake(intake)
+    assert not report["structurally_valid"]
+    assert any(i["path"] == "review_and_delivery.human_review_required" for i in report["issues"])
+
+
 def test_rights_cleared_helper(media_file: Path):
     cleared, status = rights_cleared(build_intake(str(media_file)))
     assert cleared and status == "CONFIRMED"
@@ -394,6 +413,6 @@ def test_duration_mismatch_reported(tmp_path: Path, monkeypatch):
     intake = build_intake(str(media), overrides={"media": {"duration_seconds": 60.0}})
     monkeypatch.setattr("pipeline.pilot._ffprobe_duration", lambda _path: 10.0)
     ok, issues, duration_checked, limitation = validate_source(intake)
-    assert ok
+    assert not ok
     assert duration_checked
     assert "SOURCE_DURATION_MISMATCH" in {i["code"] for i in issues}

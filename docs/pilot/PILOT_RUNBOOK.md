@@ -73,8 +73,9 @@ python3 scripts/pilot_job.py create path/to/intake.json --operator YOUR_NAME
 event. Deterministic initial state:
 
 - Execution-ready intake -> `READY`
-- Structurally valid but not execution-ready -> `AWAITING_RIGHTS`
-- Structurally invalid (identifiers derivable) -> `VALIDATION_FAILED`
+- Structurally valid and source-ready but rights not cleared -> `AWAITING_RIGHTS`
+- Structurally invalid, invalid configuration, or source validation failure
+  (identifiers derivable) -> `VALIDATION_FAILED`
 
 Duplicate job identifiers are refused. No media is processed.
 
