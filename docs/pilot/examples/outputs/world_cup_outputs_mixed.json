@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "manifest_id": "world_cup_outputs_mixed",
+  "job_id": "world_cup_pilot_001_wc_sample_source_001",
+  "pilot_id": "world_cup_pilot_001",
+  "project_id": "football",
+  "source_id": "wc_sample_source_001",
+  "created_at": "2026-08-03T00:00:00+00:00",
+  "created_by": "example_operator",
+  "revision": 0,
+  "outputs": [
+    {
+      "output_id": "sample_clip_approved",
+      "output_type": "VIDEO_CLIP",
+      "local_path": "docs/pilot/examples/outputs/fixtures/sample_clip.mp4",
+      "filename": "sample_clip.mp4",
+      "export_profile": "vertical_clean",
+      "platform": "TikTok",
+      "operational_category": "EMOTION",
+      "review_status": "APPROVED",
+      "include_in_delivery": true,
+      "approval_metadata": {
+        "approved_by": "example_reviewer",
+        "approval_timestamp": "2026-08-03T00:10:00+00:00",
+        "approval_statement": "Approved.",
+        "include_in_delivery": true
+      }
+    },
+    {
+      "output_id": "sample_clip_rejected",
+      "output_type": "VIDEO_CLIP",
+      "local_path": "docs/pilot/examples/outputs/fixtures/sample_clip_2.mp4",
+      "filename": "sample_clip_2.mp4",
+      "export_profile": "vertical_clean",
+      "platform": "Reels",
+      "operational_category": "CHAOS",
+      "review_status": "REJECTED",
+      "include_in_delivery": false,
+      "rejection_reason": "Fictitious rejection reason."
+    },
+    {
+      "output_id": "sample_caption_excluded",
+      "output_type": "CAPTION",
+      "local_path": "docs/pilot/examples/outputs/fixtures/sample_caption.txt",
+      "filename": "sample_caption.txt",
+      "export_profile": "vertical_clean",
+      "platform": "Shorts",
+      "operational_category": "AMERICA",
+      "review_status": "EXCLUDED",
+      "include_in_delivery": false,
+      "review_notes": "Not part of this delivery package."
+    }
+  ]
+}

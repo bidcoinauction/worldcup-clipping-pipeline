@@ -36,11 +36,18 @@ from pipeline.pilot import (  # noqa: E402
     JobNotFoundError,
     JobPathError,
     JobRecordError,
+    OutputManifestError,
     create_job,
     read_history,
     list_jobs,
+    list_output_manifests,
+    output_summary,
+    register_output_manifest,
+    review_output,
     show_job,
+    show_output_manifest,
     transition_job,
+    validate_output_manifest,
     validate_intake,
 )
 
@@ -54,6 +61,18 @@ def _load_intake(path: Path) -> dict:
         raise JobRecordError(f"intake file is not valid JSON: {path} ({exc})") from exc
     if not isinstance(data, dict):
         raise JobRecordError(f"intake root must be a JSON object: {path}")
+    return data
+
+
+def _load_json_object(path: Path, label: str) -> dict:
+    if not path.is_file():
+        raise JobRecordError(f"{label} file not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise JobRecordError(f"{label} file is not valid JSON: {path} ({exc})") from exc
+    if not isinstance(data, dict):
+        raise JobRecordError(f"{label} root must be a JSON object: {path}")
     return data
 
 
@@ -196,6 +215,113 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_outputs_validate(args: argparse.Namespace) -> int:
+    data = _load_json_object(Path(args.manifest), "output manifest")
+    report = validate_output_manifest(data)
+    print(f"OUTPUT MANIFEST: valid={_yesno(report['valid'])}")
+    if report["issues"]:
+        print("ISSUES:")
+        for issue in report["issues"]:
+            print(f"  {issue['path']} [{issue['code']}]: {issue['message']}")
+    return 0 if report["valid"] else 1
+
+
+def _cmd_outputs_register(args: argparse.Namespace) -> int:
+    data = _load_json_object(Path(args.manifest), "output manifest")
+    try:
+        result = register_output_manifest(
+            args.job_id,
+            data,
+            jobs_dir=args.jobs_dir,
+            expected_revision=args.expected_revision,
+            operator=args.operator,
+        )
+    except OutputManifestError as exc:
+        _print_output_error(exc)
+        return 1
+    except JobRecordError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    job = result["job"]
+    manifest = result["manifest"]
+    print(f"OUTPUT MANIFEST REGISTERED: {manifest['manifest_id']}")
+    print(f"  job: {job['job_id']}")
+    print(f"  job_revision: {job['revision']}")
+    print(f"  manifest_revision: {manifest.get('revision', 0)}")
+    print(f"  outputs: {len(manifest.get('outputs', []))}")
+    return 0
+
+
+def _cmd_outputs_list(args: argparse.Namespace) -> int:
+    rows = list_output_manifests(args.job_id, jobs_dir=args.jobs_dir)
+    if not rows:
+        print(f"No output manifests registered for {args.job_id}.")
+        return 0
+    for row in rows:
+        print(f"{row['manifest_id']}\trevision={row['revision']}\toutputs={row['output_count']}")
+    return 0
+
+
+def _cmd_outputs_show(args: argparse.Namespace) -> int:
+    data = show_output_manifest(args.job_id, args.manifest_id, jobs_dir=args.jobs_dir)
+    print(f"OUTPUT MANIFEST: {data['manifest_id']}")
+    print(f"  job: {data['job_id']}")
+    print(f"  revision: {data['revision']}")
+    print(f"  outputs: {data['output_count']}")
+    for output in data["outputs"]:
+        include = "include" if output["include_in_delivery"] else "exclude"
+        print(f"    {output['output_id']} {output['output_type']} {output['review_status']} {include} {output['filename']}")
+    return 0
+
+
+def _cmd_outputs_review(args: argparse.Namespace) -> int:
+    try:
+        result = review_output(
+            args.job_id,
+            args.manifest_id,
+            args.output_id,
+            status=args.status,
+            operator=args.operator,
+            reason=args.reason,
+            include_in_delivery=args.include_in_delivery,
+            jobs_dir=args.jobs_dir,
+            expected_job_revision=args.expected_job_revision,
+            expected_manifest_revision=args.expected_manifest_revision,
+        )
+    except OutputManifestError as exc:
+        _print_output_error(exc)
+        return 1
+    except JobRecordError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"OUTPUT REVIEWED: {args.output_id}")
+    print(f"  status: {args.status}")
+    print(f"  job_revision: {result['job']['revision']}")
+    print(f"  manifest_revision: {result['manifest']['revision']}")
+    return 0
+
+
+def _cmd_outputs_summary(args: argparse.Namespace) -> int:
+    summary = output_summary(args.job_id, jobs_dir=args.jobs_dir, intake_root=args.intake_root)
+    print(f"OUTPUT SUMMARY: {args.job_id}")
+    for key in ("manifest_count", "total_outputs", "video_count", "delivery_included_count",
+                "approved_delivery_included_count", "missing_file_count", "invalid_reference_count"):
+        print(f"  {key}: {summary[key]}")
+    print(f"  review_complete: {_yesno(summary['review_complete'])}")
+    print(f"  eligible_for_approved: {_yesno(summary['eligible_for_approved'])}")
+    print(f"  eligible_for_delivery_ready: {_yesno(summary['eligible_for_delivery_ready'])}")
+    print(f"  job_revision: {summary['job_revision']}")
+    print(f"  manifest_revisions: {json.dumps(summary['manifest_revisions'], sort_keys=True)}")
+    print(f"  statuses: {json.dumps(summary['counts_by_review_status'], sort_keys=True)}")
+    return 0
+
+
+def _print_output_error(exc: OutputManifestError) -> None:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    for issue in getattr(exc, "issues", [])[:20]:
+        print(f"  {issue['path']} [{issue['code']}]: {issue['message']}", file=sys.stderr)
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     rows = list_jobs(jobs_dir=args.jobs_dir)
     if not rows:
@@ -269,6 +395,51 @@ def main(argv: list[str] | None = None) -> int:
     history_p.add_argument("job_id", help="Job identifier")
     history_p.add_argument("--jobs-dir", default=None, help="Job-record directory")
     history_p.set_defaults(func=_cmd_history)
+
+    outputs_p = subparsers.add_parser("outputs", help="Validate, register, review, and summarize output manifests.")
+    outputs_sub = outputs_p.add_subparsers(dest="outputs_command", required=True)
+
+    outputs_validate = outputs_sub.add_parser("validate", help="Validate an output manifest JSON (read-only).")
+    outputs_validate.add_argument("manifest", help="Path to output manifest JSON")
+    outputs_validate.set_defaults(func=_cmd_outputs_validate)
+
+    outputs_register = outputs_sub.add_parser("register", help="Register an output manifest against a job.")
+    outputs_register.add_argument("job_id", help="Job identifier")
+    outputs_register.add_argument("manifest", help="Path to output manifest JSON")
+    outputs_register.add_argument("--expected-revision", type=int, default=None, help="Expected job revision")
+    outputs_register.add_argument("--operator", default=None, help="Operator identifier")
+    outputs_register.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    outputs_register.set_defaults(func=_cmd_outputs_register)
+
+    outputs_list = outputs_sub.add_parser("list", help="List registered output manifests for a job.")
+    outputs_list.add_argument("job_id", help="Job identifier")
+    outputs_list.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    outputs_list.set_defaults(func=_cmd_outputs_list)
+
+    outputs_show = outputs_sub.add_parser("show", help="Show a privacy-safe output manifest summary.")
+    outputs_show.add_argument("job_id", help="Job identifier")
+    outputs_show.add_argument("manifest_id", help="Output manifest identifier")
+    outputs_show.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    outputs_show.set_defaults(func=_cmd_outputs_show)
+
+    outputs_review = outputs_sub.add_parser("review", help="Record a manual review action for one output.")
+    outputs_review.add_argument("job_id", help="Job identifier")
+    outputs_review.add_argument("manifest_id", help="Output manifest identifier")
+    outputs_review.add_argument("output_id", help="Output identifier")
+    outputs_review.add_argument("--status", required=True, help="Review status")
+    outputs_review.add_argument("--operator", required=True, help="Reviewer/operator identifier")
+    outputs_review.add_argument("--reason", required=True, help="Review reason or statement")
+    outputs_review.add_argument("--include-in-delivery", action="store_true", help="Include approved output in delivery")
+    outputs_review.add_argument("--expected-job-revision", type=int, default=None, help="Expected job revision")
+    outputs_review.add_argument("--expected-manifest-revision", type=int, default=None, help="Expected output manifest revision")
+    outputs_review.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    outputs_review.set_defaults(func=_cmd_outputs_review)
+
+    outputs_summary = outputs_sub.add_parser("summary", help="Show output summary and readiness for a job.")
+    outputs_summary.add_argument("job_id", help="Job identifier")
+    outputs_summary.add_argument("--jobs-dir", default=None, help="Job-record directory")
+    outputs_summary.add_argument("--intake-root", default=None, help="Allowed source intake root")
+    outputs_summary.set_defaults(func=_cmd_outputs_summary)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -189,7 +189,9 @@ schedule, clip manifest, and command keeps working independently.
 - `pipeline/pilot.py` — validated pilot intake (structural / configuration /
   rights / source), the rights gate, read-only source validation, the job
   record API (atomic writes, append-only event log), and explicit manual
-  state transitions with revision checks.
+  state transitions with revision checks. It also validates and registers
+  pilot output manifests for already-generated files without replacing the
+  existing CSV clip-manifest/export workflow.
 - `scripts/pilot_job.py` — operator CLI (`validate`, `create`, `show`, `list`,
   `transition`, `history`).
 - `docs/pilot/` — runbook and intake templates; tracked examples under

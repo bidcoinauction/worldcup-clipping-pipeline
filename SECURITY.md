@@ -37,6 +37,11 @@ ignored by Git; they are never committed.
   traversal. Transitions record manual operator state only; they do not copy,
   upload, publish, delete, or process media. `history` output remains
   privacy-safe and omits sensitive intake confirmation text.
+- Output manifests link existing local files to a job for review. They must not
+  contain tokens, passwords, cookies, payment details, credential URLs, shell
+  commands, base64 media, environment dumps, or unnecessary personal
+  information. Output registration and review never copy, move, edit, delete,
+  upload, publish, or process the referenced files.
 
 ## Reporting a vulnerability
 

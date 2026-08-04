@@ -37,11 +37,13 @@ from pathlib import Path
 
 from .config_errors import ConfigurationError
 from .configurator import (
+    resolve_operational_categories,
     resolve_brand_profile,
     resolve_export_profile,
     resolve_output_root,
     resolve_project_identity,
     resolve_template,
+    select_platforms,
     validate_editorial_taxonomy,
 )
 from .utils import ROOT
@@ -51,6 +53,7 @@ from .utils import ROOT
 INTAKE_SCHEMA_VERSION = 1
 JOB_SCHEMA_VERSION = 1
 EVENT_SCHEMA_VERSION = 1
+OUTPUT_MANIFEST_SCHEMA_VERSION = 1
 
 # Runtime roots. `data/pilot/` is gitignored; client intake and job records
 # are never committed.
@@ -104,6 +107,24 @@ FAILURE_CATEGORIES = frozenset({
 
 RIGHTS_REVALIDATION_STATES = frozenset({"READY", "RUNNING", "DELIVERY_READY", "DELIVERED"})
 
+OUTPUT_TYPES = frozenset({
+    "VIDEO_CLIP", "CAPTION", "THUMBNAIL", "TRANSCRIPT", "CLIP_MANIFEST",
+    "REVIEW_DASHBOARD", "METADATA", "OTHER",
+})
+OUTPUT_REVIEW_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "CHANGES_REQUESTED", "EXCLUDED"})
+OUTPUT_REGISTRATION_STATES = frozenset({"RUNNING", "REVIEW_REQUIRED", "APPROVED", "DELIVERY_READY"})
+OUTPUT_FILE_EXTENSIONS = {
+    "VIDEO_CLIP": frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm", ".ts"}),
+    "CAPTION": frozenset({".txt", ".srt", ".vtt", ".json", ".md"}),
+    "THUMBNAIL": frozenset({".jpg", ".jpeg", ".png", ".webp", ".txt"}),
+    "TRANSCRIPT": frozenset({".txt", ".json", ".srt", ".vtt"}),
+    "CLIP_MANIFEST": frozenset({".csv", ".json"}),
+    "REVIEW_DASHBOARD": frozenset({".html", ".htm"}),
+    "METADATA": frozenset({".json", ".csv", ".yaml", ".yml", ".txt"}),
+    "OTHER": frozenset({".txt", ".json", ".csv", ".pdf", ".zip"}),
+}
+DIRECTORY_OUTPUT_TYPES = frozenset({"REVIEW_DASHBOARD", "OTHER"})
+
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CHECKSUM_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
@@ -116,6 +137,7 @@ _SECRET_KEY_RE = re.compile(
 )
 _SECRET_VALUE_RE = re.compile(r"(sk-|ghp_|gho_|AKIA[0-9A-Z]{16}|-----BEGIN)")
 _URL_CREDENTIAL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/\s]+@")
+_BASE64_MEDIA_RE = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")
 
 # Validation codes (stable identifiers used in reports, events, and tests).
 C_INTAKE_OK = "INTAKE_OK"
@@ -194,6 +216,14 @@ class JobTransitionError(JobRecordError):
 
 class JobRevisionError(JobTransitionError):
     """Raised when optimistic concurrency detects a stale revision."""
+
+
+class OutputManifestError(JobRecordError):
+    """Raised for expected output-manifest registration/review failures."""
+
+    def __init__(self, message: str, issues: list[dict] | None = None) -> None:
+        self.issues = issues or []
+        super().__init__(message)
 
 
 # ── Runtime root helpers ─────────────────────────────────────────────────────
@@ -1224,7 +1254,8 @@ def _require_intake_readiness(job: dict, target: str, *, intake_root: str | None
 
 
 def _validate_transition_requirements(job: dict, current: str, target: str, metadata: dict,
-                                      artifacts: list[str], *, intake_root: str | None) -> tuple[dict | None, list[str]]:
+                                      artifacts: list[str], *, intake_root: str | None,
+                                      jobs_dir: str | Path | None = None) -> tuple[dict | None, list[str]]:
     job_id = job.get("job_id", "")
     if target == "RUNNING":
         _require_non_empty(metadata, "operator", job_id, current, target)
@@ -1259,25 +1290,30 @@ def _validate_transition_requirements(job: dict, current: str, target: str, meta
             raise JobTransitionError(_transition_error(job_id, current, target, "missing required field 'approval_statement'"))
         metadata["approval_statement"] = statement.strip()
         metadata["approval_timestamp"] = _now_iso()
-        _require_positive_int(metadata, "deliverable_count", job_id, current, target)
+        deliverable_count = _require_positive_int(metadata, "deliverable_count", job_id, current, target)
         _require_intake_readiness(job, target, intake_root=intake_root)
+        _require_output_readiness(job_id, deliverable_count, target, intake_root=intake_root, jobs_dir=jobs_dir)
         return None, artifacts
 
     if target == "DELIVERY_READY":
         _require_non_empty(metadata, "delivery_method", job_id, current, target)
         _require_non_empty(metadata, "delivery_destination", job_id, current, target)
-        _require_positive_int(metadata, "deliverable_count", job_id, current, target)
+        deliverable_count = _require_positive_int(metadata, "deliverable_count", job_id, current, target)
         if not artifacts:
             artifacts = [metadata["delivery_destination"]]
-        return _require_intake_readiness(job, target, intake_root=intake_root), artifacts
+        report = _require_intake_readiness(job, target, intake_root=intake_root)
+        _require_output_readiness(job_id, deliverable_count, target, intake_root=intake_root, jobs_dir=jobs_dir)
+        return report, artifacts
 
     if target == "DELIVERED":
         _require_non_empty(metadata, "operator", job_id, current, target)
         _require_non_empty(metadata, "confirmation", job_id, current, target)
         _require_non_empty(metadata, "delivery_destination", job_id, current, target)
-        _require_positive_int(metadata, "delivered_item_count", job_id, current, target)
+        delivered_count = _require_positive_int(metadata, "delivered_item_count", job_id, current, target)
         metadata["delivery_timestamp"] = _now_iso()
-        return _require_intake_readiness(job, target, intake_root=intake_root), artifacts
+        report = _require_intake_readiness(job, target, intake_root=intake_root)
+        _require_output_readiness(job_id, delivered_count, target, intake_root=intake_root, jobs_dir=jobs_dir)
+        return report, artifacts
 
     if target == "FAILED":
         _require_non_empty(metadata, "reason", job_id, current, target)
@@ -1304,6 +1340,29 @@ def _validate_transition_requirements(job: dict, current: str, target: str, meta
         return None, artifacts
 
     return None, artifacts
+
+
+def _require_output_readiness(job_id: str, expected_count: int, target: str, *, intake_root: str | None,
+                              jobs_dir: str | Path | None = None) -> dict:
+    summary = output_summary(job_id, jobs_dir=jobs_dir, intake_root=intake_root)
+    approved_count = summary["approved_delivery_included_count"]
+    if summary["manifest_count"] == 0:
+        raise JobTransitionError(f"job '{job_id}' cannot transition to '{target}': no output manifests are registered")
+    if not summary["review_complete"]:
+        issue_codes = ", ".join(issue.get("code", "") for issue in summary.get("issues", [])[:5])
+        if not issue_codes and summary.get("rights_issues"):
+            issue_codes = "; ".join(summary["rights_issues"][:1])
+        raise JobTransitionError(
+            f"job '{job_id}' cannot transition to '{target}': output review is not complete "
+            f"(included={summary['delivery_included_count']}, approved_included={approved_count}, "
+            f"missing={summary['missing_file_count']}, invalid={summary['invalid_reference_count']}); {issue_codes}"
+        )
+    if approved_count != expected_count:
+        raise JobTransitionError(
+            f"job '{job_id}' cannot transition to '{target}': deliverable count {expected_count} "
+            f"does not match approved delivery-included output count {approved_count}"
+        )
+    return summary
 
 
 def transition_job(job_id: str, target_state: str, *, metadata: dict | None = None,
@@ -1340,7 +1399,7 @@ def transition_job(job_id: str, target_state: str, *, metadata: dict | None = No
     metadata_clean = _validate_metadata(dict(metadata or {}))
     artifacts_clean = _validate_artifacts(artifact_references or [])
     report, artifacts_clean = _validate_transition_requirements(
-        job, current, target_state, metadata_clean, artifacts_clean, intake_root=intake_root
+        job, current, target_state, metadata_clean, artifacts_clean, intake_root=intake_root, jobs_dir=jobs_dir_path
     )
 
     sequence = _next_event_sequence(events)
@@ -1421,6 +1480,557 @@ def read_history(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
             "source": event.get("source", ""),
         })
     return history
+
+
+# ── Output manifests ─────────────────────────────────────────────────────────
+
+_OUTPUT_MANIFEST_KEYS = (
+    "schema_version", "manifest_id", "job_id", "pilot_id", "project_id", "source_id",
+    "created_at", "created_by", "source_clip_manifest_path", "revision", "outputs",
+)
+_OUTPUT_KEYS = (
+    "output_id", "output_type", "local_path", "filename", "export_profile", "platform",
+    "operational_category", "editorial_labels", "clip_id", "start_time", "end_time",
+    "duration", "caption_path", "thumbnail_path", "metadata_path", "checksum",
+    "review_status", "include_in_delivery", "review_notes", "rejection_reason",
+    "approval_metadata",
+)
+
+
+def _output_issue(path: str, code: str, message: str) -> dict:
+    return {"path": path, "code": code, "message": message}
+
+
+def _reject_output_unknown(data: dict, allowed: tuple[str, ...], path: str, issues: list[dict]) -> None:
+    for key in data:
+        if key.startswith("_"):
+            continue
+        if key not in allowed:
+            issues.append(_output_issue(f"{path}.{key}", "UNKNOWN_KEY", "is not a recognized output-manifest key"))
+
+
+def _output_secret_scan(data: dict, path: str, issues: list[dict]) -> None:
+    _scan_secrets(data, path, issues)
+    for key, value in data.items():
+        child = f"{path}.{key}"
+        if isinstance(value, str):
+            if _BASE64_MEDIA_RE.fullmatch(value.strip()):
+                issues.append(_output_issue(child, "EMBEDDED_MEDIA", "must not contain embedded base64 media or binary data"))
+            if _URL_CREDENTIAL_RE.match(value.strip()):
+                issues.append(_output_issue(child, "CREDENTIAL_URL", "must not contain credential-bearing URLs"))
+        elif isinstance(value, dict):
+            _output_secret_scan(value, child, issues)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, dict):
+                    _output_secret_scan(item, f"{child}[{index}]", issues)
+                elif isinstance(item, str) and _BASE64_MEDIA_RE.fullmatch(item.strip()):
+                    issues.append(_output_issue(f"{child}[{index}]", "EMBEDDED_MEDIA", "must not contain embedded base64 media"))
+
+
+def _output_manifest_dir(job_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(job_id):
+        raise JobPathError(f"invalid job identifier '{job_id}'")
+    directory = Path(jobs_dir) / f"{job_id}.outputs"
+    if not _within_dir(directory, Path(jobs_dir)):
+        raise JobPathError(f"output manifest directory for '{job_id}' would escape '{jobs_dir}'")
+    return directory
+
+
+def _output_manifest_path(job_id: str, manifest_id: str, jobs_dir: Path) -> Path:
+    if not _is_valid_id(manifest_id):
+        raise OutputManifestError(f"manifest_id '{manifest_id}' is invalid; use letters, digits, '_' or '-'")
+    path = _output_manifest_dir(job_id, jobs_dir) / f"{manifest_id}.json"
+    if not _within_dir(path, Path(jobs_dir)):
+        raise JobPathError(f"output manifest path for '{job_id}/{manifest_id}' would escape '{jobs_dir}'")
+    return path
+
+
+def _resolve_local_output_path(raw: str, issues: list[dict], field_path: str) -> Path | None:
+    if not isinstance(raw, str) or not raw.strip():
+        issues.append(_output_issue(field_path, "MISSING_PATH", "expected a non-empty local path"))
+        return None
+    value = raw.strip()
+    if _URL_RE.match(value):
+        issues.append(_output_issue(field_path, "URL_NOT_ALLOWED", "network URLs are not accepted for pilot outputs"))
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute() and ".." in candidate.parts:
+        issues.append(_output_issue(field_path, "PATH_TRAVERSAL", "relative paths must not contain '..' traversal"))
+        return None
+    return candidate.resolve() if candidate.is_absolute() else (ROOT / candidate).resolve()
+
+
+def _validate_output_path(raw: object, output_type: str, issues: list[dict], field_path: str,
+                          *, checksum: str | None = None, allow_missing: bool = False) -> Path | None:
+    resolved = _resolve_local_output_path(raw, issues, field_path) if isinstance(raw, str) else None
+    if resolved is None:
+        if not isinstance(raw, str):
+            issues.append(_output_issue(field_path, "BAD_TYPE", "expected a string path"))
+        return None
+    if not resolved.exists():
+        if not allow_missing:
+            issues.append(_output_issue(field_path, "OUTPUT_MISSING", f"path not found: {resolved}"))
+        return resolved
+    if resolved.is_dir():
+        if output_type not in DIRECTORY_OUTPUT_TYPES:
+            issues.append(_output_issue(field_path, "OUTPUT_IS_DIRECTORY", f"{output_type} requires a file, not a directory"))
+        return resolved
+    if not os.access(resolved, os.R_OK):
+        issues.append(_output_issue(field_path, "OUTPUT_UNREADABLE", "path is not readable"))
+    if resolved.stat().st_size == 0:
+        issues.append(_output_issue(field_path, "OUTPUT_EMPTY", "file is empty"))
+    allowed = OUTPUT_FILE_EXTENSIONS.get(output_type, frozenset())
+    if resolved.suffix.lower() not in allowed:
+        issues.append(_output_issue(field_path, "UNSUPPORTED_EXTENSION",
+                                    f"extension '{resolved.suffix.lower() or '(none)'}' is not valid for {output_type}"))
+    if checksum:
+        expected = checksum.removeprefix("sha256:")
+        actual = _sha256(resolved)
+        if actual.lower() != expected.lower():
+            issues.append(_output_issue(field_path, "CHECKSUM_MISMATCH", "provided checksum does not match the file"))
+    return resolved
+
+
+def _known_platforms(profile: str = "football") -> set[str]:
+    values = set()
+    for platform in select_platforms(profile):
+        values.add(platform.lower())
+    values.update({"tiktok", "reels", "shorts"})
+    return values
+
+
+def validate_output_manifest(data: object, *, job: dict | None = None) -> dict:
+    """Validate a pilot output manifest. Read-only; performs no network calls,
+    no file mutation, no media processing, and no directory creation."""
+    issues: list[dict] = []
+    if not isinstance(data, dict):
+        issues.append(_output_issue("manifest", "BAD_TYPE", "root must be an object"))
+        return {"valid": False, "issues": issues, "validation_codes": ["BAD_TYPE"]}
+
+    _output_secret_scan(data, "manifest", issues)
+    _reject_output_unknown(data, _OUTPUT_MANIFEST_KEYS, "manifest", issues)
+    if data.get("schema_version") != OUTPUT_MANIFEST_SCHEMA_VERSION:
+        issues.append(_output_issue("manifest.schema_version", "BAD_SCHEMA_VERSION", f"expected {OUTPUT_MANIFEST_SCHEMA_VERSION}"))
+
+    for key in ("manifest_id", "job_id", "pilot_id", "project_id", "source_id", "created_at", "created_by"):
+        if not isinstance(data.get(key), str) or not data.get(key, "").strip():
+            issues.append(_output_issue(f"manifest.{key}", "MISSING_KEY", "expected a non-empty string"))
+    if isinstance(data.get("manifest_id"), str) and not _is_valid_id(data["manifest_id"]):
+        issues.append(_output_issue("manifest.manifest_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+    if job is not None and data.get("job_id") != job.get("job_id"):
+        issues.append(_output_issue("manifest.job_id", "JOB_MISMATCH", f"does not match target job '{job.get('job_id')}'"))
+    if isinstance(data.get("revision"), bool) or not isinstance(data.get("revision"), int) or data.get("revision") < 0:
+        issues.append(_output_issue("manifest.revision", "BAD_TYPE", "expected a non-negative integer"))
+    if "source_clip_manifest_path" in data and data.get("source_clip_manifest_path"):
+        _validate_output_path(data["source_clip_manifest_path"], "CLIP_MANIFEST", issues, "manifest.source_clip_manifest_path")
+
+    outputs = data.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        issues.append(_output_issue("manifest.outputs", "MISSING_KEY", "expected a non-empty output list"))
+        outputs = []
+
+    seen_ids: set[str] = set()
+    profile = data.get("project_id") if isinstance(data.get("project_id"), str) and data.get("project_id") else "football"
+    try:
+        platforms = _known_platforms(profile)
+        categories = {c.lower() for c in resolve_operational_categories(profile)}
+    except ConfigurationError as exc:
+        issues.append(_output_issue("manifest.project_id", "CONFIG_UNKNOWN_PROJECT", str(exc)))
+        platforms = set()
+        categories = set()
+
+    for index, output in enumerate(outputs):
+        path = f"manifest.outputs[{index}]"
+        if not isinstance(output, dict):
+            issues.append(_output_issue(path, "BAD_TYPE", "expected an object"))
+            continue
+        _reject_output_unknown(output, _OUTPUT_KEYS, path, issues)
+        output_id = output.get("output_id")
+        if not _is_valid_id(output_id):
+            issues.append(_output_issue(f"{path}.output_id", "BAD_ID", "expected letters, digits, '_' or '-'"))
+        elif output_id in seen_ids:
+            issues.append(_output_issue(f"{path}.output_id", "DUPLICATE_OUTPUT_ID", "output IDs must be unique"))
+        else:
+            seen_ids.add(output_id)
+
+        output_type = output.get("output_type")
+        if output_type not in OUTPUT_TYPES:
+            issues.append(_output_issue(f"{path}.output_type", "UNKNOWN_OUTPUT_TYPE", f"expected one of {', '.join(sorted(OUTPUT_TYPES))}"))
+            output_type = "OTHER"
+        status = output.get("review_status")
+        if status not in OUTPUT_REVIEW_STATUSES:
+            issues.append(_output_issue(f"{path}.review_status", "UNKNOWN_REVIEW_STATUS",
+                                        f"expected one of {', '.join(sorted(OUTPUT_REVIEW_STATUSES))}"))
+        if not isinstance(output.get("include_in_delivery"), bool):
+            issues.append(_output_issue(f"{path}.include_in_delivery", "BAD_TYPE", "expected a boolean"))
+        if not isinstance(output.get("filename"), str) or not output.get("filename", "").strip():
+            issues.append(_output_issue(f"{path}.filename", "MISSING_KEY", "expected a non-empty filename"))
+        checksum = output.get("checksum")
+        if checksum is not None and (not isinstance(checksum, str) or not _CHECKSUM_RE.fullmatch(checksum)):
+            issues.append(_output_issue(f"{path}.checksum", "BAD_CHECKSUM", "expected SHA-256 hex checksum"))
+            checksum = None
+        resolved = _validate_output_path(output.get("local_path"), output_type, issues, f"{path}.local_path", checksum=checksum)
+        if resolved is not None and isinstance(output.get("filename"), str) and output["filename"].strip():
+            if resolved.name != output["filename"].strip() and resolved.exists() and not resolved.is_dir():
+                issues.append(_output_issue(f"{path}.filename", "FILENAME_MISMATCH", "filename must match local_path basename"))
+
+        export_profile = output.get("export_profile")
+        if not isinstance(export_profile, str) or not export_profile.strip():
+            issues.append(_output_issue(f"{path}.export_profile", "MISSING_KEY", "expected a profile identifier"))
+        else:
+            try:
+                resolve_export_profile(export_profile)
+            except ConfigurationError as exc:
+                issues.append(_output_issue(f"{path}.export_profile", C_CONFIG_UNKNOWN_EXPORT, str(exc)))
+        platform = output.get("platform")
+        if not isinstance(platform, str) or platform.lower() not in platforms:
+            issues.append(_output_issue(f"{path}.platform", "UNKNOWN_PLATFORM", "platform is not configured"))
+        category = output.get("operational_category")
+        if not isinstance(category, str) or category.lower() not in categories:
+            issues.append(_output_issue(f"{path}.operational_category", "UNKNOWN_OPERATIONAL_CATEGORY", "category is not configured"))
+        if "editorial_labels" in output and output["editorial_labels"] is not None:
+            if not isinstance(output["editorial_labels"], list) or not all(isinstance(v, str) and v.strip() for v in output["editorial_labels"]):
+                issues.append(_output_issue(f"{path}.editorial_labels", "BAD_TYPE", "expected a list of strings"))
+        for numeric in ("start_time", "end_time", "duration"):
+            if numeric in output and output[numeric] is not None and (isinstance(output[numeric], bool) or not isinstance(output[numeric], (int, float, str))):
+                issues.append(_output_issue(f"{path}.{numeric}", "BAD_TYPE", "expected timestamp string or number"))
+        for ref_key, ref_type in (("caption_path", "CAPTION"), ("thumbnail_path", "THUMBNAIL"), ("metadata_path", "METADATA")):
+            if output.get(ref_key):
+                _validate_output_path(output[ref_key], ref_type, issues, f"{path}.{ref_key}")
+        if output.get("approval_metadata") is not None and not isinstance(output["approval_metadata"], dict):
+            issues.append(_output_issue(f"{path}.approval_metadata", "BAD_TYPE", "expected an object"))
+
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "validation_codes": [issue["code"] for issue in issues] or [C_INTAKE_OK],
+    }
+
+
+def _read_output_manifest(job_id: str, manifest_id: str, jobs_dir: Path) -> dict:
+    path = _output_manifest_path(job_id, manifest_id, jobs_dir)
+    if not path.exists():
+        raise OutputManifestError(f"output manifest '{manifest_id}' not found for job '{job_id}'")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise OutputManifestError(f"output manifest '{manifest_id}' root must be an object")
+    return data
+
+
+def _job_output_manifest_ids(job: dict, jobs_dir: Path) -> list[str]:
+    values = job.get("output_manifests")
+    if isinstance(values, list):
+        return [v for v in values if isinstance(v, str)]
+    directory = _output_manifest_dir(job.get("job_id", ""), jobs_dir)
+    if not directory.exists():
+        return []
+    return sorted(path.stem for path in directory.glob("*.json"))
+
+
+def register_output_manifest(job_id: str, manifest_data: object, *, jobs_dir: str | Path | None = None,
+                             expected_revision: int | None = None, operator: str | None = None,
+                             source: str = "pilot_job.outputs.register") -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    current = job.get("current_state", "")
+    if current not in OUTPUT_REGISTRATION_STATES:
+        raise OutputManifestError(
+            f"job '{job_id}' in state '{current}' cannot register outputs; allowed states: {', '.join(sorted(OUTPUT_REGISTRATION_STATES))}"
+        )
+    revision = _normalized_revision(job)
+    if expected_revision is not None and expected_revision != revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_revision}, current revision {revision}; no output manifest registered")
+    if not isinstance(manifest_data, dict):
+        raise OutputManifestError("output manifest root must be an object")
+    report = validate_output_manifest(manifest_data, job=job)
+    if not report["valid"]:
+        raise OutputManifestError("output manifest validation failed", report["issues"])
+    manifest_id = manifest_data["manifest_id"]
+    manifest_path = _output_manifest_path(job_id, manifest_id, jobs_dir_path)
+    if manifest_path.exists():
+        raise OutputManifestError(f"output manifest '{manifest_id}' already exists for job '{job_id}'")
+
+    sequence = _next_event_sequence(events)
+    event = {
+        "event_schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": _event_id(job_id, sequence, "OUTPUT_REGISTERED"),
+        "job_id": job_id,
+        "sequence": sequence,
+        "timestamp": _now_iso(),
+        "event_type": "OUTPUT_REGISTERED",
+        "previous_state": current,
+        "new_state": current,
+        "operator": operator,
+        "message": f"Registered output manifest {manifest_id}",
+        "metadata": {"manifest_id": manifest_id, "output_count": len(manifest_data.get("outputs", []))},
+        "source": source,
+        "related_codes": report["validation_codes"],
+        "artifact_references": [str(manifest_path)],
+    }
+    new_events = [*events, event]
+    updated_job = dict(job)
+    manifest_ids = _job_output_manifest_ids(job, jobs_dir_path)
+    manifest_ids.append(manifest_id)
+    updated_job.update({
+        "revision": revision + 1,
+        "updated_at": _now_iso(),
+        "event_count": len(new_events),
+        "output_manifests": sorted(set(manifest_ids)),
+        "latest_event": {
+            "event_id": event["event_id"],
+            "timestamp": event["timestamp"],
+            "event_type": event["event_type"],
+            "previous_state": current,
+            "new_state": current,
+            "message": event["message"],
+        },
+    })
+    manifest_to_store = dict(manifest_data)
+    manifest_to_store["revision"] = int(manifest_to_store.get("revision", 0))
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(manifest_path, manifest_to_store)
+    _atomic_write_json(events_path, new_events)
+    _atomic_write_json(record_path, updated_job)
+    return {"job": updated_job, "manifest": manifest_to_store, "path": str(manifest_path)}
+
+
+def list_output_manifests(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, _events = _load_job_and_events(job_id, jobs_dir_path)
+    rows = []
+    for manifest_id in _job_output_manifest_ids(job, jobs_dir_path):
+        try:
+            manifest = _read_output_manifest(job_id, manifest_id, jobs_dir_path)
+        except OutputManifestError:
+            continue
+        rows.append({
+            "manifest_id": manifest_id,
+            "revision": manifest.get("revision", 0),
+            "output_count": len(manifest.get("outputs", [])) if isinstance(manifest.get("outputs"), list) else 0,
+            "created_at": manifest.get("created_at", ""),
+        })
+    return rows
+
+
+def show_output_manifest(job_id: str, manifest_id: str, jobs_dir: str | Path | None = None) -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    manifest = _read_output_manifest(job_id, manifest_id, jobs_dir_path)
+    return {
+        "manifest_id": manifest.get("manifest_id", manifest_id),
+        "job_id": manifest.get("job_id", job_id),
+        "revision": manifest.get("revision", 0),
+        "output_count": len(manifest.get("outputs", [])) if isinstance(manifest.get("outputs"), list) else 0,
+        "outputs": [
+            {
+                "output_id": output.get("output_id", ""),
+                "output_type": output.get("output_type", ""),
+                "filename": output.get("filename", ""),
+                "review_status": output.get("review_status", ""),
+                "include_in_delivery": output.get("include_in_delivery", False),
+                "platform": output.get("platform", ""),
+                "export_profile": output.get("export_profile", ""),
+                "operational_category": output.get("operational_category", ""),
+            }
+            for output in manifest.get("outputs", []) if isinstance(output, dict)
+        ],
+    }
+
+
+def review_output(job_id: str, manifest_id: str, output_id: str, *, status: str, operator: str,
+                  reason: str, include_in_delivery: bool | None = None, jobs_dir: str | Path | None = None,
+                  expected_job_revision: int | None = None, expected_manifest_revision: int | None = None,
+                  source: str = "pilot_job.outputs.review") -> dict:
+    if status not in OUTPUT_REVIEW_STATUSES:
+        raise OutputManifestError(f"review status '{status}' is not recognized; known statuses: {', '.join(sorted(OUTPUT_REVIEW_STATUSES))}")
+    if not operator or not operator.strip():
+        raise OutputManifestError("operator is required for output review")
+    if not reason or not reason.strip():
+        raise OutputManifestError("reason is required for output review")
+    _validate_metadata({"operator": operator, "reason": reason})
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    job_revision = _normalized_revision(job)
+    if expected_job_revision is not None and expected_job_revision != job_revision:
+        raise JobRevisionError(f"job '{job_id}' stale revision: expected {expected_job_revision}, current revision {job_revision}; no output review recorded")
+    manifest_path = _output_manifest_path(job_id, manifest_id, jobs_dir_path)
+    manifest = _read_output_manifest(job_id, manifest_id, jobs_dir_path)
+    manifest_revision = manifest.get("revision", 0)
+    if isinstance(manifest_revision, bool) or not isinstance(manifest_revision, int) or manifest_revision < 0:
+        manifest_revision = 0
+    if expected_manifest_revision is not None and expected_manifest_revision != manifest_revision:
+        raise JobRevisionError(
+            f"output manifest '{manifest_id}' stale revision: expected {expected_manifest_revision}, current revision {manifest_revision}; no output review recorded"
+        )
+    outputs = manifest.get("outputs") if isinstance(manifest.get("outputs"), list) else []
+    target = None
+    for output in outputs:
+        if isinstance(output, dict) and output.get("output_id") == output_id:
+            target = output
+            break
+    if target is None:
+        raise OutputManifestError(f"output '{output_id}' not found in manifest '{manifest_id}'")
+
+    new_outputs = []
+    now = _now_iso()
+    for output in outputs:
+        if not isinstance(output, dict) or output.get("output_id") != output_id:
+            new_outputs.append(output)
+            continue
+        updated = dict(output)
+        updated["review_status"] = status
+        updated["review_notes"] = reason.strip()
+        if status == "APPROVED":
+            updated["include_in_delivery"] = bool(include_in_delivery)
+            updated["rejection_reason"] = None
+            updated["approval_metadata"] = {
+                "approved_by": operator.strip(),
+                "approval_timestamp": now,
+                "approval_statement": reason.strip(),
+                "include_in_delivery": bool(include_in_delivery),
+            }
+        elif status in {"REJECTED", "CHANGES_REQUESTED", "EXCLUDED"}:
+            updated["include_in_delivery"] = False
+            updated["rejection_reason"] = reason.strip()
+            updated["approval_metadata"] = None
+        elif status == "PENDING":
+            updated["include_in_delivery"] = False
+            updated["rejection_reason"] = None
+            updated["approval_metadata"] = None
+        new_outputs.append(updated)
+
+    updated_manifest = dict(manifest)
+    updated_manifest["outputs"] = new_outputs
+    updated_manifest["revision"] = manifest_revision + 1
+    report = validate_output_manifest(updated_manifest, job=job)
+    if not report["valid"]:
+        raise OutputManifestError("output manifest validation failed after review", report["issues"])
+
+    current = job.get("current_state", "")
+    sequence = _next_event_sequence(events)
+    event = {
+        "event_schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": _event_id(job_id, sequence, "OUTPUT_REVIEWED"),
+        "job_id": job_id,
+        "sequence": sequence,
+        "timestamp": now,
+        "event_type": "OUTPUT_REVIEWED",
+        "previous_state": current,
+        "new_state": current,
+        "operator": operator.strip(),
+        "message": f"Output {output_id} marked {status}",
+        "metadata": {"manifest_id": manifest_id, "output_id": output_id, "review_status": status},
+        "source": source,
+        "related_codes": report["validation_codes"],
+        "artifact_references": [str(manifest_path)],
+    }
+    new_events = [*events, event]
+    updated_job = dict(job)
+    updated_job.update({
+        "revision": job_revision + 1,
+        "updated_at": now,
+        "event_count": len(new_events),
+        "latest_event": {
+            "event_id": event["event_id"],
+            "timestamp": event["timestamp"],
+            "event_type": event["event_type"],
+            "previous_state": current,
+            "new_state": current,
+            "message": event["message"],
+        },
+    })
+    _atomic_write_json(manifest_path, updated_manifest)
+    _atomic_write_json(events_path, new_events)
+    _atomic_write_json(record_path, updated_job)
+    return {"job": updated_job, "manifest": updated_manifest}
+
+
+def output_summary(job_id: str, jobs_dir: str | Path | None = None, *, intake_root: str | None = None) -> dict:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, _events = _load_job_and_events(job_id, jobs_dir_path)
+    manifest_ids = _job_output_manifest_ids(job, jobs_dir_path)
+    statuses = {status: 0 for status in sorted(OUTPUT_REVIEW_STATUSES)}
+    total = video_count = included = missing = invalid = 0
+    platforms: set[str] = set()
+    profiles: set[str] = set()
+    categories: set[str] = set()
+    manifest_revisions: dict[str, int] = {}
+    included_outputs: list[dict] = []
+    issues: list[dict] = []
+
+    for manifest_id in manifest_ids:
+        try:
+            manifest = _read_output_manifest(job_id, manifest_id, jobs_dir_path)
+        except OutputManifestError as exc:
+            invalid += 1
+            issues.append(_output_issue(f"manifests.{manifest_id}", "MANIFEST_MISSING", str(exc)))
+            continue
+        manifest_revisions[manifest_id] = manifest.get("revision", 0) if isinstance(manifest.get("revision"), int) else 0
+        report = validate_output_manifest(manifest, job=job)
+        for issue in report["issues"]:
+            if issue["code"] == "OUTPUT_MISSING":
+                missing += 1
+            else:
+                invalid += 1
+            issues.append(issue)
+        for output in manifest.get("outputs", []):
+            if not isinstance(output, dict):
+                continue
+            total += 1
+            if output.get("output_type") == "VIDEO_CLIP":
+                video_count += 1
+            status = output.get("review_status", "")
+            if status in statuses:
+                statuses[status] += 1
+            if output.get("include_in_delivery") is True:
+                included += 1
+                included_outputs.append(output)
+            if isinstance(output.get("platform"), str):
+                platforms.add(output["platform"])
+            if isinstance(output.get("export_profile"), str):
+                profiles.add(output["export_profile"])
+            if isinstance(output.get("operational_category"), str):
+                categories.add(output["operational_category"])
+
+    rights_ok = False
+    human_review_recorded = False
+    rights_codes: list[str] = []
+    try:
+        report = _require_intake_readiness(job, "DELIVERY_READY", intake_root=intake_root)
+        rights_ok = report["rights_cleared"]
+    except JobRecordError as exc:
+        rights_codes = [str(exc)]
+    human_review_recorded = bool(included_outputs) and all(
+        output.get("review_status") == "APPROVED" and isinstance(output.get("approval_metadata"), dict)
+        for output in included_outputs
+    )
+    review_complete = bool(manifest_ids) and included > 0 and human_review_recorded and missing == 0 and invalid == 0 and rights_ok
+    eligible_approved = review_complete
+    eligible_delivery_ready = review_complete
+    return {
+        "job_id": job_id,
+        "job_revision": _normalized_revision(job),
+        "current_state": job.get("current_state", ""),
+        "manifest_count": len(manifest_ids),
+        "manifest_revisions": manifest_revisions,
+        "total_outputs": total,
+        "video_count": video_count,
+        "counts_by_review_status": statuses,
+        "delivery_included_count": included,
+        "approved_delivery_included_count": sum(1 for output in included_outputs if output.get("review_status") == "APPROVED"),
+        "missing_file_count": missing,
+        "invalid_reference_count": invalid,
+        "platforms": sorted(platforms),
+        "export_profiles": sorted(profiles),
+        "operational_categories": sorted(categories),
+        "rights_valid": rights_ok,
+        "human_review_recorded": human_review_recorded,
+        "review_complete": review_complete,
+        "eligible_for_approved": eligible_approved,
+        "eligible_for_delivery_ready": eligible_delivery_ready,
+        "issues": issues,
+        "rights_issues": rights_codes,
+    }
 
 
 def list_jobs(jobs_dir: str | Path | None = None) -> list[dict]:

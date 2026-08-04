@@ -109,6 +109,17 @@ Review every generated clip, caption, and thumbnail before any client sees it.
 Use the existing static review dashboard or direct file review. The intake
 requires `human_review_required`; do not skip it.
 
+Create and register a pilot output manifest for existing exported files. This
+links files to the job; it does not discover, copy, move, edit, or process
+media.
+
+```bash
+python3 scripts/pilot_job.py outputs validate path/to/output_manifest.json
+python3 scripts/pilot_job.py outputs register JOB_ID path/to/output_manifest.json \
+  --expected-revision REVISION_FROM_SHOW \
+  --operator YOUR_NAME
+```
+
 ```bash
 python3 scripts/pilot_job.py transition JOB_ID REVIEW_REQUIRED \
   --operator YOUR_NAME \
@@ -116,10 +127,24 @@ python3 scripts/pilot_job.py transition JOB_ID REVIEW_REQUIRED \
   --artifact outputs/review/JOB_ID
 ```
 
+Record each output review:
+
+```bash
+python3 scripts/pilot_job.py outputs review JOB_ID MANIFEST_ID OUTPUT_ID \
+  --status APPROVED \
+  --operator REVIEWER_NAME \
+  --reason "Approved for delivery" \
+  --include-in-delivery \
+  --expected-job-revision REVISION_FROM_SHOW \
+  --expected-manifest-revision MANIFEST_REVISION
+```
+
 ### 10. Record approval
 
-Only after the client (or an internal approver) approves, record approval.
-Approval is a manual human action; the CLI only records it.
+Only after the client (or an internal approver) approves the reviewed outputs,
+record approval. Approval is a manual human action; the CLI only records it.
+The deliverable count must match the number of approved, delivery-included
+outputs in the registered output manifests.
 
 ```bash
 python3 scripts/pilot_job.py transition JOB_ID APPROVED \
@@ -132,7 +157,12 @@ python3 scripts/pilot_job.py transition JOB_ID APPROVED \
 
 Stage the approved deliverables and verify them against
 `DELIVERY_CHECKLIST.md`. Confirm the export profile, naming, and expected clip
-count.
+count. `outputs summary` reports delivery readiness but does not transition the
+job automatically.
+
+```bash
+python3 scripts/pilot_job.py outputs summary JOB_ID
+```
 
 ```bash
 python3 scripts/pilot_job.py transition JOB_ID DELIVERY_READY \

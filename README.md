@@ -205,6 +205,11 @@ revision `0`; each successful transition increments the revision and appends
 one event. Existing jobs without a revision remain readable and gain a revision
 on their next successful transition. See `docs/pilot/JOB_TRANSITIONS.md`.
 
+Output manifests can be registered after exports already exist. They link local
+clips and related files to a job for manual review and delivery-readiness
+checks without copying, moving, editing, uploading, publishing, or processing
+media. See `docs/pilot/OUTPUT_MANIFESTS.md`.
+
 ### CLI
 
 ```bash
@@ -213,6 +218,10 @@ python3 scripts/pilot_job.py create   path/to/intake.json --operator YOUR_NAME
 python3 scripts/pilot_job.py show     JOB_ID
 python3 scripts/pilot_job.py transition JOB_ID RUNNING --operator YOUR_NAME
 python3 scripts/pilot_job.py history  JOB_ID
+python3 scripts/pilot_job.py outputs validate path/to/output_manifest.json
+python3 scripts/pilot_job.py outputs register JOB_ID path/to/output_manifest.json
+python3 scripts/pilot_job.py outputs review JOB_ID MANIFEST_ID OUTPUT_ID --status APPROVED --operator REVIEWER --reason "Approved" --include-in-delivery
+python3 scripts/pilot_job.py outputs summary JOB_ID
 python3 scripts/pilot_job.py list
 ```
 
@@ -228,6 +237,9 @@ the pipeline, and `DELIVERED` does not upload or send files.
 Pilot intake -> rights gate -> source validation -> job record (READY)
     -> RUNNING (manual pipeline started) -> REVIEW_REQUIRED -> APPROVED
     -> DELIVERY_READY -> DELIVERED
+
+Existing clip manifest -> export scripts -> generated files
+    -> pilot output manifest -> output review -> approval/delivery transitions
 ```
 
 The existing match manifest (`data/manifests/*.json`), schedule CSV, and clip
@@ -245,7 +257,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 746 passed, 1 skipped, 1 warning.
+- `pytest`: 770 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 

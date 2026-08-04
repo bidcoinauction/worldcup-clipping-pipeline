@@ -15,11 +15,16 @@ Confirm every item before delivering pilot outputs.
 - [ ] Output naming verified (expected `clip_id_<suffix>.<ext>` patterns).
 - [ ] Naming matches the agreed convention.
 - [ ] Expected clip count matches the intake (`requested_clip_count` range).
+- [ ] Output manifest registered for the correct job.
+- [ ] `outputs summary JOB_ID` shows no missing or invalid included files.
+- [ ] Delivery-included count matches the planned deliverable count.
 
 ## Rights and review
 
 - [ ] Rights are still valid (`CONFIRMED`, not expired, not revoked).
 - [ ] Human review completed on every deliverable.
+- [ ] Every delivery-included output is `APPROVED` in the output manifest.
+- [ ] Rejected, changes-requested, excluded, or pending outputs are not included in delivery.
 - [ ] Approval recorded.
 - [ ] `APPROVED -> DELIVERY_READY` transition recorded before handoff.
 - [ ] Publishing not performed unless explicitly permitted.

@@ -13,9 +13,12 @@ from pipeline.pilot import (
     create_job,
     read_history,
     read_job,
+    register_output_manifest,
+    review_output,
     show_job,
     transition_job,
 )
+from tests.test_pilot_outputs import _fixture_files, _output_manifest
 from tests.test_pilot_intake import build_intake
 
 
@@ -67,24 +70,33 @@ def test_complete_manual_transition_path(media_file: Path, tmp_path: Path, jobs_
                          artifact_references=["outputs/review/job-alpha"], expected_revision=1, jobs_dir=jobs_root)
     assert job["current_state"] == "REVIEW_REQUIRED"
 
+    files = _fixture_files(tmp_path)
+    manifest = _output_manifest(job, files)
+    register_output_manifest(job_id, manifest, jobs_dir=jobs_root, expected_revision=2)
+    review_output(job_id, "outputs_alpha", "clip_001_tiktok", status="APPROVED", operator="reviewer",
+                  reason="Approved clip one", include_in_delivery=True, jobs_dir=jobs_root)
+    review_output(job_id, "outputs_alpha", "clip_002_shorts", status="APPROVED", operator="reviewer",
+                  reason="Approved clip two", include_in_delivery=True, jobs_dir=jobs_root)
+
     job = transition_job(job_id, "APPROVED",
-                         metadata={"operator": "reviewer", "approval_statement": "Approved for delivery", "deliverable_count": 8},
-                         expected_revision=2, jobs_dir=jobs_root)
+                         metadata={"operator": "reviewer", "approval_statement": "Approved for delivery", "deliverable_count": 2},
+                         expected_revision=5, jobs_dir=jobs_root)
     assert job["current_state"] == "APPROVED"
 
     job = transition_job(job_id, "DELIVERY_READY",
-                         metadata={"delivery_method": "shared_folder", "delivery_destination": "deliveries/job-alpha", "deliverable_count": 8},
-                         artifact_references=["docs/pilot/DELIVERY_CHECKLIST.md"], expected_revision=3, jobs_dir=jobs_root)
+                         metadata={"delivery_method": "shared_folder", "delivery_destination": "deliveries/job-alpha", "deliverable_count": 2},
+                         artifact_references=["docs/pilot/DELIVERY_CHECKLIST.md"], expected_revision=6, jobs_dir=jobs_root)
     assert job["current_state"] == "DELIVERY_READY"
 
     job = transition_job(job_id, "DELIVERED",
-                         metadata={"operator": "op", "confirmation": "Delivery recorded", "delivery_destination": "deliveries/job-alpha", "delivered_item_count": 8},
-                         expected_revision=4, jobs_dir=jobs_root)
+                         metadata={"operator": "op", "confirmation": "Delivery recorded", "delivery_destination": "deliveries/job-alpha", "delivered_item_count": 2},
+                         expected_revision=7, jobs_dir=jobs_root)
     assert job["current_state"] == "DELIVERED"
-    assert job["revision"] == 5
+    assert job["revision"] == 8
 
     history = read_history(job_id, jobs_dir=jobs_root)
-    assert [event["new_state"] for event in history] == [
+    transitions = [event["new_state"] for event in history if event["event_type"] in {"CREATED", "TRANSITION"}]
+    assert transitions == [
         "READY", "RUNNING", "REVIEW_REQUIRED", "APPROVED", "DELIVERY_READY", "DELIVERED"
     ]
     event_ids = [event["event_id"] for event in history if event["event_id"]]

@@ -1,11 +1,11 @@
-# Phase 2 — Managed Pilot Operations: Intake, Job Records, and Manual Transitions (Status)
+# Phase 2 — Managed Pilot Operations: Intake, Job Records, Transitions, and Output Review (Status)
 
 ## Objective
 
 Implement the smallest operational slices for one managed local-file sports
 pilot: a validated pilot intake manifest, an explicit rights gate, read-only
-source validation, a durable local job record, and explicit manual job-state
-transitions.
+source validation, a durable local job record, explicit manual job-state
+transitions, and validated output-manifest registration/review.
 
 ## Built
 
@@ -17,13 +17,18 @@ transitions.
 - `docs/pilot/` — runbook and intake templates.
 - `docs/pilot/JOB_TRANSITIONS.md` — state graph, required metadata, revision
   behavior, rights revalidation, and manual/automated boundaries.
+- `docs/pilot/OUTPUT_MANIFESTS.md` — output manifest schema, registration,
+  review actions, summary/readiness behavior, and CLI examples.
+- `JOB_ID.outputs/MANIFEST_ID.json` runtime structure — reviewed output
+  manifests stored beneath the configured job root.
 - `docs/pilot/examples/` — a tracked non-production World Cup example plus
   invalid fixtures (unconfirmed rights, missing source, bad reference).
 
 ## Boundaries
 
 No database, queue, auth, users, billing, publishing, dashboard, media
-processing, model calls, network access, copying, uploading, or deletion.
+processing, model calls, network access, copying, uploading, automatic output
+discovery, or deletion.
 Existing World Cup manifests, schedule, and clip manifests are unchanged; the
 pilot intake/job record is an operational wrapper, not a replacement.
 
@@ -39,7 +44,8 @@ pilot intake/job record is an operational wrapper, not a replacement.
 
 ```text
 Client intake -> rights gate -> source validation -> job record (READY) ->
-  RUNNING (manual pipeline started) -> REVIEW_REQUIRED -> APPROVED ->
+  RUNNING (manual pipeline started) -> existing export scripts -> generated files ->
+  pilot output manifest -> manual output review -> REVIEW_REQUIRED -> APPROVED ->
   DELIVERY_READY -> DELIVERED
 ```
 
@@ -58,13 +64,15 @@ recovery reason, and confirmation that the blocking issue was addressed.
 - Manual demonstrations confirm execution-ready, awaiting-rights,
   missing-source, durable READY job creation, deterministic duplicates,
   complete manual transitions, stale revision rejection, rights revalidation,
-  failure recovery, cancellation safety, append-only history, and no network /
-  FFmpeg / media mutation.
+  output registration/review/readiness, failure recovery, cancellation safety,
+  append-only history, and no network / FFmpeg / media mutation.
 
 ## Remaining pilot-operation gaps
 
 - The transition CLI records operator state only; it still does not execute,
   inspect, copy, deliver, upload, publish, or delete media/output files.
+- Output manifests require explicit operator registration; no automatic output
+  discovery, clip inspection, file copying, or delivery automation exists.
 - No supported-use check is automated for `RESTRICTED` rights (documented as a
   manual step).
 - Delivery/billing/reporting remain out of scope.

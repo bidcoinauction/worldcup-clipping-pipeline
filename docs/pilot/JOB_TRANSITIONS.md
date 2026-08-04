@@ -53,6 +53,11 @@ allowed next states. Failed transitions append no events.
 Failure categories: `SOURCE`, `CONFIGURATION`, `RIGHTS`, `PROCESSING`,
 `REVIEW`, `DELIVERY`, `OPERATOR`, `UNKNOWN`.
 
+`APPROVED`, `DELIVERY_READY`, and `DELIVERED` also check registered output
+manifests. Jobs without output manifests cannot pass these delivery-related
+checks. The deliverable count must equal the number of approved,
+delivery-included outputs, and included output files must still validate.
+
 ## Revision Guard
 
 Each job has an integer `revision`. New jobs start at `0`. Every successful
