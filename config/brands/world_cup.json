@@ -1,0 +1,33 @@
+{
+  "_note": "WORLD CUP BRAND PROFILE (production, reference deployment). Values preserve the existing World Cup brand language exactly: positioning, caption tone, language, and hashtags used by asset generation. Hashtags are written WITH the leading '#' so that joining them with spaces reproduces the historical output byte-for-byte. Logo/font/colour are deliberately absent: they are not currently used by any workflow.",
+  "id": "world_cup",
+  "display_name": "Football Archive",
+  "positioning": "America Discovers Football",
+  "caption_tone": "Cinematic football mythology for American audiences learning the sport",
+  "language": "en",
+  "hashtags": [
+    "#worldcup",
+    "#football",
+    "#soccer"
+  ],
+  "platforms": {
+    "TikTok": [
+      "#worldcup",
+      "#football",
+      "#soccer"
+    ],
+    "Reels": [
+      "#worldcup",
+      "#football",
+      "#soccer"
+    ],
+    "Shorts": [
+      "#worldcup",
+      "#football",
+      "#soccer"
+    ]
+  },
+  "assets": {
+    "thumbnail_guidance": "High-stakes frames with a clear subject, visible crowd or reaction, and mythological framing readable to American newcomers."
+  }
+}

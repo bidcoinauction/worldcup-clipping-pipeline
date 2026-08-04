@@ -7,6 +7,19 @@ from pipeline.utils import get_video_duration, timestamp_to_seconds
 from scripts.export_clips_ffmpeg import _micro_slice, _validate_and_clamp, export_clip
 
 
+@pytest.fixture(autouse=True)
+def _resolved_tiktok_profile(monkeypatch):
+    """Resolve the real TIKTOK export profile so main()/export_clip() don't re-read
+    the export data file through a mocked ``Path.open``. Returned values are byte-identical
+    to the historical constants (1080x1920, libx264, aac, 30fps, 192k)."""
+    from pipeline.configurator import resolve_platform_export_profile as _real_resolver
+    real = _real_resolver("TIKTOK")
+    monkeypatch.setattr(
+        "scripts.export_clips_ffmpeg.resolve_platform_export_profile",
+        lambda *a, **k: real,
+    )
+
+
 @patch("scripts.export_clips_ffmpeg.subprocess.run")
 def test_export_clip_builds_ffmpeg_command(mock_run, tmp_path):
     source = "/videos/match.mp4"
@@ -38,6 +51,47 @@ def test_export_clip_enforces_minimum_duration(mock_run, tmp_path):
     cmd = mock_run.call_args[0][0]
     t_idx = cmd.index("-t")
     assert float(cmd[t_idx + 1]) == 0.1
+
+
+def test_export_clip_consumes_resolved_profile(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    profile = {
+        "width": 720, "height": 1280, "frame_rate": 24,
+        "video_codec": "h264", "preset": "ultrafast", "crf": "23",
+        "audio_codec": "aac", "audio_bitrate": "128k",
+    }
+    output = tmp_path / "out.mp4"
+    with patch("scripts.export_clips_ffmpeg.subprocess.run",
+               return_value=MagicMock(returncode=0)) as mock_run:
+        export_clip("/v/m.mp4", "00:00:00", "00:00:05", output, profile=profile)
+    (cmd,) = mock_run.call_args[0]
+    vf_idx = cmd.index("-vf")
+    assert cmd[vf_idx + 1] == "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280"
+    assert cmd[cmd.index("-r") + 1] == "24"
+    assert cmd[cmd.index("-c:v") + 1] == "h264"
+    assert cmd[cmd.index("-b:a") + 1] == "128k"
+
+
+def test_main_consumes_resolved_platform_destination(tmp_path, capsys):
+    from unittest.mock import patch as _patch
+    import io
+
+    from pipeline.configurator import resolve_platform_export_profile
+    from scripts.export_clips_ffmpeg import main
+
+    reels = resolve_platform_export_profile("REELS")
+    manifest_csv = "clip_id,category,start_time,end_time\nclip_001,EMOTION,00:00:05,00:00:15\n"
+    with _patch("scripts.export_clips_ffmpeg.Path.open",
+                return_value=io.StringIO(manifest_csv)):
+        with _patch("scripts.export_clips_ffmpeg.resolve_platform_export_profile",
+                    return_value=reels):
+            with _patch("sys.argv",
+                        ["export_clips_ffmpeg", "--manifest", "dummy.csv",
+                         "--source-video", "/v/m.mp4", "--dry-run", "--platform", "REELS"]):
+                main()
+    captured = capsys.readouterr()
+    assert "EXPORTS/REELS/EMOTION/clip_001_reels.mp4" in captured.out
 
 
 @patch("scripts.export_clips_ffmpeg.subprocess.run")

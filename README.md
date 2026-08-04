@@ -80,6 +80,42 @@ config/editorial/world_cup.json
 
 It holds `emotional_kinds`, `narrative_functions`, and `story_targets` (arc roles and narrative roles). `pipeline/configurator.py` resolves it via `resolve_editorial_taxonomy()`, `resolve_story_targets()`, and `resolve_operational_categories()`. Unknown keys or wrong types raise `ConfigurationError` with the full field path. This is a distinct surface from the legacy operational `categories` in `config/pipeline_config.json`, which remains intact. `config/examples/basketball.json` demonstrates the same separated taxonomy structure for a second sport (non-production).
 
+### Brand profiles
+
+Brand language is extracted to validated data files under `config/brands/`:
+
+```text
+config/brands/world_cup.json            # production (reference deployment)
+config/brands/basketball_example.json   # non-production example
+```
+
+A brand profile carries `id`, `display_name`, `positioning`, `caption_tone`, `language`, default `hashtags` (with leading `#`), optional per-platform `platforms` hashtag overrides, and optional `assets` metadata (thumbnail guidance, plus `logo`/`font` path references only if a workflow ever uses them). Unknown keys, wrong types, invalid hashtags, and unsafe asset paths raise `ConfigurationError` with the full field path.
+
+`pipeline/configurator.py` resolves brands via `resolve_brand_profile()`, `resolve_brand_hashtags()`, `resolve_brand_positioning()`, `resolve_brand_language()`, and `resolve_brand_caption_tone()`. Brand positioning precedence:
+
+1. Explicit override (function/CLI argument)
+2. Selected brand profile `positioning`
+3. Legacy `account_positioning` in `config/pipeline_config.json`
+4. `ACCOUNT_POSITIONING` environment variable (legacy fallback only)
+5. Historical default `America Discovers Football`
+
+Configuration always wins over the environment variable. `scripts/generate_asset_prompts.py` resolves caption hashtags from the selected brand (default `world_cup`; `--brand` to override) instead of embedding them, and exits nonzero with a concise error on an invalid brand selection. The World Cup hashtags remain byte-identical (`#worldcup #football #soccer`).
+
+### Export profiles
+
+Export behavior is extracted to a validated data file:
+
+```text
+config/export/world_cup.json
+```
+
+It contains two namespaces:
+
+- `platforms` — TikTok / Reels / Shorts profiles (width, height, frame rate, codecs, bitrate, extension, filename suffix, and destination template) consumed by `scripts/export_clips_ffmpeg.py` via `resolve_platform_export_profile()` and `resolve_export_destination()`.
+- `profiles` — research window profiles (`vertical_clean`, `vertical_blur`, `vertical_review`, `vertical_safe`, `vertical_zoom`, `vertical_social`, `vertical_social_dynamic`, `goal_context`, `source`) consumed by `scripts/export_research_windows.py` via `resolve_export_profile()` for the encoding arguments.
+
+Values reproduce the historical behavior exactly (1080x1920, libx264/veryfast/CRF 20, AAC, `EXPORTS/<PLATFORM>/<CATEGORY>/<clip_id>_<platform>.mp4`, `CLIPS/<match>/<clip>.mp4`). The crop/fit filter chains themselves remain in the exporter scripts; profiles describe dimensions, codecs, naming, and destinations. Unknown profiles, unknown platforms, invalid dimensions/codecs, and unsafe destinations raise `ConfigurationError`; `resolve_export_profile()` and `resolve_platform_export_profile()` fail loudly rather than silently falling back.
+
 ### Positioning precedence
 
 `pipeline/configurator.resolve_project_identity()` resolves account positioning in this order:
@@ -108,6 +144,8 @@ Validate any configuration file (read-only, no network, no file mutation):
 ```bash
 python3 scripts/validate_config.py                      # reference config
 python3 scripts/validate_config.py config/examples/basketball.json
+python3 scripts/validate_config.py config/brands/world_cup.json
+python3 scripts/validate_config.py config/export/world_cup.json
 ```
 
 ## Validation
@@ -121,7 +159,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 620 passed, 1 skipped, 1 warning.
+- `pytest`: 660 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 

@@ -1,0 +1,30 @@
+{
+  "_note": "NON-PRODUCTION EXAMPLE BRAND PROFILE. This brand is NOT selected by any built-in profile and is never loaded by default. It exists only to prove that brand-profile selection is separate from project identity and that a second sport can express different brand language. It is referenced by config/examples/basketball.json for validation only.",
+  "id": "basketball_example",
+  "display_name": "Basketball Archive Example",
+  "positioning": "Global hoops for new American fans",
+  "caption_tone": "Fast, kinetic basketball storytelling for new American fans",
+  "language": "en",
+  "hashtags": [
+    "#basketball",
+    "#hoops",
+    "#bball"
+  ],
+  "platforms": {
+    "TikTok": [
+      "#basketball",
+      "#tiktoksports"
+    ],
+    "Reels": [
+      "#basketball",
+      "#reelssports"
+    ],
+    "Shorts": [
+      "#basketball",
+      "#youtubeshorts"
+    ]
+  },
+  "assets": {
+    "thumbnail_guidance": "Clean action frames with a clear player, rim, and crowd reaction."
+  }
+}

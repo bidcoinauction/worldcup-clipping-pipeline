@@ -20,6 +20,8 @@ from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from pipeline.config_errors import ConfigurationError
+from pipeline.configurator import resolve_export_profile
 from pipeline.utils import ROOT, slugify, timestamp_to_seconds
 
 
@@ -358,15 +360,16 @@ def ffmpeg_filter(
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
         )
 
+    ep = resolve_export_profile(profile)
     return [
         "-filter_complex", filtergraph,
         "-map", "[v]",
         "-map", "0:a?",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "20",
-        "-c:a", "aac",
-        "-b:a", "160k",
+        "-c:v", ep["video_codec"],
+        "-preset", ep["preset"],
+        "-crf", str(ep["crf"]),
+        "-c:a", ep["audio_codec"],
+        "-b:a", ep["audio_bitrate"],
         "-movflags", "+faststart",
     ]
 
@@ -545,4 +548,8 @@ def build_manifest_row(
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except ConfigurationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None

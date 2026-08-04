@@ -8,6 +8,8 @@ It does not replace any existing public function. It provides:
 * a safe, repository-relative template resolver
 * platform / output selection
 * the canonical archive-root resolver shared by call sites
+* brand-profile resolution (display name, positioning, hashtags, tone, language)
+* export-profile resolution (platform profiles + research window profiles)
 
 Validation is strict: unknown structured keys raise :class:`ConfigurationError`
 with the full field path. Loading and validation perform no network calls and
@@ -27,12 +29,15 @@ from .config_errors import ConfigurationError
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_DIR = _REPO_ROOT / "config"
 _EDITORIAL_DIR = _CONFIG_DIR / "editorial"
+_BRAND_DIR = _CONFIG_DIR / "brands"
+_EXPORT_DIR = _CONFIG_DIR / "export"
+_EXPORT_FILE = _EXPORT_DIR / "world_cup.json"
 _DEFAULT_POSITIONING = "America Discovers Football"
 
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 # Top-level keys recognized in a structured profile file.
-_PROFILE_KEYS = ("name", "project", "taxonomies", "templates", "platforms", "outputs")
+_PROFILE_KEYS = ("name", "project", "taxonomies", "templates", "platforms", "outputs", "brand", "exports")
 _PROJECT_KEYS = ("name", "positioning")
 _TAXONOMY_KEYS = ("match_kinds", "emotional_kinds", "operational", "editorial")
 _OPERATIONAL_KEYS = ("categories",)
@@ -207,6 +212,22 @@ def validate_structured_profile(data: dict, source: str = "profile") -> None:
         if "directory" in outputs:
             _validate_output_root(outputs["directory"], f"{source}.outputs")
 
+    if "brand" in data:
+        brand = _require_map(data, "brand", source)
+        _reject_unknown(brand, ("profile",), f"{source}.brand")
+        brand_profile = brand.get("profile")
+        if not brand_profile or not isinstance(brand_profile, str):
+            raise ConfigurationError(f"{source}.brand.profile: expected a non-empty brand identifier string")
+        _brand_file(brand_profile)
+
+    if "exports" in data:
+        exports = _require_map(data, "exports", source)
+        _reject_unknown(exports, ("profiles",), f"{source}.exports")
+        export_profiles = exports.get("profiles")
+        _validate_str_list(export_profiles, f"{source}.exports.profiles")
+        for profile_id in export_profiles:
+            resolve_export_profile(profile_id)
+
     return None
 
 
@@ -358,6 +379,154 @@ def resolve_story_targets(profile: str = "football") -> dict:
     if not isinstance(story, dict):
         raise ConfigurationError(f"{profile}.taxonomies.editorial.story_targets: expected an object")
     return dict(story)
+
+
+# ── Brand profiles ──────────────────────────────────────────────────────────
+
+_BRAND_PROFILE_KEYS = (
+    "id",
+    "display_name",
+    "positioning",
+    "caption_tone",
+    "language",
+    "hashtags",
+    "platforms",
+    "assets",
+)
+_BRAND_ASSET_KEYS = ("thumbnail_guidance", "logo", "font")
+_HASHTAG_RE = re.compile(r"^#[A-Za-z0-9_]+$")
+
+
+def _validate_hashtag_list(val, path: str) -> None:
+    if not isinstance(val, list) or not val:
+        raise ConfigurationError(f"{path} must be a non-empty list of hashtags")
+    for index, tag in enumerate(val):
+        if not isinstance(tag, str) or not _HASHTAG_RE.match(tag):
+            raise ConfigurationError(
+                f"{path}[{index}]: invalid hashtag {tag!r}; hashtags must start with '#' and contain only letters, digits, or underscores"
+            )
+
+
+def _validate_brand_asset_path(value, path: str) -> None:
+    if value in (None, ""):
+        return
+    if not isinstance(value, str):
+        raise ConfigurationError(f"{path}: expected a string path, got {type(value).__name__}")
+    candidate = Path(value)
+    if candidate.is_absolute():
+        raise ConfigurationError(f"{path}: asset path must be repository-relative, got absolute '{value}'")
+    if ".." in candidate.parts:
+        raise ConfigurationError(f"{path}: asset path traversal is not allowed: '{value}'")
+
+
+def validate_brand_profile(data: dict, source: str = "brand") -> None:
+    """Strictly validate a brand-profile data file. Raises
+    :class:`ConfigurationError` with the full field path for unknown keys or
+    wrong types. Read-only; performs no network access and no mutation."""
+    if not isinstance(data, dict):
+        raise ConfigurationError(f"{source}: brand profile root must be an object, got {type(data).__name__}")
+    _reject_unknown(data, _BRAND_PROFILE_KEYS, source)
+
+    brand_id = data.get("id")
+    if not brand_id or not isinstance(brand_id, str):
+        raise ConfigurationError(f"{source}.id: expected a non-empty brand identifier string")
+
+    for key in ("display_name", "positioning", "caption_tone", "language"):
+        if key in data and not isinstance(data[key], str):
+            raise ConfigurationError(f"{source}.{key}: expected a string, got {type(data[key]).__name__}")
+
+    if "hashtags" in data:
+        _validate_hashtag_list(data["hashtags"], f"{source}.hashtags")
+
+    if "platforms" in data:
+        platforms = data["platforms"]
+        if not isinstance(platforms, dict):
+            raise ConfigurationError(f"{source}.platforms: expected an object of platform overrides, got {type(platforms).__name__}")
+        for platform, tags in platforms.items():
+            if not isinstance(platform, str) or not platform:
+                raise ConfigurationError(f"{source}.platforms: platform keys must be non-empty strings")
+            _validate_hashtag_list(tags, f"{source}.platforms.{platform}")
+
+    if "assets" in data:
+        assets = data["assets"]
+        if not isinstance(assets, dict):
+            raise ConfigurationError(f"{source}.assets: expected an object, got {type(assets).__name__}")
+        _reject_unknown(assets, _BRAND_ASSET_KEYS, f"{source}.assets")
+        for key in _BRAND_ASSET_KEYS:
+            if key in assets and not isinstance(assets[key], str):
+                raise ConfigurationError(f"{source}.assets.{key}: expected a string, got {type(assets[key]).__name__}")
+        _validate_brand_asset_path(assets.get("logo"), f"{source}.assets.logo")
+        _validate_brand_asset_path(assets.get("font"), f"{source}.assets.font")
+
+
+def _brand_file(name: str) -> Path:
+    path = _BRAND_DIR / f"{name}.json"
+    if not path.exists():
+        raise ConfigurationError(f"brand profile not found at '{path}' (referenced as '{name}')")
+    return path
+
+
+def load_brand_profile(name: str) -> dict:
+    """Load and strictly validate a brand profile data file. Read-only."""
+    path = _brand_file(name)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    validate_brand_profile(data, source=path.name)
+    return data
+
+
+def resolve_brand_profile(brand: str = "world_cup") -> dict:
+    """Resolve a selected brand profile. Unknown brand profiles raise
+    :class:`ConfigurationError` rather than falling back. Read-only."""
+    return dict(load_brand_profile(brand))
+
+
+def resolve_brand_positioning(brand: str = "world_cup", override: str | None = None) -> str:
+    """Resolve account positioning for a brand, with precedence:
+
+    explicit override -> brand profile positioning -> legacy
+    ``account_positioning`` in ``pipeline_config.json`` -> ``ACCOUNT_POSITIONING``
+    env (legacy fallback) -> historical default. Configuration always wins over
+    the environment variable.
+    """
+    if override:
+        return override
+    profile = load_brand_profile(brand)
+    if profile.get("positioning"):
+        return profile["positioning"]
+    cfg = load_config()
+    if cfg.get("account_positioning"):
+        return cfg["account_positioning"]
+    env = os.environ.get("ACCOUNT_POSITIONING")
+    if env:
+        return env
+    return _DEFAULT_POSITIONING
+
+
+def resolve_brand_hashtags(brand: str = "world_cup", platform: str | None = None) -> list[str]:
+    """Resolve hashtags for a brand. When *platform* is given and the brand
+    declares platform-specific hashtags, those win; otherwise the brand default
+    hashtag list is returned. Read-only."""
+    profile = load_brand_profile(brand)
+    platforms = profile.get("platforms")
+    if platform and isinstance(platforms, dict):
+        override = platforms.get(platform)
+        if override:
+            return list(override)
+        for key, tags in platforms.items():
+            if key.lower() == platform.lower():
+                return list(tags)
+    hashtags = profile.get("hashtags")
+    if not isinstance(hashtags, list) or not hashtags:
+        raise ConfigurationError(f"brand '{brand}'.hashtags: brand profile has no default hashtags")
+    return list(hashtags)
+
+
+def resolve_brand_language(brand: str = "world_cup") -> str:
+    return load_brand_profile(brand).get("language") or "en"
+
+
+def resolve_brand_caption_tone(brand: str = "world_cup") -> str:
+    return load_brand_profile(brand).get("caption_tone") or ""
 
 
 def resolve_project_identity(profile: str = "football") -> dict:
@@ -513,3 +682,178 @@ def select_platforms(profile: str = "football") -> list[str]:
             f"platform selection for unknown profile '{profile}'; known profiles: {', '.join(sorted(_PROFILES))}"
         )
     return list(_PROFILES[profile]()["platforms"])
+
+
+# ── Export profiles ─────────────────────────────────────────────────────────
+
+_EXPORT_TOP_KEYS = ("platforms", "profiles")
+_EXPORT_PROFILE_KEYS = (
+    "id",
+    "platform",
+    "width",
+    "height",
+    "aspect_ratio",
+    "frame_rate",
+    "video_codec",
+    "preset",
+    "crf",
+    "audio_codec",
+    "audio_bitrate",
+    "extension",
+    "filename_suffix",
+    "destination",
+    "destination_template",
+    "crop",
+)
+_EXPORT_STRING_KEYS = (
+    "platform",
+    "aspect_ratio",
+    "video_codec",
+    "preset",
+    "crf",
+    "audio_codec",
+    "audio_bitrate",
+    "extension",
+    "filename_suffix",
+    "destination",
+    "destination_template",
+    "crop",
+)
+
+
+def _validate_export_entry(entry, path: str) -> None:
+    if not isinstance(entry, dict):
+        raise ConfigurationError(f"{path}: expected an export profile object, got {type(entry).__name__}")
+    _reject_unknown(entry, _EXPORT_PROFILE_KEYS, path)
+
+    profile_id = entry.get("id")
+    if not profile_id or not isinstance(profile_id, str):
+        raise ConfigurationError(f"{path}.id: expected a non-empty export profile identifier")
+
+    if "platform" in entry and not isinstance(entry["platform"], str):
+        raise ConfigurationError(f"{path}.platform: expected a string, got {type(entry['platform']).__name__}")
+
+    for key in ("width", "height", "frame_rate"):
+        value = entry.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ConfigurationError(f"{path}.{key}: expected a positive integer, got {value!r}")
+
+    for key in _EXPORT_STRING_KEYS:
+        if key in entry and not isinstance(entry[key], str):
+            raise ConfigurationError(f"{path}.{key}: expected a string, got {type(entry[key]).__name__}")
+
+    for required in ("video_codec", "audio_codec", "extension", "destination"):
+        if required not in entry or not str(entry[required]).strip():
+            raise ConfigurationError(f"{path}.{required}: is required")
+
+    destination = entry.get("destination")
+    if ".." in Path(destination).parts:
+        raise ConfigurationError(f"{path}.destination: output path traversal is not allowed: '{destination}'")
+
+
+def validate_export_profiles(data: dict, source: str = "export") -> None:
+    """Strictly validate the export-profiles data file. Raises
+    :class:`ConfigurationError` with the full field path. Read-only."""
+    if not isinstance(data, dict):
+        raise ConfigurationError(f"{source}: export profiles root must be an object, got {type(data).__name__}")
+    _reject_unknown(data, _EXPORT_TOP_KEYS, source)
+
+    if "platforms" in data:
+        platforms = data["platforms"]
+        if not isinstance(platforms, dict):
+            raise ConfigurationError(f"{source}.platforms: expected an object of platform profiles, got {type(platforms).__name__}")
+        for key, entry in platforms.items():
+            _validate_export_entry(entry, f"{source}.platforms.{key}")
+            if entry.get("id") != key:
+                raise ConfigurationError(f"{source}.platforms.{key}.id: must equal its registry key '{key}'")
+
+    if "profiles" in data:
+        profiles = data["profiles"]
+        if not isinstance(profiles, dict):
+            raise ConfigurationError(f"{source}.profiles: expected an object of research profiles, got {type(profiles).__name__}")
+        for key, entry in profiles.items():
+            _validate_export_entry(entry, f"{source}.profiles.{key}")
+            if entry.get("id") != key:
+                raise ConfigurationError(f"{source}.profiles.{key}.id: must equal its registry key '{key}'")
+
+
+def load_export_profiles() -> dict:
+    """Load and strictly validate the export-profiles data file. Read-only."""
+    data = json.loads(_EXPORT_FILE.read_text(encoding="utf-8"))
+    validate_export_profiles(data, source=_EXPORT_FILE.name)
+    return data
+
+
+def _all_export_profiles() -> dict[str, dict]:
+    data = load_export_profiles()
+    combined: dict[str, dict] = {}
+    for section in ("platforms", "profiles"):
+        for key, entry in data.get(section, {}).items():
+            combined[key] = entry
+    return combined
+
+
+def resolve_export_profile(profile_id: str) -> dict:
+    """Resolve a research/export profile by identifier (both the platform and
+    research namespaces are searched). Unknown profiles raise
+    :class:`ConfigurationError` rather than falling back. Read-only."""
+    combined = _all_export_profiles()
+    if profile_id not in combined:
+        known = ", ".join(sorted(combined)) if combined else "(none configured)"
+        raise ConfigurationError(f"export profile '{profile_id}' is not configured; known profiles: {known}")
+    return dict(combined[profile_id])
+
+
+def resolve_platform_export_profile(platform: str) -> dict:
+    """Resolve a platform export profile by platform name or key. Matching is
+    case-insensitive (accepts ``TikTok``, ``tiktok``, ``TIKTOK``). Unknown
+    platforms raise :class:`ConfigurationError`. Read-only."""
+    data = load_export_profiles()
+    platforms = data.get("platforms", {})
+    target = platform.strip().lower()
+    for key, entry in platforms.items():
+        if key.lower() == target or str(entry.get("platform", "")).lower() == target:
+            return dict(entry)
+    known = ", ".join(sorted(platforms.keys())) if platforms else "(none configured)"
+    raise ConfigurationError(f"platform '{platform}' has no export profile; known platforms: {known}")
+
+
+def resolve_export_destination(
+    profile_id: str | None = None,
+    *,
+    profile: dict | None = None,
+    platform: str | None = None,
+    clip_id: str = "",
+    category: str = "",
+    root: str | Path | None = None,
+) -> str:
+    """Resolve the destination path for an export profile.
+
+    When the profile declares a ``destination_template``, it is formatted with
+    ``platform``, ``category``, ``clip_id``, ``filename_suffix`` and
+    ``extension`` (falling back to ``clip_id.ext`` when no template is set).
+    *root* is prepended when provided. Read-only: never creates directories.
+    """
+    entry = dict(profile) if profile is not None else resolve_export_profile(profile_id)
+    root_path = Path(root) if root is not None else None
+    template = entry.get("destination_template")
+    suffix = entry.get("filename_suffix", "")
+    extension = entry.get("extension", "mp4")
+    relative: Path
+    if template:
+        rendered = template.format(
+            platform=platform or "",
+            category=category or "",
+            clip_id=clip_id,
+            filename_suffix=suffix,
+            extension=extension,
+            filename=f"{clip_id}_{suffix}",
+        )
+        relative = Path(rendered) if not rendered.startswith("/") else Path(rendered.lstrip("/"))
+    else:
+        relative = Path(str(entry.get("destination", ""))) / f"{clip_id}.{extension}"
+    if root_path is not None:
+        return str(root_path / relative)
+    return str(relative)

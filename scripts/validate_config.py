@@ -22,7 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.config import CONFIG_PATH, validate_config_dict  # noqa: E402
 from pipeline.config_errors import ConfigurationError  # noqa: E402
-from pipeline.configurator import validate_structured_profile  # noqa: E402
+from pipeline.configurator import (  # noqa: E402
+    validate_brand_profile,
+    validate_export_profiles,
+    validate_structured_profile,
+)
 
 _STRUCTURED_MARKERS = ("name", "profile", "project")
 
@@ -33,7 +37,14 @@ def validate_path(path: Path) -> int:
     if not isinstance(data, dict):
         raise ConfigurationError(f"{path.name}: configuration root must be an object")
 
-    if any(key in data for key in _STRUCTURED_MARKERS):
+    parent = path.resolve().parent.name
+    if parent == "brands":
+        validate_brand_profile(data, source=path.name)
+        print(f"OK: {path} is a valid brand profile")
+    elif parent == "export":
+        validate_export_profiles(data, source=path.name)
+        print(f"OK: {path} is a valid export-profiles file")
+    elif any(key in data for key in _STRUCTURED_MARKERS):
         validate_structured_profile(data, source=path.name)
         print(f"OK: {path} is a valid structured configuration")
     else:

@@ -3,6 +3,9 @@ from pathlib import Path
 import csv
 import io
 
+import pytest
+
+from pipeline.config_errors import ConfigurationError
 from pipeline.utils import slugify, timestamp_to_seconds
 from scripts.export_research_windows import (
     ClipRow,
@@ -368,6 +371,26 @@ def test_ffmpeg_filter_existing_profiles_unchanged():
     for profile in ["vertical_clean", "vertical_safe", "vertical_social", "goal_context", "source"]:
         result = ffmpeg_filter(profile)
         assert "-filter_complex" in result or profile == "source"
+
+
+def test_ffmpeg_filter_consumes_resolved_export_profile():
+    # Encoding args are sourced from the resolved export profile registry.
+    with patch("scripts.export_research_windows.resolve_export_profile", return_value={
+        "id": "vertical_clean", "width": 720, "height": 1280,
+        "video_codec": "h264", "preset": "ultrafast", "crf": 23,
+        "audio_codec": "aac", "audio_bitrate": "128k",
+    }) as mock_resolve:
+        result = ffmpeg_filter("vertical_clean")
+        mock_resolve.assert_called_with("vertical_clean")
+    assert "-c:v" in result
+    assert result[result.index("-c:v") + 1] == "h264"
+    assert result[result.index("-c:a") + 1] == "aac"
+    assert result[result.index("-b:a") + 1] == "128k"
+
+
+def test_ffmpeg_filter_unknown_profile_raises():
+    with pytest.raises(ConfigurationError, match="export profile 'bogus'"):
+        ffmpeg_filter("bogus")
 
 
 def test_ffmpeg_filter_vertical_zoom_contains_zoom():

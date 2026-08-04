@@ -160,6 +160,26 @@ The World Cup detection prompt body is extracted to a registered, tracked templa
 
 Reference contract rules 1-4 above determine what is extracted vs. kept. The basketball example exists only to prove the structured boundary; it is not selected by default.
 
+### Brand-profile boundary
+
+Brand language is extracted to validated data files under `config/brands/`:
+
+- `config/brands/world_cup.json` — production brand (display name, positioning, caption tone, language, hashtags, optional per-platform hashtag overrides, optional asset references). Values preserve the reference deployment language exactly; hashtags are stored with leading `#` so joining with spaces reproduces the historical output.
+- `config/brands/basketball_example.json` — clearly labeled non-production example, referenced only by `config/examples/basketball.json`.
+
+`pipeline/configurator.py` exposes `resolve_brand_profile`, `resolve_brand_hashtags`, `resolve_brand_positioning`, `resolve_brand_language`, `resolve_brand_caption_tone`, and `validate_brand_profile`. Brand positioning precedence: explicit override → brand profile → legacy `account_positioning` → `ACCOUNT_POSITIONING` env (fallback only) → default. Configuration always wins over the environment variable. `scripts/generate_asset_prompts.py` is the migrated consumer: caption hashtags come from the selected brand instead of a hardcoded list, with identical output for the World Cup brand.
+
+### Export-profile boundary
+
+Export behavior is extracted to a validated data file `config/export/world_cup.json` with two namespaces:
+
+- `platforms` (TikTok/Reels/Shorts) — consumed by `scripts/export_clips_ffmpeg.py` through `resolve_platform_export_profile()` and `resolve_export_destination()`.
+- `profiles` (vertical_*, goal_context, source) — consumed by `scripts/export_research_windows.py` for the encoding arguments through `resolve_export_profile()`.
+
+Values encode the historical reference behavior (1080x1920, libx264 veryfast CRF 20, AAC, `EXPORTS/<PLATFORM>/<CATEGORY>/<clip_id>_<platform>.mp4`, `CLIPS/<match>/<clip>.mp4`). The crop/fit filter chains remain in the exporter scripts; profiles describe dimensions, codecs, naming, and destinations. Unknown profiles/platforms, invalid dimensions/codecs, and unsafe destinations raise `ConfigurationError` with no silent fallback.
+
+The affected CLI scripts (`generate_asset_prompts.py`, `export_clips_ffmpeg.py`, `export_research_windows.py`) surface `ConfigurationError` as a concise actionable message with a nonzero exit and no traceback for expected configuration mistakes; unexpected programming errors still raise normally.
+
 ## Anti-Patterns
 
 Avoid these in extraction work:

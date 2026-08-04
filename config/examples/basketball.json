@@ -50,6 +50,15 @@
   "templates": {
     "prompt": "prompts/basketball_detection_prompt.txt"
   },
+  "brand": {
+    "profile": "basketball_example"
+  },
+  "exports": {
+    "profiles": [
+      "vertical_clean",
+      "source"
+    ]
+  },
   "platforms": [
     "TikTok",
     "Reels",

@@ -113,6 +113,23 @@ The structured output root now carries full precedence, and the football editori
 
 Verification: `pytest` 620 passed, 1 skipped (baseline 597 / 1 preserved, 1 warning); `validate_data.py` passes; `validate_config.py` passes on the reference config and `config/examples/basketball.json`.
 
+## Status — Phase 1 Fourth Slice (Brand + Export Profile Boundaries)
+
+Brand language and export behavior are extracted into validated profiles, and the smallest set of asset-generation and export consumers routes through them:
+
+- `config/brands/world_cup.json` — production brand profile (id, display_name, positioning, caption_tone, language, hashtags with `#` prefix, optional per-platform overrides, optional asset references). `config/brands/basketball_example.json` is a clearly labeled non-production example.
+- `config/export/world_cup.json` — export profiles with two namespaces: `platforms` (TikTok/Reels/Shorts) and `profiles` (vertical_*, goal_context, source). Values reproduce the historical reference behavior (1080x1920, libx264 veryfast CRF 20, AAC, `EXPORTS/<PLATFORM>/<CATEGORY>/<clip_id>_<platform>.mp4`, `CLIPS/<match>/<clip>.mp4`).
+- `pipeline/configurator.py` — `validate_brand_profile`, `load_brand_profile`, `resolve_brand_profile`, `resolve_brand_positioning`, `resolve_brand_hashtags`, `resolve_brand_language`, `resolve_brand_caption_tone`, `validate_export_profiles`, `load_export_profiles`, `resolve_export_profile`, `resolve_platform_export_profile`, `resolve_export_destination`. Brand positioning precedence: override -> brand -> legacy `account_positioning` -> `ACCOUNT_POSITIONING` env (fallback only) -> default. Structured profiles may declare `brand.profile` and `exports.profiles` references (validated, referenced files must exist).
+- `scripts/generate_asset_prompts.py` — caption hashtags resolved from the selected brand (`--brand`, default `world_cup`) instead of a hardcoded list; invalid brand selections exit nonzero with a concise error.
+- `scripts/export_clips_ffmpeg.py` — resolves the platform export profile and builds destinations via `resolve_export_destination`; `export_clip` consumes the resolved profile.
+- `scripts/export_research_windows.py` — `ffmpeg_filter()` consumes the resolved export profile for encoding arguments; unknown profiles raise `ConfigurationError`.
+- `scripts/validate_config.py` — dispatches `config/brands/*` and `config/export/*` files to the brand/export validators.
+- New tests `test_brand_profiles.py` and `test_export_profiles.py` plus consumer tests (brand hashtag equivalence, no hardcoded hashtags in `generate_asset_prompts.py`, resolved platform destinations, profile-driven encoding args).
+
+Verification: `pytest` 660 passed, 1 skipped (baseline 620 / 1 preserved, 1 warning); `validate_data.py` passes; `validate_config.py` passes on the reference config, basketball example, brand files, and export file; `git diff --check` clean.
+
+Remaining embedded assumptions (documented, not in the migrated call set): `scripts/generate_caption_bank.py` carries a static caption bank with per-category hashtags (manual bank generator, not the clipping asset path); the crop/fit filter chains live in the exporter scripts (described by profile `crop` metadata, not reproduced in config); `scripts/export_vertical_blur.py` duplicates vertical export logic and is out of the approved call set.
+
 ## Gate Before Merge
 
 - `git diff --check` clean.
