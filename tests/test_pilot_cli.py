@@ -176,3 +176,68 @@ def test_no_ffmpeg_or_api_execution_during_validate_and_create(
         code_create = main(["create", str(intake_path)])
     assert code_validate == 0
     assert code_create == 0
+
+
+# ── transition / history ─────────────────────────────────────────────────────
+
+
+def test_transition_command_succeeds_and_history_is_read_only(media_file: Path, tmp_path: Path, jobs_root: Path):
+    intake_path = _write_intake(tmp_path, build_intake(str(media_file)))
+    assert _run_cli(["create", str(intake_path)], jobs_root).returncode == 0
+    result = _run_cli([
+        "transition", "pilot_alpha_source_alpha", "RUNNING",
+        "--operator", "op", "--reason", "Started manual run", "--expected-revision", "0",
+    ], jobs_root)
+    assert result.returncode == 0, result.stderr
+    assert "RUNNING" in result.stdout
+    assert "revision: 1" in result.stdout
+    show = _run_cli(["show", "pilot_alpha_source_alpha"], jobs_root)
+    assert "revision: 1" in show.stdout
+    assert "allowed_next_states" in show.stdout
+    history_before = sorted(p.name for p in jobs_root.iterdir())
+    history = _run_cli(["history", "pilot_alpha_source_alpha"], jobs_root)
+    history_after = sorted(p.name for p in jobs_root.iterdir())
+    assert history.returncode == 0
+    assert "READY" in history.stdout and "RUNNING" in history.stdout
+    assert history_before == history_after
+
+
+def test_transition_invalid_exits_nonzero_no_traceback(media_file: Path, tmp_path: Path, jobs_root: Path):
+    intake_path = _write_intake(tmp_path, build_intake(str(media_file)))
+    _run_cli(["create", str(intake_path)], jobs_root)
+    result = _run_cli(["transition", "pilot_alpha_source_alpha", "DELIVERED", "--operator", "op"], jobs_root)
+    assert result.returncode != 0
+    assert "cannot transition" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_transition_required_flags_enforced(media_file: Path, tmp_path: Path, jobs_root: Path):
+    intake_path = _write_intake(tmp_path, build_intake(str(media_file)))
+    _run_cli(["create", str(intake_path)], jobs_root)
+    result = _run_cli(["transition", "pilot_alpha_source_alpha", "RUNNING"], jobs_root)
+    assert result.returncode != 0
+    assert "operator" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_transition_invalid_failure_category_rejected(media_file: Path, tmp_path: Path, jobs_root: Path):
+    intake_path = _write_intake(tmp_path, build_intake(str(media_file)))
+    _run_cli(["create", str(intake_path)], jobs_root)
+    result = _run_cli([
+        "transition", "pilot_alpha_source_alpha", "FAILED",
+        "--operator", "op", "--reason", "bad", "--failure-category", "NOPE", "--retry-allowed", "no",
+    ], jobs_root)
+    assert result.returncode != 0
+    assert "failure_category" in result.stderr
+
+
+def test_no_ffmpeg_or_api_execution_during_transition_and_history(
+    media_file: Path, tmp_path: Path, jobs_root: Path, monkeypatch
+):
+    monkeypatch.setenv("STADIUM_PILOT_JOBS_DIR", str(jobs_root))
+    intake_path = _write_intake(tmp_path, build_intake(str(media_file)))
+    with patch("pipeline.pilot.subprocess.run", side_effect=AssertionError("no subprocess during transition")), \
+         patch("socket.socket", side_effect=AssertionError("no network during transition")):
+        assert main(["create", str(intake_path)]) == 0
+        assert main(["transition", "pilot_alpha_source_alpha", "RUNNING", "--operator", "op"]) == 0
+        assert main(["history", "pilot_alpha_source_alpha"]) == 0

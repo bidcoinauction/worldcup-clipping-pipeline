@@ -32,6 +32,11 @@ ignored by Git; they are never committed.
 - Source-file validation is read-only (existence, type, readability, checksum,
   optional duration). It never modifies, moves, copies, or transcodes media,
   and it never makes network requests.
+- Job transition metadata and artifact references must not contain credentials,
+  API keys, social tokens, payment information, source-media secrets, or path
+  traversal. Transitions record manual operator state only; they do not copy,
+  upload, publish, delete, or process media. `history` output remains
+  privacy-safe and omits sensitive intake confirmation text.
 
 ## Reporting a vulnerability
 

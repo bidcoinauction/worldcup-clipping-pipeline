@@ -50,6 +50,7 @@ from .utils import ROOT
 
 INTAKE_SCHEMA_VERSION = 1
 JOB_SCHEMA_VERSION = 1
+EVENT_SCHEMA_VERSION = 1
 
 # Runtime roots. `data/pilot/` is gitignored; client intake and job records
 # are never committed.
@@ -80,6 +81,29 @@ JOB_STATES = frozenset({
     "DELIVERED", "FAILED", "CANCELLED",
 })
 
+TERMINAL_JOB_STATES = frozenset({"DELIVERED", "CANCELLED"})
+
+ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
+    "READY": frozenset({"RUNNING", "CANCELLED", "FAILED"}),
+    "RUNNING": frozenset({"REVIEW_REQUIRED", "FAILED", "CANCELLED"}),
+    "REVIEW_REQUIRED": frozenset({"APPROVED", "RUNNING", "FAILED", "CANCELLED"}),
+    "APPROVED": frozenset({"DELIVERY_READY", "REVIEW_REQUIRED", "FAILED", "CANCELLED"}),
+    "DELIVERY_READY": frozenset({"DELIVERED", "REVIEW_REQUIRED", "FAILED", "CANCELLED"}),
+    "AWAITING_RIGHTS": frozenset({"READY", "VALIDATION_FAILED", "CANCELLED"}),
+    "VALIDATION_FAILED": frozenset({"READY", "AWAITING_RIGHTS", "CANCELLED"}),
+    "FAILED": frozenset({"READY", "RUNNING"}),
+    "DELIVERED": frozenset(),
+    "CANCELLED": frozenset(),
+    "INTAKE_RECEIVED": frozenset({"READY", "AWAITING_RIGHTS", "VALIDATION_FAILED", "CANCELLED"}),
+}
+
+FAILURE_CATEGORIES = frozenset({
+    "SOURCE", "CONFIGURATION", "RIGHTS", "PROCESSING", "REVIEW",
+    "DELIVERY", "OPERATOR", "UNKNOWN",
+})
+
+RIGHTS_REVALIDATION_STATES = frozenset({"READY", "RUNNING", "DELIVERY_READY", "DELIVERED"})
+
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CHECKSUM_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
@@ -91,6 +115,7 @@ _SECRET_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _SECRET_VALUE_RE = re.compile(r"(sk-|ghp_|gho_|AKIA[0-9A-Z]{16}|-----BEGIN)")
+_URL_CREDENTIAL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/\s]+@")
 
 # Validation codes (stable identifiers used in reports, events, and tests).
 C_INTAKE_OK = "INTAKE_OK"
@@ -161,6 +186,14 @@ class JobNotFoundError(JobRecordError):
 
 class JobPathError(JobRecordError):
     """Raised when a job path would escape the configured job-record root."""
+
+
+class JobTransitionError(JobRecordError):
+    """Raised for expected operational state-transition failures."""
+
+
+class JobRevisionError(JobTransitionError):
+    """Raised when optimistic concurrency detects a stale revision."""
 
 
 # ── Runtime root helpers ─────────────────────────────────────────────────────
@@ -760,10 +793,12 @@ def validate_intake(data: object, *, intake_root: str | None = None,
     if structural_valid and config_ok and check_rights:
         rights_ok, rights_status, rights_issues = _evaluate_rights(data)
         issues.extend(rights_issues)
-    elif structural_valid:
+    elif structural_valid and check_rights:
         rights_status = str((data.get("rights") or {}).get("status")) if isinstance(data.get("rights"), dict) else None
         issues.append(_issue("rights", C_MISSING_KEY,
                              "rights gate not evaluated because configuration references did not resolve"))
+    elif structural_valid:
+        rights_status = str((data.get("rights") or {}).get("status")) if isinstance(data.get("rights"), dict) else None
 
     source_ok = False
     duration_checked = False
@@ -771,7 +806,7 @@ def validate_intake(data: object, *, intake_root: str | None = None,
     if structural_valid and config_ok and check_source:
         source_ok, source_issues, duration_checked, duration_limitation = _validate_source(data, intake_root=intake_root)
         issues.extend(source_issues)
-    elif structural_valid:
+    elif structural_valid and check_source:
         issues.append(_issue("media", C_MISSING_KEY,
                              "source not validated because configuration references did not resolve"))
 
@@ -852,6 +887,69 @@ def _job_files(job_id: str, jobs_dir: Path) -> tuple[Path, Path]:
     return record, events
 
 
+def _read_json_file(path: Path, default: object) -> object:
+    if not path.exists():
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_events(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, events_path = _job_files(job_id, jobs_dir_path)
+    raw = _read_json_file(events_path, [])
+    return raw if isinstance(raw, list) else []
+
+
+def _normalized_revision(job: dict) -> int:
+    revision = job.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        return 0
+    return revision
+
+
+def _normalized_job(job: dict) -> dict:
+    normalized = dict(job)
+    normalized.setdefault("revision", _normalized_revision(job))
+    normalized.setdefault("readiness_summary", {})
+    normalized.setdefault("event_count", 0)
+    return normalized
+
+
+def _next_event_sequence(events: list[dict]) -> int:
+    max_sequence = 0
+    for index, event in enumerate(events, start=1):
+        sequence = event.get("sequence")
+        if isinstance(sequence, int) and sequence > max_sequence:
+            max_sequence = sequence
+        else:
+            max_sequence = max(max_sequence, index)
+    return max_sequence + 1
+
+
+def _event_id(job_id: str, sequence: int, event_type: str) -> str:
+    return f"{job_id}-{sequence:06d}-{event_type.lower()}"
+
+
+def _latest_state_event(events: list[dict]) -> dict | None:
+    for event in reversed(events):
+        if event.get("new_state"):
+            return event
+    return None
+
+
+def _ensure_state_consistency(job: dict, events: list[dict]) -> None:
+    latest = _latest_state_event(events)
+    if not latest:
+        return
+    latest_state = latest.get("new_state")
+    current_state = job.get("current_state")
+    if latest_state != current_state:
+        raise JobRecordError(
+            f"job '{job.get('job_id', '')}' state mismatch: record is '{current_state}' "
+            f"but latest event is '{latest_state}'"
+        )
+
+
 def create_job(intake_data: object, *, intake_path: str | Path | None = None,
                jobs_dir: str | Path | None = None, operator: str | None = None,
                source: str = "pilot_job.create",
@@ -915,6 +1013,7 @@ def create_job(intake_data: object, *, intake_path: str | Path | None = None,
         "project_id": config.get("project", "football"),
         "created_at": now,
         "updated_at": now,
+        "revision": 0,
         "current_state": state,
         "intake_manifest_path": str(Path(intake_path).resolve()) if intake_path else "",
         "expected_output_root": expected_output_root,
@@ -948,7 +1047,7 @@ def read_job(job_id: str, jobs_dir: str | Path | None = None) -> dict:
     record_path, _ = _job_files(job_id, jobs_dir_path)
     if not record_path.exists():
         raise JobNotFoundError(f"job '{job_id}' not found in '{jobs_dir_path}'")
-    return json.loads(record_path.read_text(encoding="utf-8"))
+    return _normalized_job(json.loads(record_path.read_text(encoding="utf-8")))
 
 
 def append_event(job_id: str, event_type: str, *, new_state: str | None = None,
@@ -963,18 +1062,21 @@ def append_event(job_id: str, event_type: str, *, new_state: str | None = None,
     """
     jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
     _, events_path = _job_files(job_id, jobs_dir_path)
-    events: list[dict] = []
-    if events_path.exists():
-        events = json.loads(events_path.read_text(encoding="utf-8"))
-        if not isinstance(events, list):
-            events = []
+    events = _read_events(job_id, jobs_dir_path)
+    sequence = _next_event_sequence(events)
 
     event = {
+        "event_schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": _event_id(job_id, sequence, event_type),
+        "job_id": job_id,
+        "sequence": sequence,
         "timestamp": _now_iso(),
         "event_type": event_type,
         "previous_state": previous_state,
         "new_state": new_state,
         "message": message,
+        "metadata": {},
+        "artifact_references": [],
         "related_codes": sorted(related_codes or []),
         "operator": operator,
         "source": source,
@@ -982,6 +1084,343 @@ def append_event(job_id: str, event_type: str, *, new_state: str | None = None,
     events.append(event)
     _atomic_write_json(events_path, events)
     return event
+
+
+def allowed_next_states(state: str) -> list[str]:
+    """Return the explicit allowed destination states for *state*."""
+    return sorted(ALLOWED_TRANSITIONS.get(state, frozenset()))
+
+
+def _require_non_empty(metadata: dict, key: str, job_id: str, current: str, target: str) -> str:
+    value = metadata.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise JobTransitionError(
+            _transition_error(job_id, current, target, f"missing required field '{key}'")
+        )
+    return value.strip()
+
+
+def _require_bool(metadata: dict, key: str, job_id: str, current: str, target: str) -> bool:
+    value = metadata.get(key)
+    if not isinstance(value, bool):
+        raise JobTransitionError(
+            _transition_error(job_id, current, target, f"missing required boolean field '{key}'")
+        )
+    return value
+
+
+def _require_positive_int(metadata: dict, key: str, job_id: str, current: str, target: str) -> int:
+    value = metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise JobTransitionError(
+            _transition_error(job_id, current, target, f"missing required positive integer field '{key}'")
+        )
+    return value
+
+
+def _transition_error(job_id: str, current: str, target: str, detail: str) -> str:
+    allowed = allowed_next_states(current)
+    allowed_text = ", ".join(allowed) if allowed else "(none)"
+    return (
+        f"job '{job_id}' cannot transition from '{current}' to '{target}': {detail}; "
+        f"allowed next states from '{current}': {allowed_text}"
+    )
+
+
+def _validate_text_for_secrets(value: str, path: str) -> None:
+    if _SECRET_VALUE_RE.search(value) or _URL_CREDENTIAL_RE.match(value):
+        raise JobTransitionError(f"{path}: transition metadata must not contain credentials or secret-like values")
+
+
+def _validate_metadata(metadata: dict, path: str = "metadata") -> dict:
+    if not isinstance(metadata, dict):
+        raise JobTransitionError(f"{path}: expected an object of transition metadata")
+    issues: list[dict] = []
+    _scan_secrets(metadata, path, issues)
+    if issues:
+        first = issues[0]
+        raise JobTransitionError(f"{first['path']}: {first['message']}")
+    clean: dict = {}
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not key.strip():
+            raise JobTransitionError(f"{path}: metadata keys must be non-empty strings")
+        if isinstance(value, str):
+            _validate_text_for_secrets(value, f"{path}.{key}")
+            clean[key] = value.strip()
+        elif isinstance(value, (bool, int)) or value is None:
+            clean[key] = value
+        elif isinstance(value, list):
+            clean[key] = _validate_artifacts(value, field_path=f"{path}.{key}")
+        else:
+            raise JobTransitionError(f"{path}.{key}: unsupported metadata value type {type(value).__name__}")
+    return clean
+
+
+def _validate_artifacts(artifacts: object, *, field_path: str = "artifact_references") -> list[str]:
+    if artifacts is None:
+        return []
+    if not isinstance(artifacts, list):
+        raise JobTransitionError(f"{field_path}: expected a list of artifact references")
+    clean: list[str] = []
+    for index, value in enumerate(artifacts):
+        path = f"{field_path}[{index}]"
+        if not isinstance(value, str) or not value.strip():
+            raise JobTransitionError(f"{path}: expected a non-empty string artifact reference")
+        ref = value.strip()
+        _validate_text_for_secrets(ref, path)
+        if ".." in Path(ref).parts:
+            raise JobTransitionError(f"{path}: path traversal is not allowed in artifact references")
+        clean.append(ref)
+    return clean
+
+
+def _load_job_and_events(job_id: str, jobs_dir: Path) -> tuple[Path, Path, dict, list[dict]]:
+    record_path, events_path = _job_files(job_id, jobs_dir)
+    if not record_path.exists():
+        raise JobNotFoundError(f"job '{job_id}' not found in '{jobs_dir}'")
+    job = _normalized_job(json.loads(record_path.read_text(encoding="utf-8")))
+    events = _read_events(job_id, jobs_dir)
+    _ensure_state_consistency(job, events)
+    return record_path, events_path, job, events
+
+
+def _load_stored_intake(job: dict) -> dict:
+    intake_path = job.get("intake_manifest_path")
+    if not isinstance(intake_path, str) or not intake_path.strip():
+        raise JobTransitionError(
+            f"job '{job.get('job_id', '')}' has no intake_manifest_path; cannot revalidate source/rights"
+        )
+    path = Path(intake_path)
+    if not path.is_file():
+        raise JobTransitionError(
+            f"job '{job.get('job_id', '')}' intake manifest not found: {path}"
+        )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise JobTransitionError(f"job '{job.get('job_id', '')}' intake manifest root must be an object")
+    return data
+
+
+def _require_intake_readiness(job: dict, target: str, *, intake_root: str | None = None) -> dict:
+    intake = _load_stored_intake(job)
+    check_source = target in {"READY", "RUNNING"}
+    report = validate_intake(intake, intake_root=intake_root, check_source=check_source, check_rights=True)
+    rights_ok = report["rights_cleared"]
+    source_ok = report["source_ready"] if check_source else True
+    if not rights_ok or not source_ok or not report["structurally_valid"] or not report["config_references_valid"]:
+        codes = ", ".join(report["validation_codes"])
+        raise JobTransitionError(
+            f"job '{job.get('job_id', '')}' cannot transition to '{target}': stored intake is not ready "
+            f"(rights_cleared={rights_ok}, source_ready={source_ok}); validation codes: {codes}"
+        )
+    review = intake.get("review_and_delivery") if isinstance(intake.get("review_and_delivery"), dict) else {}
+    if target in {"REVIEW_REQUIRED", "APPROVED", "DELIVERY_READY", "DELIVERED"}:
+        if review.get("human_review_required") is not True:
+            raise JobTransitionError(
+                f"job '{job.get('job_id', '')}' cannot transition to '{target}': "
+                "review_and_delivery.human_review_required must be true"
+            )
+    return report
+
+
+def _validate_transition_requirements(job: dict, current: str, target: str, metadata: dict,
+                                      artifacts: list[str], *, intake_root: str | None) -> tuple[dict | None, list[str]]:
+    job_id = job.get("job_id", "")
+    if target == "RUNNING":
+        _require_non_empty(metadata, "operator", job_id, current, target)
+        if current == "FAILED":
+            _require_non_empty(metadata, "recovery_reason", job_id, current, target)
+            _require_bool(metadata, "recovery_confirmed", job_id, current, target)
+            if metadata.get("recovery_confirmed") is not True:
+                raise JobTransitionError(_transition_error(job_id, current, target, "recovery_confirmed must be true"))
+        return _require_intake_readiness(job, target, intake_root=intake_root), []
+
+    if target == "READY":
+        if current == "FAILED":
+            _require_non_empty(metadata, "operator", job_id, current, target)
+            _require_non_empty(metadata, "recovery_reason", job_id, current, target)
+            _require_bool(metadata, "recovery_confirmed", job_id, current, target)
+            if metadata.get("recovery_confirmed") is not True:
+                raise JobTransitionError(_transition_error(job_id, current, target, "recovery_confirmed must be true"))
+        return _require_intake_readiness(job, target, intake_root=intake_root), []
+
+    if target == "REVIEW_REQUIRED":
+        _require_non_empty(metadata, "operator", job_id, current, target)
+        _require_non_empty(metadata, "reason", job_id, current, target)
+        if not artifacts:
+            raise JobTransitionError(_transition_error(job_id, current, target, "missing required field 'artifact_references'"))
+        _require_intake_readiness(job, target, intake_root=intake_root)
+        return None, artifacts
+
+    if target == "APPROVED":
+        _require_non_empty(metadata, "operator", job_id, current, target)
+        statement = metadata.get("approval_statement") or metadata.get("reason")
+        if not isinstance(statement, str) or not statement.strip():
+            raise JobTransitionError(_transition_error(job_id, current, target, "missing required field 'approval_statement'"))
+        metadata["approval_statement"] = statement.strip()
+        metadata["approval_timestamp"] = _now_iso()
+        _require_positive_int(metadata, "deliverable_count", job_id, current, target)
+        _require_intake_readiness(job, target, intake_root=intake_root)
+        return None, artifacts
+
+    if target == "DELIVERY_READY":
+        _require_non_empty(metadata, "delivery_method", job_id, current, target)
+        _require_non_empty(metadata, "delivery_destination", job_id, current, target)
+        _require_positive_int(metadata, "deliverable_count", job_id, current, target)
+        if not artifacts:
+            artifacts = [metadata["delivery_destination"]]
+        return _require_intake_readiness(job, target, intake_root=intake_root), artifacts
+
+    if target == "DELIVERED":
+        _require_non_empty(metadata, "operator", job_id, current, target)
+        _require_non_empty(metadata, "confirmation", job_id, current, target)
+        _require_non_empty(metadata, "delivery_destination", job_id, current, target)
+        _require_positive_int(metadata, "delivered_item_count", job_id, current, target)
+        metadata["delivery_timestamp"] = _now_iso()
+        return _require_intake_readiness(job, target, intake_root=intake_root), artifacts
+
+    if target == "FAILED":
+        _require_non_empty(metadata, "reason", job_id, current, target)
+        category = _require_non_empty(metadata, "failure_category", job_id, current, target).upper()
+        if category not in FAILURE_CATEGORIES:
+            raise JobTransitionError(
+                _transition_error(job_id, current, target,
+                                  f"failure_category must be one of {', '.join(sorted(FAILURE_CATEGORIES))}")
+            )
+        metadata["failure_category"] = category
+        _require_bool(metadata, "retry_allowed", job_id, current, target)
+        if not metadata.get("operator") and not metadata.get("source"):
+            raise JobTransitionError(_transition_error(job_id, current, target, "missing required field 'operator' or 'source'"))
+        return None, artifacts
+
+    if target == "CANCELLED":
+        _require_non_empty(metadata, "reason", job_id, current, target)
+        _require_non_empty(metadata, "operator", job_id, current, target)
+        _require_bool(metadata, "client_requested", job_id, current, target)
+        return None, artifacts
+
+    if target in {"AWAITING_RIGHTS", "VALIDATION_FAILED"}:
+        _require_non_empty(metadata, "reason", job_id, current, target)
+        return None, artifacts
+
+    return None, artifacts
+
+
+def transition_job(job_id: str, target_state: str, *, metadata: dict | None = None,
+                   artifact_references: list[str] | None = None,
+                   expected_revision: int | None = None,
+                   jobs_dir: str | Path | None = None,
+                   intake_root: str | None = None,
+                   source: str = "pilot_job.transition") -> dict:
+    """Validate and record a manual job-state transition.
+
+    The function never runs the clipping pipeline, copies files, deletes files,
+    publishes, or makes network requests. Failed transitions append no events.
+    """
+    if target_state not in JOB_STATES:
+        raise JobTransitionError(f"requested state '{target_state}' is not recognized; known states: {', '.join(sorted(JOB_STATES))}")
+
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    record_path, events_path, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    current = job.get("current_state", "")
+    if current not in JOB_STATES:
+        raise JobTransitionError(f"job '{job_id}' current state '{current}' is not recognized")
+
+    revision = _normalized_revision(job)
+    if expected_revision is not None and expected_revision != revision:
+        raise JobRevisionError(
+            f"job '{job_id}' stale revision: expected {expected_revision}, current revision {revision}; "
+            f"no transition from '{current}' to '{target_state}' was recorded"
+        )
+
+    allowed = ALLOWED_TRANSITIONS.get(current, frozenset())
+    if target_state not in allowed:
+        raise JobTransitionError(_transition_error(job_id, current, target_state, "transition is not allowed"))
+
+    metadata_clean = _validate_metadata(dict(metadata or {}))
+    artifacts_clean = _validate_artifacts(artifact_references or [])
+    report, artifacts_clean = _validate_transition_requirements(
+        job, current, target_state, metadata_clean, artifacts_clean, intake_root=intake_root
+    )
+
+    sequence = _next_event_sequence(events)
+    operator = metadata_clean.get("operator") if isinstance(metadata_clean.get("operator"), str) else None
+    reason = metadata_clean.get("reason") or metadata_clean.get("approval_statement") or metadata_clean.get("confirmation")
+    if not isinstance(reason, str) or not reason.strip():
+        reason = f"Manual transition {current} -> {target_state}"
+
+    event = {
+        "event_schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": _event_id(job_id, sequence, "TRANSITION"),
+        "job_id": job_id,
+        "sequence": sequence,
+        "timestamp": _now_iso(),
+        "event_type": "TRANSITION",
+        "previous_state": current,
+        "new_state": target_state,
+        "operator": operator,
+        "message": reason.strip(),
+        "metadata": metadata_clean,
+        "source": source,
+        "related_codes": report["validation_codes"] if report else [],
+        "artifact_references": artifacts_clean,
+    }
+    new_events = [*events, event]
+
+    now = _now_iso()
+    new_revision = revision + 1
+    updated_job = dict(job)
+    updated_job.update({
+        "schema_version": JOB_SCHEMA_VERSION,
+        "current_state": target_state,
+        "updated_at": now,
+        "revision": new_revision,
+        "event_count": len(new_events),
+    })
+    if report:
+        previous_summary = job.get("readiness_summary", {}) if isinstance(job.get("readiness_summary"), dict) else {}
+        source_ready = report["source_ready"] if target_state in {"READY", "RUNNING"} else previous_summary.get("source_ready", report["source_ready"])
+        updated_job["readiness_summary"] = {
+            "structurally_valid": report["structurally_valid"],
+            "source_ready": source_ready,
+            "rights_cleared": report["rights_cleared"],
+            "execution_ready": bool(report["structurally_valid"] and report["config_references_valid"] and report["rights_cleared"] and source_ready),
+        }
+    updated_job["latest_event"] = {
+        "event_id": event["event_id"],
+        "timestamp": event["timestamp"],
+        "event_type": event["event_type"],
+        "previous_state": current,
+        "new_state": target_state,
+        "message": event["message"],
+    }
+
+    # Write both files only after every validation has passed. The event is
+    # prepared before the state update and written with the updated job record.
+    _atomic_write_json(events_path, new_events)
+    _atomic_write_json(record_path, updated_job)
+    return updated_job
+
+
+def read_history(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
+    """Return privacy-safe event history for a job."""
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    _ensure_state_consistency(job, events)
+    history: list[dict] = []
+    for index, event in enumerate(events, start=1):
+        history.append({
+            "sequence": event.get("sequence", index),
+            "event_id": event.get("event_id", ""),
+            "timestamp": event.get("timestamp", ""),
+            "event_type": event.get("event_type", ""),
+            "previous_state": event.get("previous_state"),
+            "new_state": event.get("new_state"),
+            "operator": event.get("operator"),
+            "message": event.get("message", ""),
+            "source": event.get("source", ""),
+        })
+    return history
 
 
 def list_jobs(jobs_dir: str | Path | None = None) -> list[dict]:
@@ -1007,16 +1446,14 @@ def list_jobs(jobs_dir: str | Path | None = None) -> list[dict]:
 def show_job(job_id: str, jobs_dir: str | Path | None = None) -> dict:
     """Read-only, privacy-safe job summary for ``show``. Never exposes the
     intake's personal or confirmation fields."""
-    job = read_job(job_id, jobs_dir=jobs_dir)
-    _, events_path = _job_files(job_id, Path(jobs_dir) if jobs_dir is not None else default_jobs_dir())
-    events: list[dict] = []
-    if events_path.exists():
-        raw = json.loads(events_path.read_text(encoding="utf-8"))
-        if isinstance(raw, list):
-            events = raw
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    _, _, job, events = _load_job_and_events(job_id, jobs_dir_path)
+    latest = events[-1] if events else {}
     return {
         "job_id": job.get("job_id", job_id),
         "current_state": job.get("current_state", ""),
+        "revision": _normalized_revision(job),
+        "allowed_next_states": allowed_next_states(job.get("current_state", "")),
         "pilot_id": job.get("pilot_id", ""),
         "source_id": job.get("source_id", ""),
         "project_id": job.get("project_id", ""),
@@ -1025,14 +1462,19 @@ def show_job(job_id: str, jobs_dir: str | Path | None = None) -> dict:
         "expected_output_root": job.get("expected_output_root", ""),
         "readiness_summary": job.get("readiness_summary", {}),
         "event_count": len(events),
+        "latest_event_summary": latest.get("message", "") if isinstance(latest, dict) else "",
         "events": [
             {
+                "sequence": event.get("sequence", index),
+                "event_id": event.get("event_id", ""),
                 "timestamp": event.get("timestamp", ""),
                 "event_type": event.get("event_type", ""),
                 "previous_state": event.get("previous_state"),
                 "new_state": event.get("new_state"),
+                "operator": event.get("operator"),
+                "message": event.get("message", ""),
                 "source": event.get("source", ""),
             }
-            for event in events
+            for index, event in enumerate(events, start=1)
         ],
     }

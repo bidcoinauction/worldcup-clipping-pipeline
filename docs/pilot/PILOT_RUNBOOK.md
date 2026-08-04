@@ -91,11 +91,17 @@ valid). If the state is `AWAITING_RIGHTS`, resolve rights first; if
 
 ### 8. Run the existing pipeline manually
 
-Use the existing World Cup workflows against the cleared source file. For a
-manifest-driven match this is `process_from_manifest.py`; for a single file it
-is `process_match.py` / `process_scheduled_match.py`. The job CLI does **not**
-run the pipeline. Record pipeline execution in the job event log as a manual
-step (operator note).
+Record the manual run start, then use the existing World Cup workflows against
+the cleared source file. For a manifest-driven match this is
+`process_from_manifest.py`; for a single file it is `process_match.py` /
+`process_scheduled_match.py`. The job CLI does **not** run the pipeline.
+
+```bash
+python3 scripts/pilot_job.py transition JOB_ID RUNNING \
+  --operator YOUR_NAME \
+  --reason "Started manual clipping run" \
+  --expected-revision REVISION_FROM_SHOW
+```
 
 ### 9. Review outputs
 
@@ -103,16 +109,38 @@ Review every generated clip, caption, and thumbnail before any client sees it.
 Use the existing static review dashboard or direct file review. The intake
 requires `human_review_required`; do not skip it.
 
+```bash
+python3 scripts/pilot_job.py transition JOB_ID REVIEW_REQUIRED \
+  --operator YOUR_NAME \
+  --reason "Exports ready for review" \
+  --artifact outputs/review/JOB_ID
+```
+
 ### 10. Record approval
 
-Only after the client (or an internal approver) approves, update the job
-record. Approval is a manual operator action.
+Only after the client (or an internal approver) approves, record approval.
+Approval is a manual human action; the CLI only records it.
+
+```bash
+python3 scripts/pilot_job.py transition JOB_ID APPROVED \
+  --operator REVIEWER_NAME \
+  --approval-statement "Approved for delivery" \
+  --deliverable-count 8
+```
 
 ### 11. Prepare delivery
 
 Stage the approved deliverables and verify them against
 `DELIVERY_CHECKLIST.md`. Confirm the export profile, naming, and expected clip
 count.
+
+```bash
+python3 scripts/pilot_job.py transition JOB_ID DELIVERY_READY \
+  --delivery-method shared_folder \
+  --delivery-destination FootballArchive/EXPORTS/JOB_ID \
+  --deliverable-count 8 \
+  --artifact docs/pilot/DELIVERY_CHECKLIST.md
+```
 
 ### 12. Deliver through the agreed folder
 
@@ -125,6 +153,14 @@ Copy approved deliverables into the agreed shared folder or local directory
 Update the job record with the delivery event (approximate or exact delivery
 time and destination). This is a manual operator action.
 
+```bash
+python3 scripts/pilot_job.py transition JOB_ID DELIVERED \
+  --operator YOUR_NAME \
+  --confirmation "Delivered through agreed shared folder" \
+  --delivery-destination FootballArchive/EXPORTS/JOB_ID \
+  --delivered-item-count 8
+```
+
 ### 14. Archive operational records
 
 Keep the intake manifest and job record on disk under `data/pilot/` (gitignored).
@@ -132,10 +168,12 @@ These are the provenance record: intake -> rights -> validation -> job -> output
 
 ### 15. Handle failure or cancellation
 
-- **Validation failure** — fix the intake, re-validate, and re-create.
+- **Failure** — record `FAILED` with a failure category and retry decision.
+- **Recovery** — from `FAILED`, transition to `READY` or `RUNNING` with a
+  recovery reason and `--recovery-confirmed`.
 - **Rights revoked or expired** — stop processing immediately; do not deliver
-  anything new; update the job record.
-- **Cancelled** — record the cancellation; remove or quarantine the outputs.
+  anything new; record `FAILED` or `CANCELLED` as appropriate.
+- **Cancelled** — record `CANCELLED`; this does not delete source or outputs.
 
 ## Job Record and Event Log
 
@@ -144,8 +182,8 @@ Each job produces two files under `data/pilot/jobs/`:
 - `<job_id>.json` — current job state, identifiers, readiness summary,
   timestamps, expected output root, intake path.
 - `<job_id>.events.json` — append-only event history (every state decision:
-  timestamp, event type, previous/new state, message, validation codes,
-  operator, source).
+  schema version, event ID, sequence, timestamp, event type, previous/new state,
+  message, metadata, validation codes, operator, source, artifact references).
 
 Writes are atomic (temp file + rename) and stay inside the configured
 job-record root. `data/pilot/` is ignored by Git.
@@ -157,7 +195,19 @@ job-record root. `data/pilot/` is ignored by Git.
 `FAILED`, `CANCELLED`.
 
 This slice implements creation into `READY`, `AWAITING_RIGHTS`, and
-`VALIDATION_FAILED`; later transitions remain manual operator steps.
+`VALIDATION_FAILED`, plus explicit manual transitions through running, review,
+approval, delivery, failure, recovery, and cancellation. `show` displays the
+current revision and allowed next states. `history` displays the append-only
+event sequence.
+
+```bash
+python3 scripts/pilot_job.py show JOB_ID
+python3 scripts/pilot_job.py history JOB_ID
+```
+
+Every successful transition increments the integer job revision. Use
+`--expected-revision` to prevent accidental overwrites when two operators are
+working from the same job record.
 
 ## What Is NOT Automated
 

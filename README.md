@@ -178,6 +178,8 @@ Only `CONFIRMED` (unexpired) rights pass the execution-readiness gate.
 `RESTRICTED` validate structurally but require an explicit supported-use check.
 The gate never infers permission from public availability, stream access, file
 possession, or prior clipping. See `docs/pilot/RIGHTS_CONFIRMATION.md`.
+Transitions into `READY`, `RUNNING`, `DELIVERY_READY`, and `DELIVERED` re-read
+the stored intake and revalidate current rights status and expiration.
 
 ### Source validation
 
@@ -198,25 +200,34 @@ Duplicate job identifiers are refused. Writes are atomic and never leave the
 configured job root. The record stores identifiers and readiness only — never
 intake confirmation or personal data.
 
+Manual transitions are explicit and revision-guarded. New jobs start at
+revision `0`; each successful transition increments the revision and appends
+one event. Existing jobs without a revision remain readable and gain a revision
+on their next successful transition. See `docs/pilot/JOB_TRANSITIONS.md`.
+
 ### CLI
 
 ```bash
 python3 scripts/pilot_job.py validate path/to/intake.json
 python3 scripts/pilot_job.py create   path/to/intake.json --operator YOUR_NAME
 python3 scripts/pilot_job.py show     JOB_ID
+python3 scripts/pilot_job.py transition JOB_ID RUNNING --operator YOUR_NAME
+python3 scripts/pilot_job.py history  JOB_ID
 python3 scripts/pilot_job.py list
 ```
 
 `validate` makes no file changes and exits zero only when structurally valid.
 Expected operational errors print concise messages to stderr without
 tracebacks. The CLI never processes media, calls models, or touches the
-network.
+network. `transition` records manual operations only: `RUNNING` does not run
+the pipeline, and `DELIVERED` does not upload or send files.
 
 ### Relationship to existing manifests
 
 ```text
 Pilot intake -> rights gate -> source validation -> job record (READY)
-    -> existing World Cup pipeline (run manually) -> review -> approval -> delivery
+    -> RUNNING (manual pipeline started) -> REVIEW_REQUIRED -> APPROVED
+    -> DELIVERY_READY -> DELIVERED
 ```
 
 The existing match manifest (`data/manifests/*.json`), schedule CSV, and clip
@@ -234,7 +245,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 723 passed, 1 skipped, 1 warning.
+- `pytest`: 746 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 

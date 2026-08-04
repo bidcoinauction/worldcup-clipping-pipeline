@@ -5,6 +5,7 @@ Confirm every item before delivering pilot outputs.
 ## Job and source
 
 - [ ] Correct job (`show JOB_ID`) — matches the intended pilot and source.
+- [ ] Current job revision noted before delivery transition.
 - [ ] Correct original source file confirmed (no mixed-up sessions).
 - [ ] Correct brand profile referenced.
 
@@ -20,6 +21,7 @@ Confirm every item before delivering pilot outputs.
 - [ ] Rights are still valid (`CONFIRMED`, not expired, not revoked).
 - [ ] Human review completed on every deliverable.
 - [ ] Approval recorded.
+- [ ] `APPROVED -> DELIVERY_READY` transition recorded before handoff.
 - [ ] Publishing not performed unless explicitly permitted.
 
 ## Destination and privacy
@@ -27,6 +29,8 @@ Confirm every item before delivering pilot outputs.
 - [ ] Shared-folder / local-directory destination verified.
 - [ ] No accidental source-media exposure (only approved deliverables leave).
 - [ ] Delivery recorded in the job event log.
+- [ ] `DELIVERED` transition recorded only after manual handoff is complete.
+- [ ] `history JOB_ID` shows the expected append-only sequence.
 
 ## Post-delivery
 

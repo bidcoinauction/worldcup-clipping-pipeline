@@ -1,27 +1,31 @@
-# Phase 2 — Managed Pilot Operations: Intake + Job Records (Status)
+# Phase 2 — Managed Pilot Operations: Intake, Job Records, and Manual Transitions (Status)
 
 ## Objective
 
-Implement the smallest operational slice for one managed local-file sports
+Implement the smallest operational slices for one managed local-file sports
 pilot: a validated pilot intake manifest, an explicit rights gate, read-only
-source validation, and a durable local job record.
+source validation, a durable local job record, and explicit manual job-state
+transitions.
 
 ## Built
 
 - `pipeline/pilot.py` — intake validation (structural / configuration /
   rights / source), the rights gate, read-only source validation, and the job
   record API (atomic writes, append-only event log).
-- `scripts/pilot_job.py` — operator CLI: `validate`, `create`, `show`, `list`.
+- `scripts/pilot_job.py` — operator CLI: `validate`, `create`, `show`, `list`,
+  `transition`, `history`.
 - `docs/pilot/` — runbook and intake templates.
+- `docs/pilot/JOB_TRANSITIONS.md` — state graph, required metadata, revision
+  behavior, rights revalidation, and manual/automated boundaries.
 - `docs/pilot/examples/` — a tracked non-production World Cup example plus
   invalid fixtures (unconfirmed rights, missing source, bad reference).
 
 ## Boundaries
 
 No database, queue, auth, users, billing, publishing, dashboard, media
-processing, model calls, or network access. Existing World Cup manifests,
-schedule, and clip manifests are unchanged; the pilot intake is an operational
-wrapper, not a replacement.
+processing, model calls, network access, copying, uploading, or deletion.
+Existing World Cup manifests, schedule, and clip manifests are unchanged; the
+pilot intake/job record is an operational wrapper, not a replacement.
 
 ## Manifest / Job Relationship
 
@@ -35,26 +39,32 @@ wrapper, not a replacement.
 
 ```text
 Client intake -> rights gate -> source validation -> job record (READY) ->
-  existing pipeline (manual) -> review -> approval -> delivery
+  RUNNING (manual pipeline started) -> REVIEW_REQUIRED -> APPROVED ->
+  DELIVERY_READY -> DELIVERED
 ```
+
+Failures and cancellations are recorded through explicit `FAILED` and
+`CANCELLED` transitions. Recovery from `FAILED` requires an operator,
+recovery reason, and confirmation that the blocking issue was addressed.
 
 ## Verification
 
 - `python3 scripts/validate_data.py` passes.
-- `pytest` 660 baseline preserved (plus new tests added).
+- `pytest` baseline preserved (plus transition/revision/history tests added).
 - `python3 scripts/validate_config.py config/pipeline_config.json`,
   `config/examples/basketball.json`, `config/brands/world_cup.json`,
   `config/export/world_cup.json` all pass.
 - `git diff --check` clean.
 - Manual demonstrations confirm execution-ready, awaiting-rights,
-  missing-source, durable READY job creation, deterministic duplicates, and
-  no network / FFmpeg / media mutation.
+  missing-source, durable READY job creation, deterministic duplicates,
+  complete manual transitions, stale revision rejection, rights revalidation,
+  failure recovery, cancellation safety, append-only history, and no network /
+  FFmpeg / media mutation.
 
 ## Remaining pilot-operation gaps
 
-- Job-state transitions beyond creation (`RUNNING`, `REVIEW_REQUIRED`,
-  `APPROVED`, `DELIVERY_READY`, `DELIVERED`, `FAILED`, `CANCELLED`) are
-  documented but not implemented as commands.
+- The transition CLI records operator state only; it still does not execute,
+  inspect, copy, deliver, upload, publish, or delete media/output files.
 - No supported-use check is automated for `RESTRICTED` rights (documented as a
   manual step).
 - Delivery/billing/reporting remain out of scope.

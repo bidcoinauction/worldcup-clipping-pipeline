@@ -187,9 +187,11 @@ managed local-file sports pilot. It is additive: every World Cup manifest,
 schedule, clip manifest, and command keeps working independently.
 
 - `pipeline/pilot.py` — validated pilot intake (structural / configuration /
-  rights / source), the rights gate, read-only source validation, and the job
-  record API (atomic writes, append-only event log).
-- `scripts/pilot_job.py` — operator CLI (`validate`, `create`, `show`, `list`).
+  rights / source), the rights gate, read-only source validation, the job
+  record API (atomic writes, append-only event log), and explicit manual
+  state transitions with revision checks.
+- `scripts/pilot_job.py` — operator CLI (`validate`, `create`, `show`, `list`,
+  `transition`, `history`).
 - `docs/pilot/` — runbook and intake templates; tracked examples under
   `docs/pilot/examples/` (non-production, fictitious data).
 - Runtime intake/job files live under `data/pilot/` and are gitignored.
@@ -201,6 +203,8 @@ Boundaries preserved:
 - Source validation is read-only; network URLs are rejected; no media is
   modified, moved, copied, or transcoded; no network requests occur.
 - The CLI never runs the pipeline, invokes models, or processes media.
+- Manual transitions record operator state only: `RUNNING` does not run media
+  processing, and `DELIVERED` does not upload or send files.
 - Job records contain identifiers and readiness only — never intake
   confirmation or personal data.
 - No database, queue, auth, users, billing, publishing, or dashboards are
