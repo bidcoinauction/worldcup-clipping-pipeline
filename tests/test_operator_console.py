@@ -24,7 +24,7 @@ from pipeline.operator_console import (
     transition_project,
     validate_project_intake,
 )
-from pipeline.console_server import ConsoleHandler, _validation_issues_html
+from pipeline.console_server import ConsoleHandler, _html_response, _validation_issues_html
 from tests.test_pilot_intake import build_intake
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "console.py"
@@ -272,6 +272,30 @@ class _FakeHandler:
 
     def _api_transition_project(self, job_id: str):
         return ConsoleHandler._api_transition_project(self, job_id)
+
+
+class _OneShotConsoleHandler(ConsoleHandler):
+    def do_GET(self):
+        return _html_response(self, "<h1>ok</h1>")
+
+
+class _FailingWrite(BytesIO):
+    def __init__(self, exc: BaseException):
+        super().__init__()
+        self._exc = exc
+
+    def write(self, _data):
+        raise self._exc
+
+
+def _request_handler(wfile: BytesIO) -> _OneShotConsoleHandler:
+    handler = _OneShotConsoleHandler.__new__(_OneShotConsoleHandler)
+    handler.rfile = BytesIO(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    handler.wfile = wfile
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.server = object()
+    handler.close_connection = True
+    return handler
 
 
 def _console_new_project_body(source: Path, *, operator_notes: str | None = None) -> bytes:
@@ -626,3 +650,32 @@ def test_console_server_starts_and_stops():
     body = resp.read().decode()
     assert "Stadium Signal" in body
     conn.close()
+
+
+@pytest.mark.parametrize("exc", [BrokenPipeError(), ConnectionAbortedError(), ConnectionResetError()])
+def test_console_client_disconnect_during_response_write_is_safe(exc):
+    handler = _request_handler(_FailingWrite(exc))
+
+    _OneShotConsoleHandler.handle_one_request(handler)
+
+    assert handler.close_connection is True
+
+
+def test_console_serves_subsequent_request_after_client_disconnect():
+    disconnected = _request_handler(_FailingWrite(ConnectionAbortedError()))
+    _OneShotConsoleHandler.handle_one_request(disconnected)
+
+    body = BytesIO()
+    follow_up = _request_handler(body)
+    _OneShotConsoleHandler.handle_one_request(follow_up)
+
+    response = body.getvalue().decode("iso-8859-1")
+    assert "200 OK" in response
+    assert "<h1>ok</h1>" in response
+
+
+def test_console_unexpected_write_error_is_not_swallowed():
+    handler = _request_handler(_FailingWrite(OSError("unexpected write failure")))
+
+    with pytest.raises(OSError, match="unexpected write failure"):
+        _OneShotConsoleHandler.handle_one_request(handler)

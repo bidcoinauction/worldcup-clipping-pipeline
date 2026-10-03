@@ -52,6 +52,8 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent / "console_templates"
 _STATIC_DIR = Path(__file__).resolve().parent / "console_static"
 _DEFAULT_PORT = 8420
 
+_CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)
+
 _STAGE_LABELS = {
     "PREPARING_SOURCE": "Preparing Source",
     "TRANSCRIBING": "Transcribing",
@@ -143,6 +145,13 @@ def _validation_issues_html(readiness: dict) -> str:
 
 class ConsoleHandler(BaseHTTPRequestHandler):
     """Request handler for the Operator Console."""
+
+    def handle_one_request(self):
+        try:
+            return super().handle_one_request()
+        except _CLIENT_DISCONNECT_ERRORS:
+            self.close_connection = True
+            return None
 
     def log_message(self, fmt, *args):  # noqa: ANN001
         pass  # suppress noisy request logging
