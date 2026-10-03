@@ -79,7 +79,7 @@ def test_basketball_example_template_resolves():
     assert resolved == BASKETBALL_TEMPLATE
     assert resolved.exists()
     text = resolved.read_text(encoding="utf-8")
-    assert "NON-PRODUCTION" in text.upper() or "example" in text.lower()
+    assert "basketball" in text.lower()
 
 
 def test_render_is_byte_for_byte_equivalent_to_previous_template():
@@ -139,7 +139,7 @@ def test_render_missing_required_variable_raises():
 
 def test_render_unknown_profile_raises():
     with pytest.raises(ConfigurationError, match="unknown profile"):
-        render_template("prompt", profile="basketball")
+        render_template("prompt", profile="lacrosse")
 
 
 def test_resolve_profile_template_path_missing_file_raises(tmp_path):

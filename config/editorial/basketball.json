@@ -1,0 +1,32 @@
+{
+  "_note": "Basketball editorial taxonomy for the explicitly registered basketball profile. This enables profile-driven pilot readiness and execution-plan provenance only; basketball-specific event detection is not implemented in this slice.",
+  "emotional_kinds": [
+    "BUZZER_BEATER",
+    "COLLAPSE",
+    "COMEBACK",
+    "STAR_POWER",
+    "MOMENTUM"
+  ],
+  "narrative_functions": [
+    "establishment",
+    "elevation",
+    "rupture",
+    "resolve",
+    "aftermath"
+  ],
+  "story_targets": {
+    "arc_roles": [
+      "setup",
+      "pressure",
+      "rupture",
+      "aftermath"
+    ],
+    "narrative_roles": [
+      "setup",
+      "tension_builder",
+      "climax",
+      "reaction",
+      "aftermath"
+    ]
+  }
+}

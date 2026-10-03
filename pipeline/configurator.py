@@ -32,6 +32,7 @@ _EDITORIAL_DIR = _CONFIG_DIR / "editorial"
 _BRAND_DIR = _CONFIG_DIR / "brands"
 _EXPORT_DIR = _CONFIG_DIR / "export"
 _EXPORT_FILE = _EXPORT_DIR / "world_cup.json"
+_BASKETBALL_PROFILE_FILE = _CONFIG_DIR / "examples" / "basketball.json"
 _DEFAULT_POSITIONING = "America Discovers Football"
 
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -286,7 +287,108 @@ def _football_profile() -> dict:
     }
 
 
-_PROFILES = {"football": _football_profile}
+def _basketball_profile() -> dict:
+    data = load_structured_profile(_BASKETBALL_PROFILE_FILE)
+    return dict(data)
+
+
+def _basketball_sandbox_profile() -> dict:
+    data = _basketball_profile()
+    data["name"] = "basketball_sandbox"
+    data["project"] = dict(data.get("project", {}), name="Basketball Sandbox")
+    return data
+
+
+_PROFILES = {
+    "football": _football_profile,
+    "basketball": _basketball_profile,
+    "basketball_sandbox": _basketball_sandbox_profile,
+}
+
+
+_PROJECT_PROFILE_REGISTRY = {
+    "football": {
+        "profile_id": "football",
+        "sport": "football",
+        "production_capable": True,
+        "analysis_supported": True,
+        "default": True,
+        "profile_file": "config/pipeline_config.json",
+        "configuration_references": [
+            "config/pipeline_config.json",
+            "config/brands/world_cup.json",
+            "config/editorial/world_cup.json",
+            "config/export/world_cup.json",
+        ],
+        "brand": "world_cup",
+        "editorial_taxonomy": "world_cup",
+        "export_profiles": ["vertical_clean", "source"],
+        "export_config": "config/export/world_cup.json",
+        "league": "WORLD_CUP",
+    },
+    "basketball": {
+        "profile_id": "basketball",
+        "sport": "basketball",
+        "production_capable": True,
+        "analysis_supported": False,
+        "default": False,
+        "profile_file": "config/examples/basketball.json",
+        "configuration_references": [
+            "config/examples/basketball.json",
+            "config/brands/basketball_example.json",
+            "config/editorial/basketball.json",
+        ],
+        "brand": "basketball_example",
+        "editorial_taxonomy": "basketball",
+        "export_profiles": ["vertical_clean", "source"],
+        "export_config": None,
+        "league": "BASKETBALL",
+    },
+    "basketball_sandbox": {
+        "profile_id": "basketball_sandbox",
+        "sport": "basketball",
+        "production_capable": False,
+        "analysis_supported": False,
+        "default": False,
+        "profile_file": "config/examples/basketball.json",
+        "configuration_references": [
+            "config/examples/basketball.json",
+            "config/brands/basketball_example.json",
+            "config/editorial/basketball.json",
+        ],
+        "brand": "basketball_example",
+        "editorial_taxonomy": "basketball",
+        "export_profiles": ["vertical_clean", "source"],
+        "export_config": None,
+        "league": "BASKETBALL",
+    },
+}
+
+
+def default_project_profile() -> str:
+    """Return the single default registered project/profile identifier."""
+    defaults = [profile_id for profile_id, profile in _PROJECT_PROFILE_REGISTRY.items() if profile.get("default")]
+    if len(defaults) != 1:
+        raise ConfigurationError("project profile registry must contain exactly one default profile")
+    return defaults[0]
+
+
+def registered_project_profiles() -> dict:
+    """Return a copy of the explicit sport/project profile registry."""
+    return {key: dict(value) for key, value in _PROJECT_PROFILE_REGISTRY.items()}
+
+
+def resolve_project_profile(profile: str = "football") -> dict:
+    """Resolve a registered sport/project profile.
+
+    This is intentionally a small registry, not a plugin framework. Unknown
+    profiles fail closed with :class:`ConfigurationError`.
+    """
+    if profile not in _PROJECT_PROFILE_REGISTRY:
+        raise ConfigurationError(
+            f"project profile lookup for unknown profile '{profile}'; known profiles: {', '.join(sorted(_PROJECT_PROFILE_REGISTRY))}"
+        )
+    return dict(_PROJECT_PROFILE_REGISTRY[profile])
 
 
 def get_taxonomy(profile: str = "football") -> dict:
@@ -618,6 +720,15 @@ _TEMPLATE_VARIABLES: dict[str, dict[str, frozenset[str]]] = {
             "story_targets_block",
             "research_block",
             "brief_block",
+            "match_name",
+            "duration_seconds",
+            "timestamped_transcript",
+        }),
+    },
+    "basketball": {
+        "prompt": frozenset({
+            "account_positioning",
+            "categories",
             "match_name",
             "duration_seconds",
             "timestamped_transcript",

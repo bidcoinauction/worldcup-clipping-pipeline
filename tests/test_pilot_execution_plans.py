@@ -67,6 +67,20 @@ def _generate(job: dict, jobs_root: Path, *, plan_id: str = "plan_001", workflow
                                    jobs_dir=jobs_root)
 
 
+def _basketball_overrides() -> dict:
+    return {
+        "pilot": {"project": "basketball", "reference_deployment": "basketball"},
+        "configuration": {
+            "project": "basketball",
+            "brand": "basketball_example",
+            "editorial_taxonomy": "basketball",
+            "operational_taxonomy": "basketball",
+            "detection_template": "prompt",
+            "export_profiles": ["vertical_clean", "source"],
+        },
+    }
+
+
 def _run_cli(args: list[str], jobs_root: Path) -> subprocess.CompletedProcess:
     env = {**os.environ, "STADIUM_PILOT_JOBS_DIR": str(jobs_root)}
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=env)
@@ -149,7 +163,7 @@ def test_rights_source_and_configuration_block_generation(media_file: Path, tmp_
     assert code in _codes(exc.value)
 
 
-def test_non_ready_unsupported_workflow_basketball_stale_and_duplicate_blocked(media_file: Path, tmp_path: Path, jobs_root: Path):
+def test_non_ready_unsupported_workflow_unknown_project_stale_and_duplicate_blocked(media_file: Path, tmp_path: Path, jobs_root: Path):
     bad_job, _path, _intake = _ready_job(tmp_path, media_file, jobs_root, pilot_id="bad_state")
     bad_record = jobs_root / f"{bad_job['job_id']}.json"
     data = json.loads(bad_record.read_text(encoding="utf-8"))
@@ -174,12 +188,55 @@ def test_non_ready_unsupported_workflow_basketball_stale_and_duplicate_blocked(m
         generate_execution_plan(job["job_id"], plan_id="dupe", operator="tyler", expected_job_revision=1, jobs_dir=jobs_root)
     assert "duplicate_plan_id" in _codes(duplicate_exc.value)
 
-    basketball = build_intake(str(media_file), overrides={"pilot": {"pilot_id": "basketball"}, "configuration": {"project": "basketball"}})
-    basketball_path = _write_intake(tmp_path, basketball)
-    basketball_job = create_job(basketball, intake_path=basketball_path, jobs_dir=jobs_root)
-    with pytest.raises(ExecutionPlanError) as basketball_exc:
-        generate_execution_plan(basketball_job["job_id"], plan_id="basket", operator="tyler", expected_job_revision=0, jobs_dir=jobs_root)
-    assert "unsupported_project" in _codes(basketball_exc.value)
+    unknown = build_intake(str(media_file), overrides={"pilot": {"pilot_id": "cricket"}, "configuration": {"project": "cricket"}})
+    unknown_path = _write_intake(tmp_path, unknown)
+    unknown_job = create_job(unknown, intake_path=unknown_path, jobs_dir=jobs_root)
+    with pytest.raises(ExecutionPlanError) as unknown_exc:
+        generate_execution_plan(unknown_job["job_id"], plan_id="cricket", operator="tyler", expected_job_revision=0, jobs_dir=jobs_root)
+    assert "unsupported_project" in _codes(unknown_exc.value)
+
+
+def test_explicit_basketball_plan_uses_registered_profile_provenance(media_file: Path, tmp_path: Path, jobs_root: Path):
+    job, _path, _intake = _ready_job(tmp_path, media_file, jobs_root, pilot_id="basketball", overrides=_basketball_overrides())
+    result = _generate(job, jobs_root, plan_id="basketball_plan")
+    plan = result["plan"]
+    assert plan["project_id"] == "basketball"
+    assert plan["provenance"]["project_profile"] == {
+        "profile_id": "basketball",
+        "sport": "basketball",
+        "production_capable": True,
+        "default": False,
+    }
+    assert plan["provenance"]["project_configuration"]["path"].endswith("config/examples/basketball.json")
+    assert plan["provenance"]["brand_profile"]["path"].endswith("config/brands/basketball_example.json")
+    assert plan["provenance"]["editorial_taxonomy"]["path"].endswith("config/editorial/basketball.json")
+    assert plan["provenance"]["export_profiles"]["profile_ids"] == ["vertical_clean", "source"]
+    assert plan["provenance"]["export_profiles"]["config"] is None
+    assert "--league" in plan["stages"][0]["arguments"]
+    assert "BASKETBALL" in plan["stages"][0]["arguments"]
+    prompt_stage = next(stage for stage in plan["stages"] if stage["stage_id"] == "PROMPT_GENERATION")
+    assert "--profile" in prompt_stage["arguments"]
+    assert "basketball" in prompt_stage["arguments"]
+    clip_stage = next(stage for stage in plan["stages"] if stage["stage_id"] == "CLIP_MANIFEST")
+    assert "--profile" in clip_stage["arguments"]
+    assert "basketball" in clip_stage["arguments"]
+    stage_refs = {ref for stage in plan["stages"] for ref in stage["configuration_references"]}
+    assert "config/examples/basketball.json" in stage_refs
+    assert "config/brands/basketball_example.json" in stage_refs
+    assert "config/editorial/basketball.json" in stage_refs
+    assert "config/brands/world_cup.json" not in stage_refs
+    assert "config/editorial/world_cup.json" not in stage_refs
+    assert validate_execution_plan(plan, job=result["job"], jobs_dir=jobs_root)["valid"]
+
+
+def test_registered_non_production_project_plan_is_rejected(media_file: Path, tmp_path: Path, jobs_root: Path):
+    overrides = _basketball_overrides()
+    overrides["pilot"] = {"pilot_id": "basketball_sandbox", "project": "basketball_sandbox", "reference_deployment": "basketball_sandbox"}
+    overrides["configuration"] = dict(overrides["configuration"], project="basketball_sandbox")
+    job, _path, _intake = _ready_job(tmp_path, media_file, jobs_root, pilot_id="basketball_sandbox", overrides=overrides)
+    with pytest.raises(ExecutionPlanError) as exc:
+        generate_execution_plan(job["job_id"], plan_id="sandbox", operator="tyler", expected_job_revision=0, jobs_dir=jobs_root)
+    assert "non_production_project" in _codes(exc.value)
 
 
 def test_validation_rejects_unsafe_shell_secret_and_path_values(media_file: Path, tmp_path: Path, jobs_root: Path):

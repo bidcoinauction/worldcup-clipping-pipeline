@@ -23,6 +23,9 @@ data/pilot/
 *.mp4
 *.mov
 *.m4a
+# Live Ace Stream / FFmpeg captures are MPEG-TS (record_live.py writes
+# <match_id>_live.ts). Never commit source recordings.
+*.ts
 
 # Generated pipeline artifacts
 PROMPTS/*.txt

@@ -1,5 +1,5 @@
 {
-  "_note": "NON-PRODUCTION EXAMPLE. This profile is not registered in the built-in taxonomy registry and is never loaded by default. It exists only to prove the structured configuration boundary for a second sport. Validated via: python3 scripts/validate_config.py config/examples/basketball.json",
+  "_note": "Explicitly selectable basketball profile. It is registered for pilot readiness and execution-plan provenance, but is not the default profile and does not implement basketball-specific event detection yet. Validated via: python3 scripts/validate_config.py config/examples/basketball.json",
   "name": "basketball",
   "project": {
     "name": "Basketball Archive",

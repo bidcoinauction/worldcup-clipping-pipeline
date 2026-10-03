@@ -1,11 +1,8 @@
 from pathlib import Path
-
-import pytest
-
-from pipeline.config_errors import ConfigurationError
 from pipeline.configurator import (
     get_taxonomy,
     load_structured_profile,
+    resolve_project_profile,
     resolve_brand_hashtags,
     resolve_export_profile,
     resolve_positioning,
@@ -23,8 +20,8 @@ def test_basketball_example_file_exists_and_is_valid():
 
 def test_basketball_example_is_never_selected_by_default():
     assert "basketball" not in select_platforms()
-    with pytest.raises(ConfigurationError, match="unknown profile"):
-        get_taxonomy("basketball")
+    assert resolve_project_profile()["profile_id"] == "football"
+    assert resolve_project_profile("basketball")["default"] is False
     assert resolve_positioning() != "Global hoops for new American fans"
 
 

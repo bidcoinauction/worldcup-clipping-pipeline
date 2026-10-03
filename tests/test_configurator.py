@@ -4,7 +4,9 @@ import pytest
 
 from pipeline.config_errors import ConfigurationError
 from pipeline.configurator import (
+    default_project_profile,
     get_taxonomy,
+    resolve_project_profile,
     resolve_archive_path,
     resolve_archive_root,
     resolve_positioning,
@@ -59,13 +61,32 @@ def test_structured_bad_type_nested():
 
 def test_taxonomy_unknown_profile_raises():
     with pytest.raises(ConfigurationError, match="unknown profile"):
-        get_taxonomy("basketball")
+        get_taxonomy("lacrosse")
 
 
 def test_taxonomy_football_default():
     kinds = get_taxonomy()
     assert "EMOTION" in kinds["match_kinds"]
     assert isinstance(kinds["emotional_kinds"], list)
+
+
+def test_football_remains_default_registered_project_profile():
+    assert default_project_profile() == "football"
+    profile = resolve_project_profile()
+    assert profile["profile_id"] == "football"
+    assert profile["sport"] == "football"
+    assert profile["production_capable"] is True
+    assert profile["default"] is True
+
+
+def test_basketball_is_registered_but_not_default():
+    profile = resolve_project_profile("basketball")
+    assert profile["profile_id"] == "basketball"
+    assert profile["sport"] == "basketball"
+    assert profile["production_capable"] is True
+    assert profile["default"] is False
+    taxonomy = get_taxonomy("basketball")
+    assert "BUZZER_BEATER" in taxonomy["editorial"]["emotional_kinds"]
 
 
 def test_project_identity_uses_explicit_config():

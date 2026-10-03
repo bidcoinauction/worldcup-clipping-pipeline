@@ -40,8 +40,29 @@ Supported workflows:
 - `local-match-file`
 - `recording-manifest`
 
-Production generation is limited to the registered football project. The
-non-production basketball example is rejected for production execution plans.
+Production generation is limited to explicitly registered sport/project
+profiles marked `production_capable=true`. Unknown projects fail closed, and
+registered profiles marked `production_capable=false` are rejected for
+production execution plans.
+
+Registered production-capable profiles in this slice:
+
+- `football` — default reference deployment; preserves the existing World Cup
+  configuration, brand, editorial taxonomy, export references, and command
+  previews.
+- `basketball` — explicitly selectable additional profile; uses basketball
+  profile, brand, and editorial references for readiness and execution-plan
+  provenance. This does not add basketball-specific event detection,
+  autonomous editing, publishing, or channel packaging.
+
+No selection still resolves to `football`. Basketball must be selected by the
+pilot intake configuration (`configuration.project = "basketball"`) and should
+use the matching basketball brand/editorial/template references.
+
+Future sports should be added by registering a small profile with a project ID,
+sport, production-capable flag, default flag, profile/config references, brand
+reference, editorial taxonomy reference, export profile references, and command
+preview league label. This is an explicit registry, not a plugin framework.
 
 ## Generation Gates
 
@@ -54,7 +75,7 @@ non-production basketball example is rejected for production execution plans.
 - Source remains ready
 - Configuration references remain valid
 - Supported workflow
-- Supported production project
+- Registered production-capable sport/project profile
 - Unique plan ID
 - Every referenced repository entry point exists
 
@@ -82,6 +103,11 @@ status, skip reason when disabled, recognized entry point, script path,
 structured argument array, working directory, inputs, expected outputs,
 configuration references, required tools, required environment-variable names,
 completion evidence, and a human-readable command preview.
+
+Stage configuration references are derived from the selected registered profile.
+Football plans continue to reference the World Cup files. Basketball plans
+reference the basketball profile, basketball brand, and basketball editorial
+taxonomy instead of inheriting World Cup brand/editorial references.
 
 The structured argument array is the source of truth. Command previews are only
 for operators.

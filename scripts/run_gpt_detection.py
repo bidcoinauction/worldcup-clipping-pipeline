@@ -1,7 +1,16 @@
+"""CLI adapter for clip-moment detection.
+
+Thin wrapper over pipeline.detection.run_detection_call. Preserves existing
+CLI behavior: --prompt, --output, --provider, --model, --dry-run.
+"""
+
 import argparse
+import json
 import os
-from pipeline.openai_client import run_gpt_detection
+from pathlib import Path
+
 from pipeline.config import get_provider
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -16,13 +25,22 @@ def main():
                         help="Print actions without executing.")
     args = parser.parse_args()
 
-    if args.provider == "openai":
-        run_gpt_detection(args.prompt, args.output, dry_run=args.dry_run)
-    else:
-        from pipeline.ollama_detector import run_ollama_detection
-        run_ollama_detection(
-            args.prompt, args.output, model=args.model, dry_run=args.dry_run
-        )
+    if args.dry_run:
+        print(f"[dry-run] Would call {args.provider} with prompt from {args.prompt}")
+        print(f"[dry-run] Would write: {args.output}")
+        print(f"[dry-run] Would write: {Path(args.output).with_suffix('.raw.txt')}")
+        return
+
+    from pipeline.detection import run_detection_call
+
+    prompt_text = Path(args.prompt).read_text(encoding="utf-8")
+    clips = run_detection_call(prompt_text, provider=args.provider, model=args.model)
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(clips, indent=2), encoding="utf-8")
+    print(f"Detection JSON saved: {output_path}")
+
 
 if __name__ == "__main__":
     main()

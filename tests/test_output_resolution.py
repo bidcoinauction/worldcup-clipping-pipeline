@@ -69,7 +69,7 @@ def test_archive_root_backward_compatible(monkeypatch):
 
 def test_output_root_for_unknown_profile_rejected():
     with pytest.raises(ConfigurationError, match="unknown profile"):
-        resolve_output_root("basketball")
+        resolve_output_root("lacrosse")
 
 
 def test_resolution_does_not_create_directories(monkeypatch, tmp_path):

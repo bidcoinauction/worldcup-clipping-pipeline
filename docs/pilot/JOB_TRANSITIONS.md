@@ -129,8 +129,9 @@ See `docs/pilot/PIPELINE_RUN_RECORDS.md` for the schema and CLI.
 
 Execution plans live under `JOB_ID.plans/PLAN_ID.json` with a paired text
 checklist. Generation requires a `READY` job, a current expected revision,
-current rights/source/config readiness, a supported workflow, a production
-football project, a unique plan ID, and existing repository entry-point scripts.
+current rights/source/config readiness, a supported workflow, a registered
+production-capable sport/project profile, a unique plan ID, and existing
+repository entry-point scripts.
 Generation appends exactly one `EXECUTION_PLAN_GENERATED` event and increments
 the job revision. Failed generation appends no event and changes no job record.
 

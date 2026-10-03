@@ -113,7 +113,7 @@ def test_prompt_generation_routes_through_canonical_resolver(monkeypatch, tmp_pa
 
     sentinel = "RESOLVED POSITIONING"
     with patch(
-        "scripts.generate_claude_prompt.resolve_project_identity",
+        "pipeline.prompt_generation.resolve_project_identity",
         return_value={"name": "Football Archive", "positioning": sentinel},
     ):
         transcript = _write_transcript(tmp_path)
@@ -133,4 +133,4 @@ def test_generate_claude_prompt_has_no_independent_fallback():
     source = Path(__file__).resolve().parents[1] / "scripts" / "generate_claude_prompt.py"
     text = source.read_text(encoding="utf-8")
     assert 'load_config().get("account_positioning"' not in text
-    assert "resolve_project_identity" in text
+    assert "write_prompt_file" in text

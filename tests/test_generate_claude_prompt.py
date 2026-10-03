@@ -76,6 +76,25 @@ def _run_main(tmp_path, research_arg=None, mode=None):
         main()
 
 
+def test_cli_uses_shared_prompt_generation_service(tmp_path):
+    transcript = _write_transcript(tmp_path)
+    output = tmp_path / "PROMPTS" / "shared.txt"
+    argv = [
+        "prog",
+        "--transcript", str(transcript),
+        "--match-name", "psg_arsenal_2min",
+        "--profile", "basketball",
+    ]
+    with patch("scripts.generate_claude_prompt.write_prompt_file", return_value={"output_path": output}) as shared:
+        with patch("sys.argv", argv):
+            from scripts.generate_claude_prompt import main
+            main()
+    shared.assert_called_once()
+    assert shared.call_args.kwargs["profile"] == "basketball"
+    assert shared.call_args.kwargs["match_name"] == "psg_arsenal_2min"
+    assert shared.call_args.kwargs["transcript"] == str(transcript)
+
+
 def test_prompt_without_research(tmp_path):
     with patch("scripts.generate_claude_prompt.ROOT") as mock_root:
         _mock_root(mock_root, tmp_path)

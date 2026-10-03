@@ -44,6 +44,7 @@ from .configurator import (
     resolve_brand_profile,
     resolve_export_profile,
     resolve_output_root,
+    resolve_project_profile,
     resolve_project_identity,
     resolve_template,
     select_platforms,
@@ -157,7 +158,6 @@ PIPELINE_ENTRY_POINTS = {
 }
 EXECUTION_PLAN_STATUSES = frozenset({"DRAFT", "READY", "SUPERSEDED", "INVALIDATED"})
 EXECUTION_PLAN_WORKFLOWS = frozenset({"local-match-file", "recording-manifest"})
-PRODUCTION_PROJECTS = frozenset({"football"})
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -1107,9 +1107,13 @@ def create_job(intake_data: object, *, intake_path: str | Path | None = None,
         "expected_output_root": expected_output_root,
         "readiness_summary": {
             "structurally_valid": report["structurally_valid"],
+            "config_references_valid": report["config_references_valid"],
             "source_ready": report["source_ready"],
             "rights_cleared": report["rights_cleared"],
+            "rights_status": report["rights_status"],
             "execution_ready": report["execution_ready"],
+            "validation_codes": report["validation_codes"],
+            "issues": report["issues"],
         },
         "event_count": 1,
     }
@@ -1522,9 +1526,13 @@ def transition_job(job_id: str, target_state: str, *, metadata: dict | None = No
         source_ready = report["source_ready"] if target_state in {"READY", "RUNNING"} else previous_summary.get("source_ready", report["source_ready"])
         updated_job["readiness_summary"] = {
             "structurally_valid": report["structurally_valid"],
+            "config_references_valid": report["config_references_valid"],
             "source_ready": source_ready,
             "rights_cleared": report["rights_cleared"],
+            "rights_status": report["rights_status"],
             "execution_ready": bool(report["structurally_valid"] and report["config_references_valid"] and report["rights_cleared"] and source_ready),
+            "validation_codes": report["validation_codes"],
+            "issues": report["issues"],
         }
     updated_job["latest_event"] = {
         "event_id": event["event_id"],
@@ -1607,6 +1615,22 @@ _PLAN_STAGE_CLASSIFICATIONS = {
     "OUTPUT_REGISTRATION": "required",
 }
 _PLAN_ENVIRONMENT_NAMES = ("FOOTBALL_ARCHIVE_ROOT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def _project_id_for_plan(job: dict, intake: dict | None = None) -> str:
+    config = intake.get("configuration") if isinstance(intake, dict) and isinstance(intake.get("configuration"), dict) else {}
+    project = config.get("project") or job.get("project_id") or "football"
+    return str(project)
+
+
+def _registered_plan_profile(job: dict, intake: dict | None = None) -> dict:
+    return resolve_project_profile(_project_id_for_plan(job, intake))
+
+
+def _profile_file_reference(raw_path: str | None, *, label: str) -> dict | None:
+    if not raw_path:
+        return None
+    return _provenance_file(ROOT / raw_path, label=label)
 
 
 def _plan_issue(path: str, code: str, message: str) -> dict:
@@ -1696,6 +1720,8 @@ def _plan_args(entry_point: str, script: str, *, job: dict, intake: dict, workfl
     source_path = str(media.get("local_file_path", ""))
     match_name = str(media.get("match_or_event_name") or job.get("source_id") or job.get("job_id"))
     project = str(config.get("project") or job.get("project_id") or "football")
+    profile = resolve_project_profile(project)
+    league = str(profile.get("league") or project.upper())
     exports = config.get("export_profiles") if isinstance(config.get("export_profiles"), list) else []
     first_export = str(exports[0]) if exports else "vertical_clean"
     recording_ref = recording_manifest or "data/manifests/REPLACE_WITH_RECORDING_MANIFEST.json"
@@ -1703,32 +1729,41 @@ def _plan_args(entry_point: str, script: str, *, job: dict, intake: dict, workfl
     transcript = f"data/transcripts/{job['job_id']}.json"
     research = f"data/research/{job['job_id']}_research.json"
     output_manifest = f"data/pilot/output_manifests/{job['job_id']}.json"
+    if project == "football":
+        prompt_args = [script, "--transcript", transcript, "--match-id", job["job_id"]]
+    else:
+        prompt_args = [script, "--transcript", transcript, "--match-name", match_name, "--profile", project]
+    clip_manifest_args = [
+        script,
+        "--analysis", f"data/detections/{job['job_id']}.json",
+        "--league", league,
+        "--match-name", match_name,
+        "--source-video", source_path,
+    ]
+    if project != "football":
+        clip_manifest_args += ["--profile", project]
     mapping = {
-        "process-match": [script, "--input", source_path, "--league", "WORLD_CUP", "--match-name", match_name],
+        "process-match": [script, "--input", source_path, "--league", league, "--match-name", match_name],
         "process-from-manifest": [script, "--manifest", recording_ref],
         "transcribe-match": [script, source_path, "--match-id", job["job_id"]],
         "export-research-windows": [script, "--research", research, "--source", source_path],
-        "generate-claude-prompt": [script, "--transcript", transcript, "--match-id", job["job_id"]],
+        "generate-claude-prompt": prompt_args,
         "run-gpt-detection": [script, "--prompt", f"prompts/generated/{job['job_id']}.txt", "--output", clip_manifest],
-        "build-clip-manifest": [script, "--detections", f"data/detections/{job['job_id']}.json", "--output", clip_manifest],
+        "build-clip-manifest": clip_manifest_args,
         "generate-asset-prompts": [script, "--clip-manifest", clip_manifest, "--output-dir", f"data/asset_prompts/{job['job_id']}"],
         "export-clips-ffmpeg": [script, "--clip-manifest", clip_manifest, "--profile", first_export],
         "build-stadium-dashboard": [script, "--clip-manifest", clip_manifest, "--output", f"data/review/{job['job_id']}.html"],
         "pilot-output-register": [script, "outputs", "register", job["job_id"], output_manifest, "--operator", "REPLACE_WITH_OPERATOR"],
     }
     if workflow == "recording-manifest" and entry_point == "process-match":
-        return [script, "--input", f"RAW/WORLD_CUP/{job['job_id']}.ts", "--league", "WORLD_CUP", "--match-name", match_name]
+        return [script, "--input", f"RAW/{league}/{job['job_id']}.ts", "--league", league, "--match-name", match_name]
     return mapping[entry_point]
 
 
 def _build_plan_stages(job: dict, intake: dict, *, workflow: str, recording_manifest: str | None) -> list[dict]:
     stages: list[dict] = []
-    config_refs = [
-        "config/pipeline_config.json",
-        "config/brands/world_cup.json",
-        "config/editorial/world_cup.json",
-        "config/export/world_cup.json",
-    ]
+    profile = _registered_plan_profile(job, intake)
+    config_refs = [str(ref) for ref in profile.get("configuration_references", [])]
     for sequence, stage_id in enumerate(PIPELINE_STAGES, start=1):
         entry_point = _PLAN_STAGE_ENTRY_POINTS[stage_id]
         script = _entry_point_script(entry_point)
@@ -1762,19 +1797,27 @@ def _build_plan_stages(job: dict, intake: dict, *, workflow: str, recording_mani
 
 
 def _plan_provenance(job: dict, intake: dict, *, intake_root: str | None, recording_manifest: str | None) -> dict:
-    config = intake.get("configuration") if isinstance(intake.get("configuration"), dict) else {}
     media = intake.get("media") if isinstance(intake.get("media"), dict) else {}
-    project = str(config.get("project") or job.get("project_id") or "football")
-    brand = str(config.get("brand") or "world_cup")
-    editorial = str(config.get("editorial_taxonomy") or "world_cup")
+    profile = _registered_plan_profile(job, intake)
+    project = str(profile["profile_id"])
+    brand = str(profile["brand"])
+    editorial = str(profile["editorial_taxonomy"])
+    export_config = profile.get("export_config")
     return {
+        "project_profile": {
+            "profile_id": project,
+            "sport": profile["sport"],
+            "production_capable": bool(profile["production_capable"]),
+            "default": bool(profile["default"]),
+        },
         "pilot_intake_manifest": _safe_file_reference(job.get("intake_manifest_path", ""), field_path="plan.provenance.pilot_intake_manifest", require_exists=True),
         "source_media": _safe_file_reference(media.get("local_file_path"), field_path="plan.provenance.source_media", require_exists=True),
         "recording_manifest": _optional_file_reference(recording_manifest, field_path="plan.provenance.recording_manifest"),
-        "project_configuration": _provenance_file(ROOT / "config" / "pipeline_config.json", label="project_configuration"),
+        "project_configuration": _profile_file_reference(profile.get("profile_file"), label="project_configuration"),
         "brand_profile": _provenance_file(ROOT / "config" / "brands" / f"{brand}.json", label="brand_profile"),
         "editorial_taxonomy": _provenance_file(ROOT / "config" / "editorial" / f"{editorial}.json", label="editorial_taxonomy"),
-        "export_profiles": _provenance_file(ROOT / "config" / "export" / "world_cup.json", label="export_profiles"),
+        "export_profiles": {"profile_ids": [str(v) for v in profile.get("export_profiles", [])],
+                            "config": _profile_file_reference(export_config, label="export_profiles")},
         "operational_categories": {"project": project, "categories": resolve_operational_categories(project)},
         "intake_root": intake_root,
     }
@@ -1925,8 +1968,13 @@ def generate_execution_plan(job_id: str, *, plan_id: str, operator: str, expecte
         )
     if current != "READY":
         issues.append(_plan_issue("job.current_state", "job_not_ready", f"job '{job_id}' is {current}; execution plans require READY"))
-    if job.get("project_id") not in PRODUCTION_PROJECTS:
-        issues.append(_plan_issue("job.project_id", "unsupported_project", "production execution plans are limited to the football project"))
+    try:
+        profile = resolve_project_profile(str(job.get("project_id") or "football"))
+        if not profile.get("production_capable"):
+            issues.append(_plan_issue("job.project_id", "non_production_project",
+                                      f"registered project profile '{profile['profile_id']}' is not production-capable"))
+    except ConfigurationError as exc:
+        issues.append(_plan_issue("job.project_id", "unsupported_project", str(exc)))
     plan_path = _execution_plan_path(job_id, plan_id, jobs_dir_path) if _is_valid_id(plan_id) else None
     checklist_path = _execution_plan_checklist_path(job_id, plan_id, jobs_dir_path) if _is_valid_id(plan_id) else None
     if plan_path and (plan_path.exists() or (checklist_path and checklist_path.exists())):
@@ -2254,21 +2302,28 @@ def _build_run_provenance(job: dict, *, intake_root: str | None = None, recordin
     report = validate_intake(intake, intake_root=intake_root, check_source=True, check_rights=True)
     config = intake.get("configuration") if isinstance(intake.get("configuration"), dict) else {}
     media = intake.get("media") if isinstance(intake.get("media"), dict) else {}
-    project = config.get("project", job.get("project_id", "football"))
-    brand = config.get("brand", "world_cup")
-    editorial = config.get("editorial_taxonomy", "world_cup")
+    project = str(config.get("project") or job.get("project_id") or "football")
+    profile = resolve_project_profile(project)
+    brand = str(profile["brand"])
+    editorial = str(profile["editorial_taxonomy"])
     template = config.get("detection_template", "prompt")
-    export_profiles = config.get("export_profiles") if isinstance(config.get("export_profiles"), list) else []
+    export_config = profile.get("export_config")
+    export_profiles = [str(v) for v in profile.get("export_profiles", [])]
+    template_path = resolve_template(str(template), profile=project)
     return {
+        "project_profile": {"profile_id": profile["profile_id"], "sport": profile["sport"],
+                            "production_capable": bool(profile["production_capable"]),
+                            "default": bool(profile["default"])},
         "pilot_intake_manifest": _safe_file_reference(job.get("intake_manifest_path", ""), field_path="provenance.pilot_intake_manifest", require_exists=True),
         "source_media": _safe_file_reference(media.get("local_file_path"), field_path="provenance.source_media", require_exists=True),
         "recording_manifest": _optional_file_reference(recording_manifest, field_path="provenance.recording_manifest"),
-        "project_configuration": _provenance_file(ROOT / "config" / "pipeline_config.json", label="project_configuration"),
+        "project_configuration": _profile_file_reference(profile.get("profile_file"), label="project_configuration"),
         "brand_profile": _provenance_file(ROOT / "config" / "brands" / f"{brand}.json", label="brand_profile"),
         "editorial_taxonomy": _provenance_file(ROOT / "config" / "editorial" / f"{editorial}.json", label="editorial_taxonomy"),
         "operational_categories": {"project": project, "categories": resolve_operational_categories(project)},
-        "detection_template": {"template_id": template, **_provenance_file(ROOT / "prompts" / "world_cup_detection_prompt.txt", label="detection_template")},
-        "export_profiles": {"profile_ids": [str(v) for v in export_profiles], "config": _provenance_file(ROOT / "config" / "export" / "world_cup.json", label="export_profiles")},
+        "detection_template": {"template_id": template, **_provenance_file(template_path, label="detection_template")},
+        "export_profiles": {"profile_ids": export_profiles,
+                            "config": _profile_file_reference(export_config, label="export_profiles")},
         "research_file": _optional_file_reference(research_file, field_path="provenance.research_file"),
         "schedule": {"match_id": match_id, "row_reference": schedule_row},
         "repository": {"commit": _current_git_commit()},

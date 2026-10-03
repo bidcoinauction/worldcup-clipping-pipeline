@@ -98,11 +98,45 @@ def test_valid_world_cup_example(media_file: Path):
     assert report["execution_ready"]
 
 
+def test_valid_ts_source(tmp_path: Path):
+    source = tmp_path / "source.ts"
+    source.write_bytes(b"fake transport stream bytes" * 100)
+    report = validate_intake(build_intake(str(source), overrides={"media": {"original_filename": source.name}}))
+    assert report["source_ready"]
+    assert report["execution_ready"]
+    assert "SOURCE_UNSUPPORTED_EXTENSION" not in _codes(report)
+
+
+def test_valid_source_path_with_spaces(tmp_path: Path):
+    source_dir = tmp_path / "untitled folder"
+    source_dir.mkdir()
+    source = source_dir / "source with spaces.mp4"
+    source.write_bytes(b"fake media bytes" * 100)
+    report = validate_intake(build_intake(str(source), overrides={"media": {"original_filename": source.name}}))
+    assert report["source_ready"]
+    assert report["execution_ready"]
+
+
 def test_missing_pilot_id(media_file: Path):
     intake = build_intake(str(media_file), overrides={"pilot": {"pilot_id": ""}})
     report = validate_intake(intake)
     assert not report["structurally_valid"]
     assert any(i["path"] == "pilot.pilot_id" for i in report["issues"])
+
+
+def test_optional_operator_notes_may_be_omitted(media_file: Path):
+    intake = build_intake(str(media_file))
+    del intake["pilot"]["operator_notes"]
+    report = validate_intake(intake)
+    assert report["structurally_valid"]
+    assert report["execution_ready"]
+
+
+def test_empty_operator_notes_fails_canonical_validation(media_file: Path):
+    intake = build_intake(str(media_file), overrides={"pilot": {"operator_notes": ""}})
+    report = validate_intake(intake)
+    assert not report["structurally_valid"]
+    assert any(i["path"] == "pilot.operator_notes" and i["code"] == "BAD_TYPE" for i in report["issues"])
 
 
 def test_invalid_pilot_id(media_file: Path):
@@ -140,6 +174,14 @@ def test_source_file_missing(tmp_path: Path):
     report = validate_intake(intake)
     assert not report["execution_ready"]
     assert "SOURCE_MISSING" in _codes(report)
+
+
+def test_blank_source_path_is_structural_and_source_error():
+    intake = build_intake("")
+    report = validate_intake(intake)
+    assert not report["structurally_valid"]
+    assert not report["source_ready"]
+    assert any(issue["path"] == "media.local_file_path" for issue in report["issues"])
 
 
 def test_source_file_empty(tmp_path: Path):
@@ -233,6 +275,7 @@ def test_unconfirmed_rights_produce_not_ready(media_file: Path):
     intake = build_intake(str(media_file), overrides={"rights": {"status": "UNCONFIRMED"}})
     report = validate_intake(intake)
     assert report["structurally_valid"]
+    assert report["source_ready"]
     assert not report["rights_cleared"]
     assert not report["execution_ready"]
     assert "RIGHTS_NOT_CONFIRMED" in _codes(report)
