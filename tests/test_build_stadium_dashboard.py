@@ -180,7 +180,7 @@ def test_read_manifest_not_found(tmp_path):
 def test_read_manifest_handles_bom(tmp_path):
     manifest = tmp_path / "manifest.csv"
     bom_content = "\ufeff" + SAMPLE_MANIFEST_CSV
-    manifest.write_text(bom_content)
+    manifest.write_text(bom_content, encoding="utf-8")
     rows = read_manifest(manifest)
     assert len(rows) == 1
     assert rows[0]["clip_id"] == "clip_001"

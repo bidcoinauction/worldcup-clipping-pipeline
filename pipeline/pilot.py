@@ -36,7 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .config_errors import ConfigurationError
 from .configurator import (
@@ -521,7 +521,7 @@ def _validate_config_section(data: dict, issues: list) -> None:
     if isinstance(destination, str) and destination.strip():
         if _URL_RE.match(destination):
             issues.append(_issue(f"{path}.delivery_destination", C_CONFIG_BAD_DESTINATION, "must be a local folder, not a URL"))
-        elif ".." in Path(destination).parts or Path(destination).is_absolute():
+        elif _portable_path_is_unsafe(destination):
             issues.append(_issue(f"{path}.delivery_destination", C_CONFIG_BAD_DESTINATION,
                                  "must be a repository-relative folder without path traversal"))
 
@@ -1617,6 +1617,15 @@ _PLAN_STAGE_CLASSIFICATIONS = {
 _PLAN_ENVIRONMENT_NAMES = ("FOOTBALL_ARCHIVE_ROOT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
 
+def _portable_path_is_unsafe(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    return (
+        ".." in PurePosixPath(normalized).parts
+        or PurePosixPath(normalized).is_absolute()
+        or PureWindowsPath(value).is_absolute()
+    )
+
+
 def _project_id_for_plan(job: dict, intake: dict | None = None) -> str:
     config = intake.get("configuration") if isinstance(intake, dict) and isinstance(intake.get("configuration"), dict) else {}
     project = config.get("project") or job.get("project_id") or "football"
@@ -1630,7 +1639,7 @@ def _registered_plan_profile(job: dict, intake: dict | None = None) -> dict:
 def _profile_file_reference(raw_path: str | None, *, label: str) -> dict | None:
     if not raw_path:
         return None
-    return _provenance_file(ROOT / raw_path, label=label)
+    return {"label": label, **_safe_file_reference(raw_path.replace("\\", "/"), field_path=f"provenance.{label}", require_exists=False)}
 
 
 def _plan_issue(path: str, code: str, message: str) -> dict:
@@ -2292,7 +2301,7 @@ def _optional_file_reference(raw_path: object, *, field_path: str) -> dict | Non
 
 
 def _provenance_file(path: Path, *, label: str) -> dict:
-    return {"label": label, **_safe_file_reference(str(path), field_path=f"provenance.{label}", require_exists=False)}
+    return {"label": label, **_safe_file_reference(path.as_posix(), field_path=f"provenance.{label}", require_exists=False)}
 
 
 def _build_run_provenance(job: dict, *, intake_root: str | None = None, recording_manifest: str | None = None,

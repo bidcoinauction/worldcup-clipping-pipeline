@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .config import load_config
 from .config_errors import ConfigurationError
@@ -36,6 +36,26 @@ _BASKETBALL_PROFILE_FILE = _CONFIG_DIR / "examples" / "basketball.json"
 _DEFAULT_POSITIONING = "America Discovers Football"
 
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _looks_windows_path(value: str) -> bool:
+    return "\\" in value or ":" in value
+
+
+def _portable_parts(value: str) -> tuple[str, ...]:
+    return PurePosixPath(value.replace("\\", "/")).parts
+
+
+def _is_portable_absolute(value: str) -> bool:
+    return PurePosixPath(value.replace("\\", "/")).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+def _portable_join(root: str | Path | None, relative: str) -> str:
+    normalized_relative = relative.replace("\\", "/").lstrip("/")
+    if root is None:
+        return PurePosixPath(normalized_relative).as_posix()
+    root_text = root.as_posix() if isinstance(root, Path) else str(root).replace("\\", "/")
+    return PurePosixPath(root_text, normalized_relative).as_posix()
 
 # Top-level keys recognized in a structured profile file.
 _PROFILE_KEYS = ("name", "project", "taxonomies", "templates", "platforms", "outputs", "brand", "exports")
@@ -119,9 +139,9 @@ def resolve_archive_path(*parts: str, profile: str = "football", root_override: 
     """Join *parts* beneath the canonical archive root using the correct
     Windows or POSIX path flavour."""
     root = resolve_output_root(profile, override=root_override)
-    if "\\" in root or ":" in root:
+    if _looks_windows_path(root):
         return str(PureWindowsPath(root, *parts))
-    return str(Path(root, *parts))
+    return PurePosixPath(root, *parts).as_posix()
 
 
 def _reject_unknown(obj: dict, allowed: tuple[str, ...], path: str) -> None:
@@ -514,10 +534,9 @@ def _validate_brand_asset_path(value, path: str) -> None:
         return
     if not isinstance(value, str):
         raise ConfigurationError(f"{path}: expected a string path, got {type(value).__name__}")
-    candidate = Path(value)
-    if candidate.is_absolute():
+    if _is_portable_absolute(value):
         raise ConfigurationError(f"{path}: asset path must be repository-relative, got absolute '{value}'")
-    if ".." in candidate.parts:
+    if ".." in _portable_parts(value):
         raise ConfigurationError(f"{path}: asset path traversal is not allowed: '{value}'")
 
 
@@ -860,7 +879,7 @@ def _validate_export_entry(entry, path: str) -> None:
             raise ConfigurationError(f"{path}.{required}: is required")
 
     destination = entry.get("destination")
-    if ".." in Path(destination).parts:
+    if ".." in _portable_parts(destination):
         raise ConfigurationError(f"{path}.destination: output path traversal is not allowed: '{destination}'")
 
 
@@ -948,11 +967,9 @@ def resolve_export_destination(
     *root* is prepended when provided. Read-only: never creates directories.
     """
     entry = dict(profile) if profile is not None else resolve_export_profile(profile_id)
-    root_path = Path(root) if root is not None else None
     template = entry.get("destination_template")
     suffix = entry.get("filename_suffix", "")
     extension = entry.get("extension", "mp4")
-    relative: Path
     if template:
         rendered = template.format(
             platform=platform or "",
@@ -962,9 +979,7 @@ def resolve_export_destination(
             extension=extension,
             filename=f"{clip_id}_{suffix}",
         )
-        relative = Path(rendered) if not rendered.startswith("/") else Path(rendered.lstrip("/"))
+        relative = rendered
     else:
-        relative = Path(str(entry.get("destination", ""))) / f"{clip_id}.{extension}"
-    if root_path is not None:
-        return str(root_path / relative)
-    return str(relative)
+        relative = PurePosixPath(str(entry.get("destination", "")).replace("\\", "/"), f"{clip_id}.{extension}").as_posix()
+    return _portable_join(root, relative)

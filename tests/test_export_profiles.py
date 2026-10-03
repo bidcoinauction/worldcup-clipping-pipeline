@@ -68,6 +68,13 @@ def test_destination_matches_historical_pattern():
     assert dest == "/root/EXPORTS/TIKTOK/EMOTION/clip_001_tiktok.mp4"
 
 
+def test_destination_uses_posix_contract_with_windows_root():
+    dest = resolve_export_destination(
+        "tiktok", platform="TIKTOK", clip_id="clip_001", category="EMOTION", root="C:\\Archive"
+    )
+    assert dest == "C:/Archive/EXPORTS/TIKTOK/EMOTION/clip_001_tiktok.mp4"
+
+
 def test_destination_without_template_falls_back_to_clip_id():
     dest = resolve_export_destination(
         profile={"id": "vertical_clean", "destination": "CLIPS", "extension": "mp4"},
@@ -114,6 +121,13 @@ def test_unsafe_destination_path_fails():
             {"platforms": {"bad": {"id": "bad", "width": 1080, "height": 1920,
                                    "video_codec": "libx264", "audio_codec": "aac",
                                    "extension": "mp4", "destination": "EXPORTS/../../tmp"}}},
+            source="export",
+        )
+    with pytest.raises(ConfigurationError, match="traversal"):
+        validate_export_profiles(
+            {"platforms": {"bad": {"id": "bad", "width": 1080, "height": 1920,
+                                   "video_codec": "libx264", "audio_codec": "aac",
+                                   "extension": "mp4", "destination": r"EXPORTS\..\..\tmp"}}},
             source="export",
         )
 
