@@ -4,6 +4,8 @@ Stadium Signal is a local-first sports story, mythology, and clipping pipeline. 
 
 The repository now has two operator surfaces over the same engine: the existing CLI workflows and a local browser-based Operator Console. It is still not a broad SaaS product, hosted multi-tenant platform, billing system, or autonomous publishing system.
 
+The editorial path is source → transcription → moments → narrative/story interpretation → edit brief → EDL → rough cut/export → human review. Treatments support short-, medium-, and long-form editing; full matches, emotional metadata, and narrative function remain central.
+
 ## Current Capabilities
 
 - CSV/JSON metadata for matches, moments, emotional timelines, clip windows, mythology scores, and match manifests.
@@ -15,7 +17,7 @@ The repository now has two operator surfaces over the same engine: the existing 
 - Static review dashboard generation.
 - Local browser-based Operator Console for non-technical project/source setup, analysis, status, review flow, and export-oriented operator actions.
 - Reusable service modules under `pipeline/` for transcription, detection, story/edit artifacts, prompt generation, rendering, clip manifests, configuration, and pilot lifecycle operations.
-- Registered production-capable sport profiles, with football as the default reference deployment and basketball as the first additional selectable profile.
+- Registered sport profiles: football is the default reference deployment with analysis support; basketball is selectable for configuration/intake/prompt/planning workflows, but its console analysis is disabled (`analysis_supported=False`).
 - Analysis preflight and interrupted-run recovery so missing dependencies or orphaned runs surface as actionable operator states instead of hanging at `RUNNING`.
 
 ## Prerequisites
@@ -58,7 +60,9 @@ The Operator Console is a local control surface over the same application/servic
 
 It is **not** a video editor, hosted SaaS frontend, autonomous publisher, or replacement for the underlying pipeline artifacts. Technical IDs, manifests, environment variables, and file paths remain available beneath the UI for advanced inspection. See [docs/OPERATOR_CONSOLE_ARCHITECTURE.md](docs/OPERATOR_CONSOLE_ARCHITECTURE.md).
 
-Analysis now performs a preflight before entering `RUNNING`. It checks that the intake is readable, the project is execution-ready, the source exists and is readable, FFmpeg is available, and `faster-whisper` is importable when a reusable transcript is not already present. Interrupted in-process analysis is recovered as a failed run with an operator-safe retry path rather than being left indefinitely in a running state.
+Analysis performs preflight before entering `RUNNING`: readable intake, current execution readiness including rights, and a readable source. A valid existing transcript is reused. Otherwise it checks FFmpeg and, when the selected transcription provider is faster-whisper, that dependency. It then transcribes, generates the prompt, detects moments, and persists JSON/CSV artifacts. Interrupted in-process analysis is recovered as a failed run with an operator-safe retry path rather than being left indefinitely in a running state.
+
+The console also supports story suggestions, `SHORT`/`MEDIUM`/`LONG` edit briefs, deterministic EDLs, and reference/editorial rough cuts. Rendering reports applied, partially applied, and deferred effects; generated output still requires human review. Client disconnects are handled so later requests can continue, without implying durable background workers.
 
 ## Environment Variables
 
@@ -102,7 +106,7 @@ The World Cup editorial language is separated from the operational `categories` 
 config/editorial/world_cup.json
 ```
 
-It holds `emotional_kinds`, `narrative_functions`, and `story_targets` (arc roles and narrative roles). `pipeline/configurator.py` resolves it via `resolve_editorial_taxonomy()`, `resolve_story_targets()`, and `resolve_operational_categories()`. Unknown keys or wrong types raise `ConfigurationError` with the full field path. This is a distinct surface from the legacy operational `categories` in `config/pipeline_config.json`, which remains intact. `config/examples/basketball.json` demonstrates the same separated taxonomy structure for a second sport (non-production).
+It holds `emotional_kinds`, `narrative_functions`, and `story_targets` (arc roles and narrative roles). `pipeline/configurator.py` resolves it via `resolve_editorial_taxonomy()`, `resolve_story_targets()`, and `resolve_operational_categories()`. Unknown keys or wrong types raise `ConfigurationError` with the full field path. This is a distinct surface from the legacy operational `categories` in `config/pipeline_config.json`, which remains intact. `config/examples/basketball.json` supplies the registered basketball profile and demonstrates the same separated taxonomy structure for a second sport; registration does not enable basketball analysis.
 
 ### Brand profiles
 
@@ -110,7 +114,7 @@ Brand language is extracted to validated data files under `config/brands/`:
 
 ```text
 config/brands/world_cup.json            # production (reference deployment)
-config/brands/basketball_example.json   # non-production example
+config/brands/basketball_example.json   # referenced by basketball and basketball_sandbox
 ```
 
 A brand profile carries `id`, `display_name`, `positioning`, `caption_tone`, `language`, default `hashtags` (with leading `#`), optional per-platform `platforms` hashtag overrides, and optional `assets` metadata (thumbnail guidance, plus `logo`/`font` path references only if a workflow ever uses them). Unknown keys, wrong types, invalid hashtags, and unsafe asset paths raise `ConfigurationError` with the full field path.
@@ -161,7 +165,7 @@ prompts/world_cup_detection_prompt.txt
 
 It is rendered by `pipeline/configurator.render_template()` (standard library only, no Jinja). Only registered templates can be rendered; unknown template IDs, missing files, missing required variables, and path-traversal attempts raise `ConfigurationError` with the template identifier and no silent fallback. Rendering is read-only (no network access, no file mutation) and deterministic.
 
-`config/examples/basketball.json` is a **non-production example** proving the structured boundary for a second sport. It is never registered as a default profile and is not loaded at runtime. Its detection template (`prompts/basketball_detection_prompt.txt`) resolves for validation but is not registered for rendering.
+`config/examples/basketball.json` supplies the explicitly registered `basketball` profile and the non-production `basketball_sandbox` variant. Neither is the default. `prompts/basketball_detection_prompt.txt` is registered for profile-aware rendering; basketball analysis remains disabled. Production prompt/planning surfaces reject the sandbox profile.
 
 Validate any configuration file (read-only, no network, no file mutation):
 
@@ -311,7 +315,7 @@ pytest
 python3 scripts/validate_config.py config/pipeline_config.json
 ```
 
-Verified baseline on macOS:
+Previously recorded baseline on macOS (not a fresh run for every documentation update):
 
 - `python3 scripts/validate_data.py`: passed.
 - `pytest`: 1128 passed, 1 skipped, 1 warning.
@@ -344,6 +348,21 @@ Record live Ace Stream on Windows:
 ```powershell
 python scripts\record_live.py HASH --match-id MATCH_ID --mode full --verbose
 ```
+
+Windows is the established Ace Stream capture box; macOS is the development/post-processing box. Recordings can be processed on Windows or transferred to macOS. Full-file recording (`--mode full`) is the safest current workflow: stop with `q`, validate with ffprobe, and do not press Play again while FFmpeg owns the stream. Segment mode is experimental. See `AGENTS.md` for the validated Mexico–South Africa workflow. Archive, export, and provenance paths use portable Windows/POSIX handling.
+
+## Source-of-Truth Map
+
+| Location | Authority |
+| --- | --- |
+| `README.md` | Setup and operator overview |
+| `AGENTS.md` | Development/agent rules and capture operations |
+| `docs/OPERATOR_CONSOLE_ARCHITECTURE.md` | Current console architecture and future boundaries |
+| `RELEASE_READINESS.md` | Current release scope, evidence, and remaining gates |
+| Code and `config/` | Runtime behavior and configuration |
+| `data/manifests/` | Match source/progress/provenance |
+| External archive / `FootballArchive` | Media assets |
+| Dated `planning/` records | Historical phase evidence |
 
 ## Important Boundaries
 
