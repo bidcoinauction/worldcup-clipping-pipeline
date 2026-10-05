@@ -1,8 +1,8 @@
 # Stadium Signal World Cup Clipping Pipeline
 
-Stadium Signal is a local-first football mythology and clipping pipeline. The current reference deployment is the World Cup workflow: match metadata, research windows, transcription, prompt-based moment detection, FFmpeg clip export, and static review artifacts.
+Stadium Signal is a local-first sports story, mythology, and clipping pipeline. The current reference deployment is the World Cup workflow: match metadata, research windows, transcription, prompt-based moment detection, story/edit artifacts, FFmpeg clip export, and review outputs.
 
-The repository is script-first. It is not yet a broad SaaS product, dashboard, billing system, or multi-tenant platform.
+The repository now has two operator surfaces over the same engine: the existing CLI workflows and a local browser-based Operator Console. It is still not a broad SaaS product, hosted multi-tenant platform, billing system, or autonomous publishing system.
 
 ## Current Capabilities
 
@@ -13,6 +13,10 @@ The repository is script-first. It is not yet a broad SaaS product, dashboard, b
 - OpenAI, Claude, Ollama, and faster-whisper integration points, depending on the workflow selected.
 - FFmpeg/ffprobe-based audio extraction, concat, duration inspection, and clip export.
 - Static review dashboard generation.
+- Local browser-based Operator Console for non-technical project/source setup, analysis, status, review flow, and export-oriented operator actions.
+- Reusable service modules under `pipeline/` for transcription, detection, story/edit artifacts, prompt generation, rendering, clip manifests, configuration, and pilot lifecycle operations.
+- Registered production-capable sport profiles, with football as the default reference deployment and basketball as the first additional selectable profile.
+- Analysis preflight and interrupted-run recovery so missing dependencies or orphaned runs surface as actionable operator states instead of hanging at `RUNNING`.
 
 ## Prerequisites
 
@@ -35,6 +39,26 @@ cp .env.example .env
 On Windows, use `.venv\Scripts\activate` instead of `source`.
 
 If your shell provides `python` instead of `python3`, either command is acceptable. This workspace currently has no `python` alias, so validation was run with `python3`.
+
+## Operator Console
+
+Start the local browser control surface:
+
+```bash
+python3 scripts/console.py
+```
+
+The default bind address is `127.0.0.1` and the default port is `8420`. Override them when needed:
+
+```bash
+python3 scripts/console.py --host 127.0.0.1 --port 8420
+```
+
+The Operator Console is a local control surface over the same application/service layer used by the CLI. Its purpose is to let an operator create/select projects, choose a sport profile, provide local source media, start supported analysis, inspect status, review generated artifacts, and move work through the operator lifecycle without editing JSON or running individual pipeline scripts manually.
+
+It is **not** a video editor, hosted SaaS frontend, autonomous publisher, or replacement for the underlying pipeline artifacts. Technical IDs, manifests, environment variables, and file paths remain available beneath the UI for advanced inspection. See [docs/OPERATOR_CONSOLE_ARCHITECTURE.md](docs/OPERATOR_CONSOLE_ARCHITECTURE.md).
+
+Analysis now performs a preflight before entering `RUNNING`. It checks that the intake is readable, the project is execution-ready, the source exists and is readable, FFmpeg is available, and `faster-whisper` is importable when a reusable transcript is not already present. Interrupted in-process analysis is recovered as a failed run with an operator-safe retry path rather than being left indefinitely in a running state.
 
 ## Environment Variables
 
@@ -290,7 +314,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 770 passed, 1 skipped, 1 warning.
+- `pytest`: 1128 passed, 1 skipped, 1 warning.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 
@@ -326,4 +350,4 @@ python scripts\record_live.py HASH --match-id MATCH_ID --mode full --verbose
 - Keep video/audio assets outside Git in `FootballArchive/` or another ignored archive root.
 - Confirm media rights before commercial processing or delivery.
 - Treat the World Cup implementation as the current reference deployment, not as a generic commercial platform.
-- Managed pilot operations are the current build phase: validated intake, rights gate, source validation, and job records exist; media processing, review, approval, and delivery remain manual operator steps.
+- Managed pilot operations remain operator-controlled. The Operator Console can start supported local analysis, while review, approval, delivery, and publishing remain explicit human decisions.
