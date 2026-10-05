@@ -1,0 +1,64 @@
+{
+  "sport": "football",
+  "competition": "UEFA Euro 2012",
+  "season": "2012",
+  "match_date": "2012-06-28",
+  "home_team": "Germany",
+  "away_team": "Italy",
+  "home_score": 1,
+  "away_score": 2,
+  "venue": "National Stadium, Warsaw",
+  "stage": "Semi-final",
+  "importance": 0.95,
+  "summary": "Italy defeated Germany 2-1 in the UEFA Euro 2012 semi-final, led by two Mario Balotelli goals before Mesut Ozil's late penalty.",
+  "stakes": "Winner advanced to the UEFA Euro 2012 final.",
+  "historical_context": "A major tournament semi-final between two European powers, remembered for Balotelli's decisive performance.",
+  "sources": [
+    {"label": "Fixture fixture", "type": "deterministic_test_fixture"}
+  ],
+  "events": [
+    {
+      "match_minute": 20,
+      "universal_event_type": "SCORE",
+      "sport_event_type": "goal",
+      "team": "Italy",
+      "participants": [{"name": "Mario Balotelli", "role": "scorer", "team": "Italy", "participant_type": "player"}],
+      "headline": "Balotelli opens the scoring",
+      "description": "Mario Balotelli scored for Italy in the 20th minute.",
+      "score_before": "Germany 0-0 Italy",
+      "score_after": "Germany 0-1 Italy",
+      "importance": 0.95,
+      "confidence": 1.0,
+      "source_refs": [{"label": "verified fixture"}]
+    },
+    {
+      "match_minute": 36,
+      "universal_event_type": "SCORE",
+      "sport_event_type": "goal",
+      "team": "Italy",
+      "participants": [{"name": "Mario Balotelli", "role": "scorer", "team": "Italy", "participant_type": "player"}],
+      "headline": "Balotelli doubles Italy's lead",
+      "description": "Mario Balotelli scored his second goal in the 36th minute.",
+      "score_before": "Germany 0-1 Italy",
+      "score_after": "Germany 0-2 Italy",
+      "importance": 1.0,
+      "confidence": 1.0,
+      "source_refs": [{"label": "verified fixture"}]
+    },
+    {
+      "match_minute": 92,
+      "universal_event_type": "SCORE",
+      "sport_event_type": "penalty_goal",
+      "team": "Germany",
+      "participants": [{"name": "Mesut Ozil", "role": "scorer", "team": "Germany", "participant_type": "player"}],
+      "headline": "Ozil scores late penalty",
+      "description": "Mesut Ozil scored a penalty in stoppage time for Germany.",
+      "score_before": "Germany 0-2 Italy",
+      "score_after": "Germany 1-2 Italy",
+      "importance": 0.75,
+      "confidence": 1.0,
+      "source_refs": [{"label": "verified fixture"}],
+      "metadata": {"display_minute": "90+2"}
+    }
+  ]
+}

@@ -363,13 +363,25 @@ Return a JSON object with editorial_intent, emotional_arc, and beats."""
 
 def _run_brief_llm(prompt_text: str, *, provider: str | None = None,
                    model: str | None = None) -> dict:
-    """Call the LLM for edit brief generation."""
-    from .config import get_provider as _get_provider, get_model as _get_model
-    selected_provider = provider or _get_provider("detection")
-    selected_model = model or _get_model("detection")
+    """Call the LLM for edit brief generation.
+
+    Provider selection: explicit *provider*, else ``EDIT_PROVIDER`` (default =
+    ``STORY_PROVIDER``, itself defaulting to ``openai``). Ollama uses the shared
+    helper; the output contract is identical.
+    """
+    from .provider_service import edit_model, edit_provider, ollama_generate
+    selected_provider = (provider or edit_provider()).strip().lower()
 
     if selected_provider == "openai":
-        return _run_openai_brief(prompt_text, model=selected_model)
+        return _run_openai_brief(prompt_text, model=model)
+    if selected_provider == "ollama":
+        content = ollama_generate(
+            prompt_text,
+            model=model or edit_model(),
+            system_prompt="You are a sports edit intelligence system. Return only valid JSON.",
+            json_mode=True,
+        )
+        return _parse_brief_json(content)
     raise ValueError(f"unsupported edit brief provider: {selected_provider!r}")
 
 

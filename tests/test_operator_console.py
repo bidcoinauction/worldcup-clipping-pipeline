@@ -273,6 +273,42 @@ class _FakeHandler:
     def _api_transition_project(self, job_id: str):
         return ConsoleHandler._api_transition_project(self, job_id)
 
+    def _api_review_moment(self, job_id: str, moment_id: str):
+        return ConsoleHandler._api_review_moment(self, job_id, moment_id)
+
+    def _api_review_story(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_review_story(self, job_id, story_id)
+
+    def _api_story_add_moment(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_story_add_moment(self, job_id, story_id)
+
+    def _api_story_remove_moment(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_story_remove_moment(self, job_id, story_id)
+
+    def _api_story_update_moment(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_story_update_moment(self, job_id, story_id)
+
+    def _api_generate_brief(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_generate_brief(self, job_id, story_id)
+
+    def _api_build_edl(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_build_edl(self, job_id, story_id)
+
+    def _api_build_render(self, job_id: str, story_id: str):
+        return ConsoleHandler._api_build_render(self, job_id, story_id)
+
+    def _api_review_render(self, job_id: str, render_id: str):
+        return ConsoleHandler._api_review_render(self, job_id, render_id)
+
+    def _api_create_export(self, job_id: str, render_id: str):
+        return ConsoleHandler._api_create_export(self, job_id, render_id)
+
+    def _api_start_batch(self):
+        return ConsoleHandler._api_start_batch(self)
+
+    def _api_analyze_project(self, job_id: str):
+        return ConsoleHandler._api_analyze_project(self, job_id)
+
 
 class _OneShotConsoleHandler(ConsoleHandler):
     def do_GET(self):

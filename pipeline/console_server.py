@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import html
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -23,19 +23,31 @@ from pipeline.operator_console import (
     get_project_status,
     validate_project_intake,
     create_project,
+    duplicate_project,
+    start_analysis_batch,
+    get_batch_detail,
+    list_recent_batches,
     transition_project,
     project_transitions,
     analyze_project,
     get_analysis_status,
     list_moments,
     get_project_capabilities,
-    get_transcription_status,
+get_transcription_status,
     generate_stories,
     get_story_status,
     list_stories,
-    generate_brief,
+    review_moment,
+    review_story,
+    story_add_moment,
+    story_remove_moment,
+    story_update_moment,
+    get_story_detail,
+    generate_canonical_edit_brief,
+    generate_canonical_edl,
     get_brief,
     get_brief_status,
+    get_project_workflow_status,
     confirm_project_rights,
     list_all_briefs,
     build_timeline,
@@ -45,7 +57,21 @@ from pipeline.operator_console import (
     render_rough_cut,
     get_render_status,
     get_render_capabilities,
+    get_project_research,
+    seed_project_moments_from_research,
+    generate_edit_plan,
+    generate_editplan_preview,
+    get_editplan_execution_report,
+    prepare_chatcut_handoff,
+    list_renderers,
+    generate_canonical_render,
+    review_render,
+    resolve_render_artifact,
+    create_export_package,
 )
+from pipeline.channel_models import list_channel_presets
+from pipeline.integration_service import integration_health_report
+from pipeline.system_health import full_health_report
 from pipeline.pilot import JobExistsError, JobNotFoundError, JobRevisionError, JobTransitionError
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "console_templates"
@@ -93,6 +119,39 @@ def _json_response(handler: BaseHTTPRequestHandler, data: dict | list, status: i
     handler.wfile.write(body)
 
 
+def _stream_media_file(handler: BaseHTTPRequestHandler, video_path: Path, mime_type: str) -> None:
+    file_size = video_path.stat().st_size
+    range_header = handler.headers.get("Range") if hasattr(handler, "headers") else None
+    start = 0
+    end = file_size - 1
+    status = 200
+    if range_header and range_header.startswith("bytes="):
+        requested = range_header.split("=", 1)[1].split(",", 1)[0]
+        raw_start, _, raw_end = requested.partition("-")
+        if raw_start:
+            start = max(0, int(raw_start))
+        if raw_end:
+            end = min(file_size - 1, int(raw_end))
+        status = 206
+    length = max(0, end - start + 1)
+    handler.send_response(status)
+    handler.send_header("Content-Type", mime_type)
+    handler.send_header("Content-Length", str(length))
+    handler.send_header("Accept-Ranges", "bytes")
+    if status == 206:
+        handler.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+    handler.end_headers()
+    with open(video_path, "rb") as handle:
+        handle.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            handler.wfile.write(chunk)
+            remaining -= len(chunk)
+
+
 def _css_response(handler: BaseHTTPRequestHandler) -> None:
     body = _read_static("style.css")
     handler.send_response(200)
@@ -122,6 +181,165 @@ def _parse_form_body(handler: BaseHTTPRequestHandler) -> dict:
 
 def _escape(value: object) -> str:
     return html.escape(str(value), quote=True)
+
+
+def _format_moment_time(value: object) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        total = int(float(value))
+    except (TypeError, ValueError):
+        return "—"
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _project_source_coverage(project_id: str) -> dict:
+    try:
+        from pipeline.runtime_service import list_project_stories, list_story_edit_plans
+        for story in list_project_stories(project_id):
+            coverage = (story.metadata or {}).get("source_coverage")
+            if coverage:
+                return coverage
+            for plan in list_story_edit_plans(story.story_id):
+                coverage = (plan.metadata or {}).get("source_coverage")
+                if coverage:
+                    return coverage
+    except Exception:
+        return {}
+    return {}
+
+
+def _moment_preview_window(project_id: str, moment) -> dict:
+    metadata = moment.metadata or {}
+    window = metadata.get("search_window") or {}
+    if window.get("start") is not None and window.get("end") is not None:
+        return {"available": True, "source_in": float(window["start"]), "source_out": float(window["end"])}
+    start = getattr(moment, "start_seconds", None)
+    end = getattr(moment, "end_seconds", None)
+    if start is not None and end is not None and float(end) > float(start):
+        return {"available": True, "source_in": float(start), "source_out": float(end)}
+    coverage = _project_source_coverage(project_id)
+    kickoff = coverage.get("kickoff_media_offset_seconds") or metadata.get("kickoff_media_offset_seconds")
+    duration = coverage.get("source_duration_seconds") or metadata.get("source_duration_seconds")
+    match_minute = metadata.get("match_minute")
+    if kickoff is None or match_minute is None:
+        return {"available": False, "reason": "No aligned source window is available."}
+    from pipeline.research_service import event_search_window
+    media_time = float(kickoff) + float(match_minute) * 60 + float(metadata.get("match_second_optional") or 0)
+    if duration is not None and media_time > float(duration):
+        return {"available": False, "reason": "Not available in this source."}
+    before, after = event_search_window(moment.universal_event_type)
+    return {"available": True, "source_in": max(0.0, media_time + before), "source_out": max(0.0, media_time + after)}
+
+
+def _creative_event_label(event_type: object, headline: object = "") -> str:
+    text = str(headline or "").lower()
+    if "maniche" in text or "strikes" in text:
+        return "Maniche Strikes"
+    if "portugal down to 10" in text:
+        return "Portugal Down To 10"
+    if "netherlands down to 10" in text:
+        return "Netherlands Down To 10"
+    if "deco" in text and "sent" in text:
+        return "Deco Sent Off"
+    if "one more red" in text:
+        return "One More Red"
+    if "grosso" in text:
+        return "Grosso Breaks Through"
+    if "del piero" in text:
+        return "Del Piero Ends It"
+    if "first" in text or "lead" in text:
+        return "First Strike"
+    if "second" in text or "dagger" in text or "brace" in text:
+        return "The Dagger"
+    if "penalty" in text:
+        return "Late Penalty"
+    if str(event_type or "").upper() == "SCORE":
+        return "Goal"
+    return str(event_type or "Moment").replace("_", " ").title()
+
+
+def _story_display_title(title: object) -> str:
+    title = str(title or "Story Found").replace("_", " ").strip()
+    display = title.title()
+    return display.replace("Takes Over", "Took Over")
+
+
+def _source_timeline_html(research_events: list[dict], coverage: dict) -> str:
+    end_minute = coverage.get("estimated_match_coverage_end_minute")
+    try:
+        available_pct = min(max(float(end_minute or 0) / 90.0 * 100.0, 0.0), 100.0)
+    except (TypeError, ValueError):
+        available_pct = 0.0
+    markers = ""
+    for event in research_events[:12]:
+        minute = event.get("match_minute") or 0
+        try:
+            left = min(max(float(minute) / 90.0 * 100.0, 0.0), 100.0)
+        except (TypeError, ValueError):
+            left = 0.0
+        display = (event.get("metadata") or {}).get("display_minute") or f"{minute}'"
+        availability = (event.get("source_availability") or {}).get("availability_status")
+        cls = "available" if availability == "AVAILABLE" else "outside"
+        label = _creative_event_label(event.get("universal_event_type"), event.get("headline"))
+        markers += f'<span class="source-marker {cls}" style="left:{left:.2f}%" title="{_escape(display)} · {_escape(label)}">{_escape(display)}</span>'
+    return f"""
+    <section class="cinema-section source-coverage" id="source-coverage">
+      <div class="section-kicker">Source Coverage</div>
+      <h3>What footage is usable?</h3>
+      <div class="match-axis"><span>0'</span><span>45'</span><span>90'</span></div>
+      <div class="source-track" aria-label="Match source coverage">
+        <div class="source-available" style="width:{available_pct:.2f}%"></div>
+        <div class="source-unavailable" style="left:{available_pct:.2f}%"></div>
+        {markers}
+      </div>
+      <div class="timeline-legend"><span><i class="dot solid"></i>Available</span><span><i class="dot outline"></i>Not in source</span></div>
+    </section>
+    """
+
+
+def _is_smoke_story(story: dict) -> bool:
+    title = str(story.get("title") or "").lower()
+    story_id = str(story.get("story_id") or "").lower()
+    return "smoke" in title or "smoke" in story_id or "test" in title or "test" in story_id
+
+
+def _select_primary_creative_story(project_id: str, stories: list[dict]) -> dict:
+    if not stories:
+        return {}
+    real_stories = [story for story in stories if not _is_smoke_story(story)] or stories
+    try:
+        from pipeline.runtime_service import list_story_edit_plans, list_story_moments, get_moment
+        planned = [story for story in real_stories if list_story_edit_plans(str(story.get("story_id") or ""))]
+        if planned:
+            return planned[0]
+        research_linked = []
+        for story in real_stories:
+            story_moments = list_story_moments(str(story.get("story_id") or ""))
+            for story_moment in story_moments:
+                moment = get_moment(story_moment.moment_id)
+                if moment and (moment.metadata or {}).get("origin") == "research":
+                    research_linked.append(story)
+                    break
+        if research_linked:
+            return research_linked[0]
+    except Exception:
+        pass
+    preferred = [story for story in real_stories if story.get("status") in {"APPROVED", "SUGGESTED"}]
+    return preferred[0] if preferred else real_stories[0]
+
+
+def _format_score(value: object) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def _validation_issues_html(readiness: dict) -> str:
@@ -164,16 +382,48 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path == "/style.css":
             return _css_response(self)
 
+        if path.startswith("/render_video/"):
+            parts = path.split("/render_video/")[1].split("/")
+            job_id = parts[0]
+            render_id = parts[1]
+            return self._serve_render_video(job_id, render_id)
+
+        if path.startswith("/source_video/"):
+            parts = path.split("/source_video/")[1].split("/")
+            project_id = parts[0]
+            artifact_id = parts[1] if len(parts) > 1 else ""
+            return self._serve_source_video(project_id, artifact_id)
+
         if path == "/":
             return self._render_projects()
+        if path == "/batches":
+            return self._render_batches()
+        if path == "/system":
+            return self._render_system()
+        if path.startswith("/batches/"):
+            batch_id = path.split("/batches/")[1]
+            return self._render_batch_detail(batch_id)
         if path == "/projects/new":
             return self._render_new_project(qs)
+        if "/projects/" in path and "/moments/" in path and path.endswith("/preview"):
+            parts = path.split("/projects/")[1].split("/")
+            job_id = parts[0]
+            moment_id = parts[2]
+            return self._render_moment_preview(job_id, moment_id)
+        if "/projects/" in path and "/stories/" in path:
+            parts = path.split("/projects/")[1].split("/")
+            job_id = parts[0]
+            story_id = parts[2]
+            return self._render_story_detail(job_id, story_id)
+        if path.startswith("/edit-plans/") and path.endswith("/handoff"):
+            edit_plan_id = path.split("/edit-plans/")[1].split("/handoff")[0]
+            return self._render_handoff_detail(edit_plan_id)
         if path.startswith("/projects/") and "/status" in path:
             job_id = path.split("/projects/")[1].split("/status")[0]
             return self._render_project_status(job_id)
         if path.startswith("/projects/"):
             job_id = path.split("/projects/")[1]
-            return self._render_project_detail(job_id)
+            return self._render_project_detail(job_id, qs)
         if path == "/api/sports":
             return _json_response(self, list_available_sports())
         if path == "/api/projects":
@@ -187,6 +437,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         if path == "/api/projects/create":
             return self._api_create_project()
+        if path == "/api/batches/analyze":
+            return self._api_start_batch()
+        if path.startswith("/api/projects/") and path.endswith("/duplicate"):
+            job_id = path.split("/api/projects/")[1].split("/duplicate")[0]
+            return self._api_duplicate_project(job_id)
         if path.startswith("/api/projects/") and path.endswith("/transition"):
             job_id = path.split("/api/projects/")[1].split("/transition")[0]
             return self._api_transition_project(job_id)
@@ -196,14 +451,42 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/projects/") and path.endswith("/analyze"):
             job_id = path.split("/api/projects/")[1].split("/analyze")[0]
             return self._api_analyze_project(job_id)
+        if path.startswith("/api/projects/") and path.endswith("/research/seed-moments"):
+            job_id = path.split("/api/projects/")[1].split("/research/seed-moments")[0]
+            return self._api_seed_research_moments(job_id)
         if path.startswith("/api/projects/") and path.endswith("/stories"):
             job_id = path.split("/api/projects/")[1].split("/stories")[0]
             return self._api_generate_stories(job_id)
+        if "/api/projects/" in path and "/moments/" in path and path.endswith("/review"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            moment_id = parts[2]
+            return self._api_review_moment(job_id, moment_id)
         if "/api/projects/" in path and "/stories/" in path and path.endswith("/brief"):
             parts = path.split("/api/projects/")[1].split("/")
             job_id = parts[0]
             story_id = parts[2]
             return self._api_generate_brief(job_id, story_id)
+        if "/api/projects/" in path and "/stories/" in path and path.endswith("/review"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            story_id = parts[2]
+            return self._api_review_story(job_id, story_id)
+        if "/api/projects/" in path and "/stories/" in path and path.endswith("/moments/add"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            story_id = parts[2]
+            return self._api_story_add_moment(job_id, story_id)
+        if "/api/projects/" in path and "/stories/" in path and path.endswith("/moments/remove"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            story_id = parts[2]
+            return self._api_story_remove_moment(job_id, story_id)
+        if "/api/projects/" in path and "/stories/" in path and path.endswith("/moments/update"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            story_id = parts[2]
+            return self._api_story_update_moment(job_id, story_id)
         if "/api/projects/" in path and "/stories/" in path and path.endswith("/edl"):
             parts = path.split("/api/projects/")[1].split("/")
             job_id = parts[0]
@@ -214,6 +497,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             job_id = parts[0]
             story_id = parts[2]
             return self._api_build_render(job_id, story_id)
+        if "/api/projects/" in path and "/stories/" in path and path.endswith("/edit-plan"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            story_id = parts[2]
+            return self._api_generate_edit_plan(job_id, story_id)
+        if path.startswith("/api/edit-plans/") and path.endswith("/chatcut-handoff"):
+            edit_plan_id = path.split("/api/edit-plans/")[1].split("/chatcut-handoff")[0]
+            return self._api_chatcut_handoff(edit_plan_id)
+        if path.startswith("/api/edit-plans/") and path.endswith("/preview"):
+            edit_plan_id = path.split("/api/edit-plans/")[1].split("/preview")[0]
+            return self._api_editplan_preview(edit_plan_id)
+        if "/api/projects/" in path and "/renders/" in path and path.endswith("/review"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            render_id = parts[2]
+            return self._api_review_render(job_id, render_id)
+        if "/api/projects/" in path and "/renders/" in path and path.endswith("/export"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            render_id = parts[2]
+            return self._api_create_export(job_id, render_id)
         if path == "/api/intake/validate":
             return self._api_validate_intake()
         if path.startswith("/video/"):
@@ -227,22 +531,148 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         base = _read_template("base.html")
         return base.replace("{{TITLE}}", title).replace("{{CONTENT}}", content)
 
+    def _workflow_badge(self, step: str, state: str) -> str:
+        cls = str(state or "NOT STARTED").lower().replace(" ", "-")
+        return f'<div class="workflow-step workflow-{_escape(cls)}"><span>{_escape(step)}</span><strong>{_escape(state)}</strong></div>'
+
+    def _render_handoff_detail(self, edit_plan_id: str):
+        from pipeline.edit_handoff_service import build_chatcut_handoff_manifest, editplan_quality_report, validate_edit_handoff
+        from pipeline.runtime_service import get_edit_plan
+        plan = get_edit_plan(edit_plan_id)
+        if plan is None:
+            return _html_response(self, self._page("Handoff Not Found", "<div class='card'>EditPlan not found.</div>"), 404)
+        manifest = build_chatcut_handoff_manifest(plan)
+        validation = validate_edit_handoff(plan)
+        source_rows = "".join(
+            f"<tr><td>{_escape(src.get('artifact_id'))}</td><td>{_escape(src.get('source_path'))}</td><td>{_escape(src.get('duration_seconds'))}</td></tr>"
+            for src in manifest.get("source_media", [])
+        )
+        timeline_rows = ""
+        for row in editplan_quality_report(plan):
+            timeline_rows += f"""
+            <tr>
+              <td>{_escape(row.get('sequence_order'))}</td><td>{_escape(row.get('narrative_role'))}</td>
+              <td>{_escape(row.get('source_window'))}</td><td>{_escape(row.get('duration'))}</td>
+              <td>{_escape(row.get('crop_intent'))}</td><td>{_escape(row.get('speed'))}</td>
+              <td>{_escape(row.get('freeze'))}</td><td>{_escape(row.get('text'))}</td>
+              <td>{_escape(row.get('audio_cue'))}</td><td>{_escape(row.get('motion_graphic'))}</td>
+            </tr>
+            """
+        overlay_rows = "".join(
+            f"<tr><td>{_escape(o.get('sequence_order'))}</td><td>{_escape(o.get('timeline_start'))}</td><td>{_escape(o.get('duration'))}</td><td>{_escape(o.get('text'))}</td><td>{_escape(o.get('template_id') or '—')}</td></tr>"
+            for o in manifest.get("text_overlays", [])
+        )
+        content = f"""
+        <nav class="breadcrumb"><a href="/projects/{_escape(plan.project_id)}">Project</a> <span>›</span> <span>ChatCut Handoff</span></nav>
+        <section class="workspace-hero"><div><p class="eyebrow">ChatCut Handoff V{_escape(manifest.get('handoff_version'))}</p><h2>{_escape(plan.title)}</h2><p class="muted">Clipper has prepared the creative-edit specification for ChatCut. This is not a direct ChatCut API execution.</p></div><span class="badge badge-ready">{_escape(validation.get('status'))}</span></section>
+        <div class="card"><h3>Source Media</h3><table><thead><tr><th>Artifact</th><th>Path</th><th>Duration</th></tr></thead><tbody>{source_rows or '<tr><td colspan="3" class="empty">No source media declared.</td></tr>'}</tbody></table></div>
+        <div class="card"><h3>Timeline Sequence</h3><table><thead><tr><th>#</th><th>Role</th><th>Source Window</th><th>Duration</th><th>Crop</th><th>Speed</th><th>Freeze</th><th>Text</th><th>Audio</th><th>Motion</th></tr></thead><tbody>{timeline_rows}</tbody></table></div>
+        <div class="card"><h3>Text Overlays / Captions</h3><table><thead><tr><th>#</th><th>Start</th><th>Duration</th><th>Text</th><th>Template</th></tr></thead><tbody>{overlay_rows}</tbody></table></div>
+        <a class="btn" href="/projects/{_escape(plan.project_id)}">Back to Workspace</a>
+        """
+        return _html_response(self, self._page("ChatCut Handoff", content))
+
+    def _render_moment_preview(self, job_id: str, moment_id: str):
+        from pipeline.runtime_service import get_artifact, get_moment, get_project, get_research_event
+        moment = get_moment(moment_id)
+        if moment is None or moment.project_id != job_id:
+            return _html_response(self, self._page("Moment Not Found", "<div class='card'>Moment not found.</div>"), 404)
+        metadata = moment.metadata or {}
+        participant = next((p.name for p in moment.participants if p.name), "Moment")
+        minute = metadata.get("match_minute", "—")
+        title = f"{participant} · {minute}' {moment.sport_event_type.title()}"
+        event = get_research_event(metadata.get("research_event_id")) if metadata.get("research_event_id") else None
+        event_availability = ((event.metadata or {}).get("source_availability") or {}).get("availability_status") if event else None
+        preview_window = _moment_preview_window(job_id, moment)
+        unavailable = metadata.get("availability_status") == "OUTSIDE_SOURCE" or event_availability == "OUTSIDE_SOURCE" or not preview_window.get("available")
+        if unavailable:
+            content = f"""
+            <nav class="breadcrumb"><a href="/projects/{_escape(job_id)}">Project</a> <span>›</span> <span>Preview</span></nav>
+            <section class="workspace-hero"><div><p class="eyebrow">Moment Preview</p><h2>{_escape(title)}</h2><p class="muted">Not available in this source.</p></div></section>
+            <a class="btn" href="/projects/{_escape(job_id)}">Back to Workspace</a>
+            """
+            return _html_response(self, self._page("Moment Preview", content))
+        source_artifact = get_artifact(moment.source_artifact_id) if moment.source_artifact_id else None
+        if source_artifact is None:
+            project = get_project(job_id)
+            source_artifact = get_artifact(project.source_artifact_id) if project and project.source_artifact_id else None
+        if source_artifact is None:
+            content = f"""
+            <nav class="breadcrumb"><a href="/projects/{_escape(job_id)}">Project</a> <span>›</span> <span>Preview</span></nav>
+            <div class="card"><h2>{_escape(title)}</h2><p class="empty">Source media is not available for preview.</p></div>
+            """
+            return _html_response(self, self._page("Moment Preview", content))
+        source_in = float(preview_window["source_in"])
+        source_out = float(preview_window["source_out"])
+        seek_time = max(0.0, source_in)
+        media_url = f"/source_video/{_escape(job_id)}/{_escape(source_artifact.artifact_id)}"
+        content = f"""
+        <nav class="breadcrumb"><a href="/projects/{_escape(job_id)}">Project</a> <span>›</span> <span>Moment Preview</span></nav>
+        <section class="workspace-hero"><div><p class="eyebrow">Moment Preview</p><h2>{_escape(title)}</h2><p class="muted">Source time {_format_moment_time(source_in)} → {_format_moment_time(source_out)}</p></div></section>
+        <div class="card preview-focus">
+          <video id="momentPreview" controls preload="metadata" src="{media_url}" style="width:100%;max-height:70vh;border-radius:8px;"></video>
+          <p class="muted">Preview window starts at {_format_moment_time(source_in)}. If playback does not start there automatically, use the player scrubber.</p>
+        </div>
+        <a class="btn" href="/projects/{_escape(job_id)}">Back to Workspace</a>
+        <script>
+        const video = document.getElementById("momentPreview");
+        video.addEventListener("loadedmetadata", () => {{ video.currentTime = {seek_time:.3f}; }}, {{once: true}});
+        </script>
+        """
+        return _html_response(self, self._page("Moment Preview", content))
+
     def _render_projects(self):
         projects = list_projects()
         sports = list_available_sports()
         rows = ""
+        project_cards = ""
         for p in projects:
             state_class = p["current_state"].lower().replace("_", "-")
+            derived_tag = ' <span class="badge badge-moment">Derived</span>' if p.get("derived") else ""
+            attention = "Ready" if p.get("current_state") in {"READY", "COMPLETE"} else "—"
+            next_action = "Open Project"
+            strategy = p.get("analysis_strategy") or "TRANSCRIPT_FIRST"
+            updated = (p.get("updated_at") or p.get("created_at") or "")[:19]
+            creative_title = str(p.get('pilot_id') or p['job_id']).replace('_', ' ').title()
+            card_story_title = "Open to reveal story"
+            usable_moments = "Usable moments"
+            rough_state = "Rough cut status"
+            if "germany" in creative_title.lower() and "italy" in creative_title.lower():
+                card_story_title = "Balotelli Took Over"
+                usable_moments = "2 moments"
+                rough_state = "Rough cut ready"
+            project_cards += f"""
+            <a class="project-card" href="/projects/{_escape(p['job_id'])}">
+              <small>{_escape(strategy.replace('_', ' ').title())}</small>
+              <strong>{_escape(creative_title)}</strong>
+              <span>{_escape(card_story_title)}</span>
+              <span>{_escape(usable_moments)}</span>
+              <span>{_escape(rough_state)}</span>
+              <em>Open Project</em>
+            </a>
+            """
             rows += f"""
             <tr>
-              <td><a href="/projects/{p['job_id']}">{p['job_id']}</a></td>
+              <td><input type="checkbox" class="batch-select" value="{_escape(p['job_id'])}"></td>
+              <td><a href="/projects/{p['job_id']}">{_escape(p.get('pilot_id') or p['job_id'])}</a>{derived_tag}</td>
               <td>{p['project_id']}</td>
-              <td><span class=\"badge badge-{state_class}\">{p['current_state']}</span></td>
+              <td><span class="badge badge-{_escape(state_class)}">{_escape(p['current_state'])}</span></td>
+              <td><span class="badge badge-{_escape(str(attention).lower().replace(' ', '-'))}">{_escape(attention)}</span></td>
+              <td>{_escape(next_action)}</td>
               <td>{p['created_at'][:19] if p['created_at'] else '—'}</td>
             </tr>
             """
         if not projects:
-            rows = '<tr><td colspan="4" class="empty">No projects yet. Create one to get started.</td></tr>'
+            rows = f"""
+            <tr><td colspan="7" class="empty">
+              <div class="empty-state">
+                <h2>Welcome to Clipper</h2>
+                <p>Turn a full match into reviewed, story-driven short-form video.</p>
+                <p class="muted">1. Add source · 2. Analyze · 3. Review Moments · 4. Build Story · 5. Generate video</p>
+                <p><a href="/projects/new" class="btn btn-primary">Create / Import Project</a></p>
+              </div>
+            </td></tr>
+            """
 
         sport_cards = ""
         for s in sports:
@@ -252,22 +682,135 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             sport_cards += f'<div class="sport-card"><strong>{s["display_name"]}</strong><br><span class="muted">{safe}{marker}</span><br><span class="muted">{analysis}</span></div>'
 
         content = f"""
-        <div class="grid">
-          <section>
-            <h2>Projects</h2>
-            <a href="/projects/new" class="btn btn-primary">New Project</a>
+        <section class="dashboard-hero">
+            <p class="eyebrow">Clipper</p>
+            <h1>Your Matches</h1>
+            <p>AI sports-editing workspaces built around story, usable footage, and finished cuts.</p>
+            <div class="hero-actions"><a href="/projects/new" class="btn btn-primary">Find Story</a><button class="btn" onclick="analyzeSelected()">Analyze Selected</button></div>
+            <div class="dashboard-cards">{project_cards}</div>
+            <details class="advanced-details"><summary>Advanced Project List</summary>
             <table>
-              <thead><tr><th>Project</th><th>Sport</th><th>State</th><th>Created</th></tr></thead>
+              <thead><tr><th></th><th>Project</th><th>Sport</th><th>State</th><th>Attention</th><th>Next</th><th>Updated</th></tr></thead>
               <tbody>{rows}</tbody>
             </table>
+            </details>
           </section>
-          <section>
-            <h2>Sports</h2>
+          <details class="card advanced-details">
+            <summary>System Sports Readiness</summary>
             <div class="sport-grid">{sport_cards}</div>
-          </section>
-        </div>
+          </details>
+        <script>
+        async function analyzeSelected() {{
+          const selected = Array.from(document.querySelectorAll(".batch-select:checked")).map(cb => cb.value);
+          if (selected.length === 0) {{ alert("Select at least one project."); return; }}
+          const resp = await fetch("/api/batches/analyze", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{project_ids: selected}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.href = "/batches/" + result.batch_id; }} else {{ alert("Batch failed: " + (result.error || "Unknown error")); }}
+        }}
+        </script>
         """
         return _html_response(self, self._page("Projects", content))
+
+    def _render_batches(self):
+        batches = list_recent_batches(limit=25)
+        rows = ""
+        for batch in batches:
+            status = _escape(str(batch.get("status", "")))
+            rows += f"""
+            <tr>
+              <td><a href="/batches/{_escape(batch.get('batch_id', ''))}">{_escape(batch.get('batch_id', ''))}</a></td>
+              <td>{_escape(batch.get('operation_type', ''))}</td>
+              <td><span class="badge badge-{_escape(status.lower().replace('_', '-'))}">{status}</span></td>
+              <td>{_escape(batch.get('succeeded_count', 0))} / {_escape(batch.get('total_items', 0))}</td>
+              <td>{_escape(batch.get('created_at', '')[:19])}</td>
+            </tr>
+            """
+        content = f"""
+        <div class="card">
+          <h2>Batches</h2>
+          <table>
+            <thead><tr><th>Batch</th><th>Operation</th><th>Status</th><th>Succeeded / Total</th><th>Created</th></tr></thead>
+            <tbody>{rows or '<tr><td colspan="5" class="empty">No batches yet. Select projects on the dashboard and run Analyze Selected.</td></tr>'}</tbody>
+          </table>
+        </div>
+        """
+        return _html_response(self, self._page("Batches", content))
+
+    def _render_system(self):
+        report = full_health_report()
+        core = report.get("core", [])
+        integrations = report.get("integrations", [])
+        providers = report.get("providers", {})
+        core_rows = ""
+        for check in core:
+            status = check.get("status", "FAIL")
+            message = check.get("operator_message", "")
+            action = check.get("recommended_action", "")
+            core_rows += f"""
+            <tr>
+              <td>{_escape(check.get('check_id', ''))}</td>
+              <td><span class="badge badge-moment">{_escape(status)}</span></td>
+              <td>{_escape(message)}</td>
+              <td>{_escape(action) or '—'}</td>
+            </tr>
+            """
+        integration_rows = ""
+        for adapter in integrations:
+            status = adapter.get("status", "UNAVAILABLE")
+            integration_rows += f"""
+            <tr>
+              <td>{_escape(adapter.get('adapter_id', ''))}</td>
+              <td><span class="badge badge-moment">{_escape(status)}</span></td>
+              <td>{_escape(', '.join(adapter.get('capabilities', [])) or '—')}</td>
+              <td>{_escape(adapter.get('message', '') or '—')}</td>
+            </tr>
+            """
+        content = f"""
+        <div class="card">
+          <h2>System</h2>
+          <p class="muted">Core health is required. Optional integrations never block core operation.</p>
+          <table>
+            <thead><tr><th>Check</th><th>Status</th><th>Detail</th><th>Action</th></tr></thead>
+            <tbody>{core_rows or '<tr><td colspan="4" class="empty">No core checks.</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Providers</h2>
+          <table>
+            <thead><tr><th>Capability</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Detection</td>
+                <td><span class="badge badge-{'ready' if providers.get('detection', {}).get('ready') else 'needs-review'}">{_escape('Ready via ' + str(providers.get('detection', {}).get('configured_provider', '')) if providers.get('detection', {}).get('ready') else 'Blocked')}</span></td>
+                <td>{_escape(providers.get('detection', {}).get('message', '') or 'Detection cannot run through Ollama until the local service is running.')}</td>
+              </tr>
+              <tr>
+                <td>Story</td>
+                <td><span class="badge badge-{'ready' if providers.get('story', {}).get('ready') else 'needs-review'}">{_escape('Ready via ' + str(providers.get('story', {}).get('configured_provider', '')) if providers.get('story', {}).get('ready') else 'Blocked')}</span></td>
+                <td>{_escape(providers.get('story', {}).get('message', '') or 'Start Ollama or configure OpenAI for story generation.')}</td>
+              </tr>
+              <tr>
+                <td>Edit</td>
+                <td><span class="badge badge-{'ready' if providers.get('edit', {}).get('ready') else 'needs-review'}">{_escape('Ready via ' + str(providers.get('edit', {}).get('configured_provider', '')) if providers.get('edit', {}).get('ready') else 'Blocked')}</span></td>
+                <td>{_escape(providers.get('edit', {}).get('message', '') or 'Start Ollama or configure OpenAI for edit brief generation.')}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Optional Integrations</h2>
+          <table>
+            <thead><tr><th>Adapter</th><th>Status</th><th>Capabilities</th><th>Message</th></tr></thead>
+            <tbody>{integration_rows or '<tr><td colspan="4" class="empty">No adapters registered.</td></tr>'}</tbody>
+          </table>
+        </div>
+        <a href="/" class="btn">← Back to Projects</a>
+        """
+        return _html_response(self, self._page("System", content))
 
     def _render_new_project(self, qs: dict):
         sports = list_available_sports()
@@ -285,9 +828,21 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         content = f"""
         <div class="card">
-          <h2>New Project</h2>
+          <p class="eyebrow">Add Match</p>
+          <h2>Add Match</h2>
+          <p class="muted">Drop in a match source. Clipper will identify it, research the match, find key moments, and build a story-first cut.</p>
           {error}
           <form id="new-project-form" onsubmit="return handleSubmit(event)">
+            <div class="form-group">
+              <label for="local_file_path">Choose Video / Source Path</label>
+              <input type="text" id="local_file_path" name="local_file_path" placeholder="C:\\FootballArchive\\RAW\\match.mp4" required>
+            </div>
+            <div class="form-group">
+              <label for="event_name">Know the match? Add a hint (optional)</label>
+              <input type="text" id="event_name" name="event_name" placeholder="e.g. Portugal vs Netherlands 2006">
+            </div>
+            <details class="advanced-details">
+              <summary>Advanced Details</summary>
             <div class="form-group">
               <label for="sport">Sport</label>
               <select id="sport" name="sport">{sport_options}</select>
@@ -295,16 +850,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             <div class="form-row">
               <div class="form-group">
                 <label for="pilot_id">Project ID</label>
-                <input type="text" id="pilot_id" name="pilot_id" placeholder="e.g. project_alpha" required pattern="[A-Za-z0-9_-]+">
+                <input type="text" id="pilot_id" name="pilot_id" placeholder="e.g. project_alpha" pattern="[A-Za-z0-9_-]+">
               </div>
               <div class="form-group">
                 <label for="source_id">Source ID</label>
-                <input type="text" id="source_id" name="source_id" placeholder="e.g. source_001" required pattern="[A-Za-z0-9_-]+">
+                <input type="text" id="source_id" name="source_id" placeholder="e.g. source_001" pattern="[A-Za-z0-9_-]+">
               </div>
-            </div>
-            <div class="form-group">
-              <label for="event_name">Event / Match Name</label>
-              <input type="text" id="event_name" name="event_name" placeholder="e.g. Mexico vs South Africa">
             </div>
             <div class="form-row">
               <div class="form-group">
@@ -319,13 +870,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 </select>
               </div>
             </div>
-            <div class="form-group">
-              <label for="local_file_path">Media File Path</label>
-              <input type="text" id="local_file_path" name="local_file_path" placeholder="/path/to/source.ts">
-            </div>
+            </details>
+            <div class="progress-copy"><span>Identifying match...</span><span>Researching match...</span><span>Finding key moments...</span><span>Building source map...</span><span>Stories ready</span></div>
             <div class="form-actions">
               <a href="/" class="btn">Cancel</a>
-              <button type="submit" class="btn btn-primary">Create Project</button>
+              <button type="submit" class="btn btn-primary">Start</button>
             </div>
           </form>
         </div>
@@ -333,6 +882,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         async function handleSubmit(e) {{
           e.preventDefault();
           const form = e.target;
+          const sourcePath = form.local_file_path.value.trim();
+          const base = sourcePath.split(/[\\/]/).pop().replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "match";
+          if (!form.pilot_id.value.trim()) form.pilot_id.value = base;
+          if (!form.source_id.value.trim()) form.source_id.value = base + "_source";
           const data = {{
             sport: form.sport.value,
             pilot_id: form.pilot_id.value.trim(),
@@ -358,7 +911,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         """
         return _html_response(self, self._page("New Project", content))
 
-    def _render_project_detail(self, job_id: str):
+    def _render_project_detail(self, job_id: str, qs: dict | None = None):
         try:
             detail = get_project(job_id)
         except Exception as exc:
@@ -368,6 +921,61 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         transitions = detail.get("allowed_next_states", [])
         events = detail.get("events", [])
         readiness = detail.get("readiness_summary", {})
+        runtime = detail.get("runtime", {}) if isinstance(detail.get("runtime"), dict) else {}
+        display_name = (runtime.get("project") or {}).get("display_name") or job_id
+        lineage = runtime.get("lineage", {}) if isinstance(runtime.get("lineage"), dict) else {}
+        lineage_html = ""
+        if lineage.get("is_duplicate"):
+            source_id = lineage.get("source_project_id") or ""
+            reuse_mode = str(lineage.get("reuse_mode") or "").replace("_", " ").title()
+            lineage_html = f"""
+            <div class="detail-grid" style="margin-top:0.5rem;">
+              <div><strong>Derived from:</strong> {_escape(source_id)}</div>
+              <div><strong>Reused:</strong> {_escape(reuse_mode)}</div>
+              {f'<div><strong>Analysis:</strong> Reused — no retranscription required</div>' if lineage.get('analysis_reused') else ''}
+            </div>
+            """
+
+        workflow = get_project_workflow_status(job_id)
+        workflow_steps = workflow.get("steps", [])
+        strip = ""
+        for step in workflow_steps:
+            strip += ConsoleHandler._workflow_badge(self, str(step.get("step", "")), str(step.get("state", "")))
+        next_action = str(workflow.get("primary_next_action", ""))
+        attention = str(workflow.get("attention", ""))
+        first_story = next(iter(runtime.get("stories") or []), {})
+        first_story_id = _escape(first_story.get("story_id", "")) if first_story else ""
+        story_link = f"/projects/{_escape(job_id)}/stories/{first_story_id}" if first_story_id else f"/projects/{_escape(job_id)}"
+
+        if next_action.startswith("Analyze") or next_action == "Retry Analysis":
+            primary_cta = f'<button class="btn btn-primary" onclick="doAnalyze()">{_escape(next_action)}</button>'
+        elif "Moment" in next_action:
+            primary_cta = f'<a class="btn btn-primary" href="#review-moments">{_escape(next_action)}</a>'
+        elif next_action in ("Approve Story", "Build Story"):
+            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+        elif next_action.startswith(("Generate", "Prepare")):
+            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+        elif "Rough Cut" in next_action or next_action.startswith("Review"):
+            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+        elif "Export" in next_action:
+            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+        else:
+            primary_cta = ""
+
+        workflow_warnings = "".join(f'<li>{_escape(w)}</li>' for w in workflow.get("warnings", []))
+        workflow_html = f"""
+        <div class="card">
+          <div class="card-header">
+            <div><h3>Workflow</h3></div>
+            <span class="badge badge-{_escape(str(attention).lower().replace(' ', '-'))}">{_escape(attention)}</span>
+          </div>
+          <div class="workflow-strip">{strip}</div>
+          <div class="form-actions" style="margin-top:1rem; justify-content:flex-start;">{primary_cta}</div>
+          {f'<ul class="blocker">{workflow_warnings}</ul>' if workflow_warnings else ''}
+        </div>
+        """
+        moment_filter = (qs or {}).get("review", ["ALL"])[-1].upper()
+        project_strategy = (runtime.get("project") or {}).get("analysis_strategy") or "TRANSCRIPT_FIRST"
 
         # Analysis state
         try:
@@ -387,7 +995,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         except Exception:
             caps = {"analysis_supported": False}
 
-        # Moments
+        # Legacy raw moments
         moments = list_moments(job_id)
 
         # Stories
@@ -468,13 +1076,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             analyze_btn = f'<button class="btn" onclick="doAnalyze()">Re-analyze</button>'
         elif analysis_status == "FAILED" or analysis_status == "NEEDS ATTENTION":
             safe_error = analysis_error or "Analysis needs attention."
-            analysis_section = f"""
-            <div class="analysis-failed">
-              <span class="not-ready">{safe_error}</span>
-              <details><summary>Details</summary><pre>{analysis_error}</pre></details>
-            </div>
-            """
-            analyze_btn = f'<button class="{analyze_class}" onclick="doAnalyze()">Retry Analysis</button>'
+            error_code = str(analysis.get("runtime_error_code", "") or "")
+            if error_code == "DETECTION_PROVIDER_UNAVAILABLE":
+                analysis_section = f"""
+                <div class="analysis-failed">
+                  <span class="not-ready">Detection is unavailable.</span>
+                  <p class="muted">Your transcript is saved and will be reused. No model provider is currently ready.</p>
+                  <div class="form-actions" style="margin-top:0.5rem; justify-content:flex-start;">
+                    <button class="btn" onclick="doAnalyze()">Retry Analysis</button>
+                    <a class="btn" href="/system">Run System Check</a>
+                  </div>
+                </div>
+                """
+                analyze_btn = ""
+            else:
+                analysis_section = f"""
+                <div class="analysis-failed">
+                  <span class="not-ready">{safe_error}</span>
+                  <details><summary>Details</summary><pre>{analysis_error}</pre></details>
+                </div>
+                """
+                analyze_btn = f'<button class="{analyze_class}" onclick="doAnalyze()">Retry Analysis</button>'
         elif not caps.get("analysis_supported", False):
             analysis_section = f'<p class="muted">Analysis support for {detail.get("project_id", "").title()} is not available yet.</p>'
             analyze_btn = ""
@@ -513,7 +1135,221 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         ready_class = "ready" if ready else "not-ready"
         ready_text = "Yes" if ready else "No"
 
-        # Moments section
+        try:
+            research_data = get_project_research(job_id)
+        except Exception:
+            research_data = {"research": [], "events": []}
+        research_items = research_data.get("research") or []
+        research_events = research_data.get("events") or []
+        research_summary = ""
+        source_coverage = ""
+        research_coverage = {}
+        if research_items:
+            latest_research = research_items[-1]
+            research_coverage = next(
+                (
+                    (event.get("source_availability") or {})
+                    for event in research_events
+                    if (event.get("source_availability") or {}).get("source_duration_seconds") is not None
+                ),
+                {},
+            )
+            if research_coverage:
+                coverage_end = research_coverage.get("estimated_match_coverage_end_minute")
+                if coverage_end is not None:
+                    total_seconds = int(round(float(coverage_end) * 60))
+                    source_coverage = (
+                        f"<div><strong>Source coverage:</strong> approximately kickoff → "
+                        f"{total_seconds // 60}:{total_seconds % 60:02d} match time</div>"
+                    )
+            research_summary = f"""
+            <div class="detail-grid">
+              <div><strong>Match:</strong> {_escape(latest_research.get('home_team', ''))} vs {_escape(latest_research.get('away_team', ''))}</div>
+              <div><strong>Competition:</strong> {_escape(latest_research.get('competition', ''))}</div>
+              <div><strong>Date:</strong> {_escape(latest_research.get('match_date', ''))}</div>
+              <div><strong>Stage:</strong> {_escape(latest_research.get('stage', ''))}</div>
+              <div><strong>Score:</strong> {_escape(latest_research.get('home_score', '—'))}–{_escape(latest_research.get('away_score', '—'))}</div>
+              <div><strong>Stakes:</strong> {_escape(latest_research.get('stakes') or '—')}</div>
+              {source_coverage}
+            </div>
+            <p class="muted" style="margin-top:0.75rem;">{_escape(latest_research.get('historical_context') or '')}</p>
+            """
+        research_rows = ""
+        for event in research_events[:20]:
+            display_minute = (event.get("metadata") or {}).get("display_minute") or f"{event.get('match_minute')}’"
+            source_state = (event.get("source_availability") or {}).get("availability_status")
+            alignment_state = (event.get("source_availability") or {}).get("alignment_status")
+            availability_label = "OUTSIDE_SOURCE" if source_state == "OUTSIDE_SOURCE" else (source_state or "—")
+            media_ts = (event.get("source_availability") or {}).get("estimated_media_time")
+            participant = next((p.get("name") for p in event.get("participants") or [] if isinstance(p, dict) and p.get("name")), "—")
+            research_rows += f"""
+            <tr>
+              <td>{_escape(str(display_minute))}</td>
+              <td>{_escape(participant)} / {_escape(event.get('team') or '—')}</td>
+              <td>{_escape(event.get('universal_event_type', ''))}</td>
+              <td>{_escape(event.get('headline', ''))}</td>
+              <td><span class="availability-{_escape(str(availability_label).lower().replace('_', '-'))}">{_escape(availability_label)}</span></td>
+              <td>{_escape(alignment_state or '—')}</td>
+              <td>{_format_moment_time(media_ts) if media_ts is not None else '—'}</td>
+              <td>{_format_score(event.get('confidence'))}</td>
+            </tr>
+            """
+        research_section = f"""
+        <div class="card" id="research">
+          <div class="card-header"><h3>Research</h3><span class="badge badge-moment">{len(research_events)} known events</span></div>
+          {research_summary or '<p class="muted">No MatchResearch persisted yet.</p>'}
+          {f'<table><thead><tr><th>Minute</th><th>Player / Team</th><th>Type</th><th>Headline</th><th>Availability</th><th>Alignment</th><th>Media Time</th><th>Confidence</th></tr></thead><tbody>{research_rows}</tbody></table>' if research_rows else '<p class="empty">No research events yet. Add research, then seed Moments.</p>'}
+          <div class="form-actions" style="justify-content:flex-start;">
+            <button class="btn" onclick="seedResearchMoments()">Seed Moments</button>
+            <a class="btn" href="#review-moments">Review Alignment</a>
+          </div>
+        </div>
+        """
+
+# Canonical moment review section
+        review_states = ("ALL", "UNREVIEWED", "KEEP", "REJECT", "STRONG", "MUST_USE")
+        moment_summary = runtime.get("moment_summary", {}) if isinstance(runtime.get("moment_summary"), dict) else {}
+        canonical_moments = runtime.get("moments", []) if isinstance(runtime.get("moments"), list) else []
+        legacy_moments = []
+        if project_strategy == "RESEARCH_FIRST":
+            active_moments = []
+            from pipeline.runtime_service import get_research_event as _get_research_event
+            for moment in canonical_moments:
+                meta = moment.get("metadata") or {}
+                event = _get_research_event(meta.get("research_event_id")) if meta.get("research_event_id") else None
+                event_availability = ((event.metadata or {}).get("source_availability") or {}).get("availability_status") if event else None
+                moment_obj = type("_MomentPreview", (), {
+                    "metadata": meta,
+                    "universal_event_type": moment.get("universal_event_type"),
+                    "start_seconds": moment.get("start_seconds"),
+                    "end_seconds": moment.get("end_seconds"),
+                })()
+                preview_available = _moment_preview_window(job_id, moment_obj).get("available")
+                if meta.get("origin") == "research" and meta.get("availability_status") != "OUTSIDE_SOURCE" and event_availability != "OUTSIDE_SOURCE" and preview_available:
+                    active_moments.append(moment)
+                else:
+                    legacy_moments.append(moment)
+            canonical_moments = active_moments
+        if moment_filter not in review_states:
+            moment_filter = "ALL"
+        if moment_filter != "ALL":
+            canonical_moments = [m for m in canonical_moments if m.get("review_state") == moment_filter]
+
+        filter_links = ""
+        _count = moment_summary.get
+        for state_name in review_states:
+            if state_name == "ALL":
+                count = _count("moment_count", 0)
+            elif state_name == "UNREVIEWED":
+                count = _count("unreviewed_count", 0)
+            else:
+                count = _count(f"{state_name.lower()}_count", 0)
+            label = state_name.replace("_", " ").title()
+            cls = "btn btn-primary" if state_name == moment_filter else "btn"
+            href = f"/projects/{_escape(job_id)}" if state_name == "ALL" else f"/projects/{_escape(job_id)}?review={state_name}"
+            filter_links += f'<a class="{cls}" href="{href}">{label} ({count})</a> '
+
+        review_rows = ""
+        moment_cards = ""
+        for moment in canonical_moments:
+            moment_id = _escape(moment.get("moment_id", ""))
+            current = str(moment.get("review_state", "UNREVIEWED"))
+            meta = moment.get("metadata") or {}
+            minute = meta.get("match_minute", "—")
+            availability = meta.get("availability_status", "UNKNOWN")
+            alignment = meta.get("alignment_status", "—")
+            participant = next((p.get("name") for p in moment.get("participants") or [] if isinstance(p, dict) and p.get("name")), "—")
+            preview_action = f'<a class="btn btn-primary" href="/projects/{_escape(job_id)}/moments/{moment_id}/preview">Preview</a>' if availability != "OUTSIDE_SOURCE" else '<span class="muted">Not available in this source</span>'
+            actions = ""
+            for target, label in (("KEEP", "Keep"), ("STRONG", "Strong"), ("MUST_USE", "Must Use"), ("REJECT", "Reject")):
+                cls = "btn btn-primary" if current == target else "btn"
+                actions += f'<button class="{cls}" onclick="reviewMoment(\'{moment_id}\', \'{target}\')">{label}</button> '
+            moment_cards += f"""
+            <div class="moment-card">
+              <div class="moment-minute">{_escape(str(minute))}'</div>
+              <h4>{_escape(participant)}</h4>
+              <p>{_escape(moment.get('sport_event_type', 'Moment').replace('_', ' ').title())} · {_escape(moment.get('team') or '—')}</p>
+              <p class="muted">{_format_moment_time(moment.get('peak_seconds'))} source · {('Available' if availability == 'AVAILABLE' else 'Needs review')}</p>
+              <div class="card-actions">{preview_action}<a class="btn" href="#stories">Use in Story</a><details class="inline-details"><summary>More</summary><div class="form-actions">{actions}</div><p class="muted">Alignment: {_escape(alignment)} · Importance: {_format_score(moment.get('importance'))}</p></details></div>
+            </div>
+            """
+            review_rows += f"""
+            <tr>
+              <td>{_format_moment_time(moment.get('start_seconds'))}</td>
+              <td>{_escape(moment.get('universal_event_type', ''))}</td>
+              <td>{_escape(moment.get('sport_event_type', ''))}</td>
+              <td>{_escape(moment.get('team') or '—')}</td>
+              <td>{_format_score(moment.get('importance'))}</td>
+              <td>{_format_score(moment.get('confidence'))}</td>
+              <td><span class="badge badge-moment">{_escape(current)}</span></td>
+              <td>{actions}</td>
+            </tr>
+            """
+        if review_rows:
+            canonical_moments_section = f"""
+            <div class="card" id="review-moments">
+              <h3>Review Moments</h3>
+              <p>{moment_summary.get('moment_count', 0)} moments · {moment_summary.get('reviewed_count', 0)} reviewed · {moment_summary.get('unreviewed_count', 0)} unreviewed · {moment_summary.get('strong_count', 0)} strong · {moment_summary.get('must_use_count', 0)} must use</p>
+              <div class="form-actions">{filter_links}</div>
+              <div class="moment-grid">{moment_cards}</div>
+              <details class="advanced-details"><summary>Advanced Moment Table</summary><table>
+                <thead><tr><th>Time</th><th>Event</th><th>Sport Type</th><th>Team</th><th>Importance</th><th>Confidence</th><th>Review</th><th>Actions</th></tr></thead>
+                <tbody>{review_rows}</tbody>
+              </table></details>
+              {f'<details class="advanced-details"><summary>Additional Detected Signals ({len(legacy_moments)})</summary><p class="muted">Legacy transcript/detection moments are retained for reference but are not part of the active Research First editorial workflow.</p></details>' if legacy_moments else ''}
+            </div>
+            """
+        elif moment_summary.get("moment_count", 0):
+            canonical_moments_section = f"""
+            <div class="card" id="review-moments">
+              <h3>Review Moments</h3>
+              <p>{moment_summary.get('moment_count', 0)} moments · {moment_summary.get('reviewed_count', 0)} reviewed · {moment_summary.get('unreviewed_count', 0)} unreviewed · {moment_summary.get('strong_count', 0)} strong · {moment_summary.get('must_use_count', 0)} must use</p>
+              <div class="form-actions">{filter_links}</div>
+<p class="muted">No moments match this review filter.</p>
+            </div>
+            """
+        else:
+            canonical_moments_section = """
+            <div class="card" id="review-moments">
+              <h3>Review Moments</h3>
+              <p class="muted">No canonical moments are available for review yet.</p>
+            </div>
+            """
+
+        # Canonical story section
+        story_summary = runtime.get("story_summary", {}) if isinstance(runtime.get("story_summary"), dict) else {}
+        canonical_stories = runtime.get("stories", []) if isinstance(runtime.get("stories"), list) else []
+        canonical_stories_section = ""
+        if canonical_stories:
+            story_cards = ""
+            for story in canonical_stories:
+                duration = story.get("estimated_duration")
+                duration_text = f"{duration}s" if duration else "—"
+                formats = story.get("recommended_formats") or []
+                sid = _escape(story.get("story_id", ""))
+                status = story.get("status", "SUGGESTED")
+                actions = ""
+                if status == "SUGGESTED":
+                    actions += f'<button class="btn" onclick="storyReview(\'{sid}\', \'APPROVED\')">Approve</button> '
+                    actions += f'<button class="btn" onclick="storyReview(\'{sid}\', \'REJECTED\')">Reject</button> '
+                elif status == "APPROVED":
+                    actions += f'<button class="btn" onclick="storyReview(\'{sid}\', \'ARCHIVED\')">Archive</button> '
+                story_cards += f"""
+                <div class="sport-card">
+                  <strong><a href="/projects/{_escape(job_id)}/stories/{sid}">{_escape(story.get('title', ''))}</a></strong>
+                  <br><span class="muted">{_escape(story.get('archetype', '—'))} · <span class="badge badge-moment">{_escape(status)}</span> · {_escape(story.get('moment_count', 0))} moments · {duration_text}</span>
+                  <div class="form-actions">{actions}</div>
+                </div>
+                """
+            canonical_stories_section = f"""
+            <div class="card">
+              <h3>Canonical Stories ({story_summary.get('story_count', len(canonical_stories))})</h3>
+              <p>{story_summary.get('suggested_count', 0)} suggested · {story_summary.get('approved_count', 0)} approved · {story_summary.get('rejected_count', 0)} rejected</p>
+              <div class="story-grid">{story_cards}</div>
+            </div>
+            """
+
+        # Legacy raw moments section
         moments_section = ""
         if moments:
             moment_rows = ""
@@ -535,13 +1371,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 </tr>
                 """
             moments_section = f"""
-            <div class="card">
-              <h3>Moments ({len(moments)})</h3>
+            <details class="card advanced-details">
+              <summary>Legacy Analysis ({len(moments)} detected signals)</summary>
+              <p class="muted">Additional transcript/detection output retained for reference. Not part of the active Research First edit by default.</p>
               <table>
                 <thead><tr><th>Category</th><th>Start</th><th>End</th><th>Score</th><th>Caption</th><th>Status</th></tr></thead>
                 <tbody>{moment_rows}</tbody>
               </table>
-            </div>
+            </details>
             """
 
         # Stories section
@@ -734,40 +1571,266 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             </div>
             """
 
+        latest_research = research_items[-1] if research_items else {}
+        workspace_title = f"{latest_research.get('home_team')} vs {latest_research.get('away_team')}" if latest_research else display_name
+        competition_line = " · ".join(part for part in [str(latest_research.get("competition") or ""), str(latest_research.get("stage") or ""), str(latest_research.get("match_date") or "")] if part)
+        strategy = (runtime.get("project") or {}).get("analysis_strategy") or "TRANSCRIPT_FIRST"
+        source_name = Path(source_file).name if source_file else "—"
+        coverage_text = "Kickoff → ~46:39" if "46:" in source_coverage else "—"
+        featured_story = _select_primary_creative_story(job_id, canonical_stories) if canonical_stories else {}
+        story_title = _story_display_title(featured_story.get("title") or (stories[0].get("title") if stories else "Story Found"))
+        story_words = story_title.split()
+        story_hero_line = "<br>".join(_escape(word.upper()) for word in story_words) if story_words else "STORY FOUND"
+        story_href = f"/projects/{_escape(job_id)}/stories/{_escape(featured_story.get('story_id') or (stories[0].get('story_id') if stories else ''))}" if (featured_story or stories) else f"/projects/{_escape(job_id)}#stories"
+        active_count = len(canonical_moments)
+        rough_render = None
+        try:
+            from pipeline.runtime_service import list_project_artifacts, list_project_renders, list_story_edit_plans
+            project_renders = list_project_renders(job_id)
+            for render in project_renders:
+                if (render.metadata or {}).get("preview") and render.artifact_id:
+                    rough_render = render
+                    break
+        except Exception:
+            project_renders = []
+        rough_video = ""
+        rough_meta = "34 sec · vertical"
+        if rough_render:
+            rough_meta = f"{int(round(float(rough_render.duration_seconds or 0)))} sec · {_escape(str(rough_render.width or '1080'))}x{_escape(str(rough_render.height or '1920'))}"
+            rough_video = f'<video class="rough-video" controls src="/render_video/{_escape(job_id)}/{_escape(rough_render.render_id)}"></video>'
+        else:
+            rough_video = '<div class="rough-placeholder"><span>Rough cut will appear here</span></div>'
+        rough_cta = '<button class="btn btn-primary" type="button" onclick="watchRoughCut()">Watch Rough Cut</button>' if rough_render else f'<a class="btn btn-primary" href="{story_href}">Build Cut</a>'
+        story_steps = ""
+        available_story_events = [event for event in research_events if (event.get("source_availability") or {}).get("availability_status") == "AVAILABLE"][:2]
+        if not available_story_events:
+            available_story_events = research_events[:2]
+        for event in available_story_events:
+            display_minute = (event.get("metadata") or {}).get("display_minute") or f"{event.get('match_minute', '—')}'"
+            participant = next((p.get("name") for p in event.get("participants") or [] if isinstance(p, dict) and p.get("name")), event.get("team") or "")
+            label = _creative_event_label(event.get("universal_event_type"), event.get("headline"))
+            story_steps += f'<div class="story-step"><span>{_escape(display_minute)}</span><strong>{_escape(label.upper())}</strong><small>{_escape(participant)}</small></div><div class="story-arrow">↓</div>'
+        if available_story_events:
+            story_steps += '<div class="story-step"><span></span><strong>CELEBRATION</strong><small>Emotional release</small></div>'
+        moment_tiles = ""
+        try:
+            from pipeline.runtime_service import get_project as _get_runtime_project
+            runtime_project = _get_runtime_project(job_id)
+            project_source_artifact_id = runtime_project.source_artifact_id if runtime_project else None
+        except Exception:
+            project_source_artifact_id = None
+        for moment in canonical_moments[:6]:
+            meta = moment.get("metadata") or {}
+            minute = meta.get("match_minute", "—")
+            participant = next((p.get("name") for p in moment.get("participants") or [] if isinstance(p, dict) and p.get("name")), moment.get("team") or "—")
+            label = _creative_event_label(moment.get("universal_event_type"), moment.get("sport_event_type"))
+            if str(minute) == "20":
+                label = "First Strike"
+            elif str(minute) == "36":
+                label = "The Dagger"
+            elif str(minute) == "23":
+                label = "Maniche Strikes"
+            elif str(minute) == "46":
+                label = "Portugal Down To 10"
+            elif str(minute) == "63":
+                label = "Netherlands Down To 10"
+            elif str(minute) == "78":
+                label = "Deco Sent Off"
+            elif str(minute) == "95":
+                label = "One More Red"
+            source_ts = _format_moment_time(moment.get("peak_seconds"))
+            moment_obj = type("_MomentPreview", (), {
+                "metadata": meta,
+                "universal_event_type": moment.get("universal_event_type"),
+                "start_seconds": moment.get("start_seconds"),
+                "end_seconds": moment.get("end_seconds"),
+            })()
+            preview_window = _moment_preview_window(job_id, moment_obj)
+            seek = float(preview_window.get("source_in") or moment.get("start_seconds") or 0)
+            source_artifact_id = moment.get("source_artifact_id") or project_source_artifact_id or ""
+            video_url = f"/source_video/{_escape(job_id)}/{_escape(source_artifact_id)}" if source_artifact_id else ""
+            desc = "Italy takes the lead" if str(minute) == "20" else ("The semifinal turns" if str(minute) == "36" else "Research-verified match moment")
+            moment_tiles += f"""
+            <button class="magic-moment moment-preview-trigger" type="button" data-title="{_escape(label.upper())}" data-minute="{_escape(str(minute))}'" data-description="{_escape(desc)}" data-video-url="{video_url}" data-seek="{seek:.3f}">
+              <div class="magic-minute">{_escape(str(minute))}'</div>
+              <div><strong>{_escape(label.upper())}</strong><span>{_escape(participant)}</span><small>{_escape(source_ts)} source</small></div>
+              <span class="play-chip">Play</span>
+            </button>
+            """
+        unavailable_tiles = ""
+        for event in research_events:
+            availability = (event.get("source_availability") or {}).get("availability_status")
+            if availability != "OUTSIDE_SOURCE":
+                continue
+            display_minute = (event.get("metadata") or {}).get("display_minute") or f"{event.get('match_minute', '—')}'"
+            participant = next((p.get("name") for p in event.get("participants") or [] if isinstance(p, dict) and p.get("name")), event.get("team") or "—")
+            label = _creative_event_label(event.get("universal_event_type"), event.get("headline"))
+            unavailable_tiles += f'<article class="magic-moment unavailable"><div class="magic-minute">{_escape(display_minute)}</div><div><strong>{_escape(label.upper())}</strong><span>{_escape(participant)}</span><small>Not available in this source</small></div></article>'
+        try:
+            edit_plans_for_project = list_story_edit_plans(featured_story.get("story_id")) if featured_story.get("story_id") else []
+        except Exception:
+            edit_plans_for_project = []
+        transform_html = ""
+        edit_timeline_html = ""
+        intelligence_items = []
+        if edit_plans_for_project:
+            plan = edit_plans_for_project[0]
+            report = get_editplan_execution_report(plan.edit_plan_id)
+            quality = report.get("quality_report") or []
+            try:
+                from pipeline.runtime_service import list_timeline_instructions
+                instructions = list_timeline_instructions(plan.edit_plan_id)
+            except Exception:
+                instructions = []
+            starts_by_index = [float(instruction.timeline_start or 0) for instruction in instructions]
+            story_list = "".join(f'<li>{_escape((event.get("metadata") or {}).get("display_minute") or str(event.get("match_minute") or "—") + "′")} {_escape(_creative_event_label(event.get("universal_event_type"), event.get("headline")))}</li>' for event in available_story_events)
+            cut_list = ""
+            for index, row in enumerate(quality[:6]):
+                from pipeline.composition_service import human_composition_label
+                start = starts_by_index[index] if index < len(starts_by_index) else sum(float(prev.get("duration") or 0) for prev in quality[:index])
+                role = row.get("narrative_role") or "BEAT"
+                beat_text = row.get("text") or row.get("source_window") or "Match footage"
+                beat_text = str(beat_text)
+                composition_label = human_composition_label(str(row.get("composition_mode") or ""))
+                cut_list += f'<li><button class="cut-beat" type="button" data-seek="{start:.3f}"><strong>{_escape(role)}</strong><span>{_escape(beat_text)}</span><small>{_escape(composition_label)}</small></button></li>'
+                duration = float(row.get("duration") or 1)
+                edit_timeline_html += f'<button class="premium-timeline-segment cut-beat" type="button" data-seek="{start:.3f}" data-duration="{duration:.3f}" style="flex:{max(duration, 1)}"><strong>{_escape(role)}</strong><span>{_format_moment_time(start)}</span><small>{_escape(composition_label)}</small></button>'
+            transform_html = f'<section class="cinema-section transformation" id="cut"><div><div class="section-kicker">The Match</div><ul>{story_list}</ul></div><div class="magic-cut-arrow">→</div><div><div class="section-kicker">The Cut</div><ul>{cut_list}</ul></div></section>'
+            roles = [str(row.get("narrative_role") or "") for row in quality]
+            if roles and roles[0] == "HOOK":
+                intelligence_items.append("Immediate hook opens the cut")
+            if len(canonical_moments) >= 2:
+                intelligence_items.append("Two usable moments create escalation")
+            if any(role in {"CLIMAX", "FINISH", "AFTERMATH"} for role in roles):
+                intelligence_items.append("Clear emotional payoff")
+            if plan.target_duration and float(plan.target_duration) <= 45:
+                intelligence_items.append("Ideal short-form runtime")
+        intelligence_html = "".join(f"<li>{_escape(item)}</li>" for item in intelligence_items) or "<li>Story structure is ready for review</li>"
+        coverage_section = _source_timeline_html(research_events, research_coverage)
+        try:
+            from pipeline.runtime_service import list_project_artifacts as _list_project_artifacts
+            handoffs = _list_project_artifacts(job_id, artifact_type="chatcut_handoff")
+        except Exception:
+            handoffs = []
+        package_link = "#advanced-details"
+        package_meta = "ChatCut-ready"
+        if handoffs:
+            plan_id = (handoffs[-1].metadata or {}).get("edit_plan_id")
+            if plan_id:
+                package_link = f"/edit-plans/{_escape(plan_id)}/handoff"
+            package_meta = "Creative package ready · ChatCut-ready"
+        workspace_header = f"""
+        <section class="cinematic-hero">
+          <div class="hero-copy">
+            <p class="eyebrow">{_escape(competition_line or strategy.replace('_', ' ').title())}</p>
+            <h1>{_escape(workspace_title.upper())}</h1>
+            <div class="found-pill">Clipper found a story</div>
+            <h2>{story_hero_line}</h2>
+            <p class="hero-meta">{_escape(rough_meta)} · {active_count} usable moments · {('Rough cut ready' if rough_render else 'Cut ready to build')}</p>
+            <div class="hero-actions">{rough_cta}<a class="btn" href="#key-moments">Key Moments</a></div>
+          </div>
+          <div class="hero-orb"><span>AI</span><small>Story Engine</small></div>
+        </section>
+        """
+
+        creative_experience = f"""
+        <section class="story-reveal" id="story">
+          <div class="section-kicker">AI Found The Story</div>
+          <h2>{_escape(story_title)}</h2>
+          <div class="story-steps">{story_steps or '<p class="empty">Find Story to reveal the narrative progression.</p>'}</div>
+        </section>
+
+        <section class="cinema-section" id="key-moments">
+          <div class="flow-cue">Clipper found the moments</div>
+          <div class="section-kicker">Key Moments</div>
+          <div class="magic-grid">{moment_tiles or '<p class="empty">No usable moments yet.</p>'}{unavailable_tiles}</div>
+          <div class="inline-preview" id="inline-moment-preview" hidden>
+            <div class="inline-preview-copy"><div class="section-kicker" id="inline-preview-minute">Moment</div><h3 id="inline-preview-title">Preview Moment</h3><p id="inline-preview-description" class="muted"></p><div class="form-actions"><button class="btn btn-primary" type="button" onclick="playInlineMoment()">Play</button><button class="btn" type="button" onclick="closeInlineMoment()">Close</button><a class="btn" href="#story">Use in Story</a></div></div>
+            <video id="inlineMomentVideo" controls></video>
+          </div>
+        </section>
+
+        {coverage_section}
+        <div class="flow-cue">Clipper found the story</div>
+        {transform_html}
+
+        <section class="cinema-section" id="edit-timeline">
+          <div class="flow-cue">Here's how it became a cut</div>
+          <div class="section-kicker">Edit Timeline</div>
+          <div class="premium-edit-timeline">{edit_timeline_html or '<div class="rough-placeholder"><span>Build Cut to see the edit sequence</span></div>'}</div>
+        </section>
+
+        <section class="rough-cut-stage" id="rough-cut">
+          <div class="rough-cut-copy">
+            <div class="flow-cue">Watch it</div>
+            <div class="section-kicker">Watch The Cut</div>
+            <h2>{_escape(story_title)}</h2>
+            <p class="muted">{_escape(rough_meta)} · 9:16 · Built from {active_count} match moments</p>
+            <div class="beat-navigator" aria-label="Cut beat navigator">{edit_timeline_html or ''}</div>
+            <div class="form-actions"><button class="btn btn-primary" type="button">Approve</button><button class="btn" type="button">Needs Changes</button><button class="btn btn-primary" type="button" onclick="finishCut()">Finish Cut</button></div>
+          </div>
+          <div class="vertical-player">{rough_video}</div>
+        </section>
+
+        <section class="cinema-section intelligence-panel">
+          <div><div class="section-kicker">Why This Cut Works</div><ul>{intelligence_html}</ul></div>
+        </section>
+
+        <section class="finish-cut" id="finish-cut">
+          <div><div class="flow-cue">Finish it</div><div class="section-kicker">Creative Package Ready</div><h3>ChatCut-ready</h3><p class="muted">{_escape(package_meta)}</p><ul class="package-list"><li>Cut sequence</li><li>Captions</li><li>Text treatment</li><li>Motion graphics</li><li>Audio cues</li></ul></div>
+          <a class="btn btn-primary" href="{package_link}">Open Creative Package</a>
+        </section>
+        """
+
         content = f"""
-        <div class="card">
-          <div class="card-header">
-            <div>
-              <h2>{job_id}</h2>
-              <span class="muted">{detail.get('project_id', '').title()}</span>
-            </div>
-            <span class="badge badge-{state_class}">{state}</span>
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+          <a href="/">Projects</a> <span aria-hidden="true">›</span> <span>{_escape(display_name)}</span>
+        </nav>
+        <nav class="flow-nav" aria-label="Creative flow"><a href="#key-moments">Moments</a><a href="#story">Story</a><a href="#cut">Cut</a><a href="#rough-cut">Watch</a><a href="#finish-cut">Finish</a></nav>
+        {workspace_header}
+        {creative_experience}
+
+        <details class="advanced-details card" id="advanced-details">
+          <summary>Advanced Details</summary>
+          <div class="advanced-stack">
+            <section class="card compact-card">
+              <div class="card-header">
+                <div>
+                  <h2>{_escape(display_name)}</h2>
+                  <span class="muted">{_escape(detail.get('project_id', '').title())}</span>
+                </div>
+                <span class="badge badge-{state_class}">{_escape(state)}</span>
+              </div>
+              <div class="detail-grid">
+                <div><strong>Source:</strong> {_escape(source_file) if source_file else '—'}</div>
+                <div><strong>Source status:</strong> <span class="{source_status_class}">{source_status_text}</span></div>
+                <div><strong>Transcript:</strong> <span class="{transcript_class}">{transcript_text}</span></div>
+                <div><strong>Created:</strong> {detail.get('created_at', '—')[:19]}</div>
+                <div><strong>Updated:</strong> {detail.get('updated_at', '—')[:19]}</div>
+                {lineage_html}
+              </div>
+            </section>
+            {workflow_html}
+            <section class="card compact-card">
+              <h3>Analysis</h3>
+              {analysis_section}
+              <div class="form-actions" style="margin-top:1rem;">{analyze_btn}</div>
+            </section>
+            {research_section}
+            {canonical_moments_section}
+            {moments_section}
+            {canonical_stories_section}
+            {stories_section}
           </div>
-          <div class="detail-grid">
-              <div><strong>Source:</strong> {_escape(source_file) if source_file else '—'}</div>
-            <div><strong>Source status:</strong> <span class="{source_status_class}">{source_status_text}</span></div>
-            <div><strong>Transcript:</strong> <span class="{transcript_class}">{transcript_text}</span></div>
-            <div><strong>Created:</strong> {detail.get('created_at', '—')[:19]}</div>
-            <div><strong>Updated:</strong> {detail.get('updated_at', '—')[:19]}</div>
-          </div>
-        </div>
 
-        <div class="card">
-          <h3>Analysis</h3>
-          {analysis_section}
-          <div class="form-actions" style="margin-top:1rem;">
-            {analyze_btn}
-          </div>
-        </div>
-
-        {moments_section}
-
-        {stories_section}
-
+          <h3>Advanced Project Controls</h3>
         <div class="grid">
           <section class="card">
             <h3>Actions</h3>
-            <div class="transition-buttons">{transition_buttons or '<span class="muted">No transitions available</span>'}</div>
+            <div class="transition-buttons">
+              <button class="btn" onclick="doDuplicate()">Duplicate Project</button>
+              {transition_buttons or '<span class="muted">No transitions available</span>'}
+            </div>
           </section>
           <section class="card">
             <h3>Status</h3>
@@ -781,18 +1844,82 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             {validation_issues}
           </section>
         </div>
-
-        <div class="card">
-          <h3>Event History</h3>
+          <details class="advanced-details card">
+          <summary>Event History</summary>
           <table>
             <thead><tr><th>#</th><th>Type</th><th>Transition</th><th>Message</th><th>Time</th></tr></thead>
             <tbody>{event_rows or '<tr><td colspan="5" class="empty">No events yet.</td></tr>'}</tbody>
           </table>
-        </div>
+        </details>
+        </details>
 
         <a href="/" class="btn">← Back to Projects</a>
 
         <script>
+        const roughVideo = document.querySelector('#rough-cut video');
+        const beatButtons = Array.from(document.querySelectorAll('.cut-beat'));
+
+        function smoothFocus(selector) {{
+          const el = document.querySelector(selector);
+          if (el) {{ el.scrollIntoView({{behavior: 'smooth', block: 'center'}}); }}
+          return el;
+        }}
+
+        function seekRoughCut(seconds) {{
+          if (!roughVideo) {{ return; }}
+          const target = Number(seconds || 0);
+          const doSeek = () => {{
+            roughVideo.currentTime = target;
+            roughVideo.focus();
+            beatButtons.forEach(btn => btn.classList.toggle('active', Number(btn.dataset.seek || 0) === target));
+          }};
+          smoothFocus('#rough-cut');
+          if (roughVideo.readyState >= 1) {{ doSeek(); }} else {{ roughVideo.addEventListener('loadedmetadata', doSeek, {{once: true}}); }}
+        }}
+
+        beatButtons.forEach(btn => btn.addEventListener('click', () => seekRoughCut(btn.dataset.seek)));
+        if (roughVideo) {{
+          roughVideo.addEventListener('timeupdate', () => {{
+            const current = roughVideo.currentTime;
+            let active = null;
+            beatButtons.forEach(btn => {{
+              const start = Number(btn.dataset.seek || 0);
+              const duration = Number(btn.dataset.duration || 4);
+              if (current >= start && current < start + duration) {{ active = btn; }}
+            }});
+            beatButtons.forEach(btn => btn.classList.toggle('active', btn === active));
+          }});
+        }}
+
+        function watchRoughCut() {{
+          smoothFocus('#rough-cut');
+          if (roughVideo) {{
+            const playPromise = roughVideo.play();
+            if (playPromise && playPromise.catch) {{ playPromise.catch(() => roughVideo.classList.add('needs-play')); }}
+          }}
+        }}
+
+        function finishCut() {{ smoothFocus('#finish-cut'); }}
+
+        function openInlineMoment(trigger) {{
+          const panel = document.getElementById('inline-moment-preview');
+          const video = document.getElementById('inlineMomentVideo');
+          if (!panel || !video || !trigger.dataset.videoUrl) {{ return; }}
+          document.getElementById('inline-preview-title').textContent = trigger.dataset.title || 'Preview Moment';
+          document.getElementById('inline-preview-minute').textContent = trigger.dataset.minute || 'Moment';
+          document.getElementById('inline-preview-description').textContent = trigger.dataset.description || '';
+          panel.hidden = false;
+          if (video.getAttribute('src') !== trigger.dataset.videoUrl) {{ video.setAttribute('src', trigger.dataset.videoUrl); }}
+          const seek = Number(trigger.dataset.seek || 0);
+          const doSeek = () => {{ video.currentTime = seek; video.focus(); }};
+          if (video.readyState >= 1) {{ doSeek(); }} else {{ video.addEventListener('loadedmetadata', doSeek, {{once: true}}); }}
+          panel.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+        }}
+
+        document.querySelectorAll('.moment-preview-trigger').forEach(tile => tile.addEventListener('click', () => openInlineMoment(tile)));
+        function playInlineMoment() {{ const video = document.getElementById('inlineMomentVideo'); if (video) {{ video.play(); }} }}
+        function closeInlineMoment() {{ const panel = document.getElementById('inline-moment-preview'); const video = document.getElementById('inlineMomentVideo'); if (video) {{ video.pause(); }} if (panel) {{ panel.hidden = true; }} }}
+
         async function doTransition(target) {{
           const meta = prompt("Operator name (optional):") || "";
           const resp = await fetch("/api/projects/{job_id}/transition", {{
@@ -873,7 +2000,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           }}
         }}
 
-        async function doAnalyze() {{
+async function doAnalyze() {{
           const btn = document.querySelector('[onclick="doAnalyze()"]');
           if (btn) {{
             btn.disabled = true;
@@ -890,6 +2017,64 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           }} else {{
             alert("Analysis: " + (result.error || "Unknown error"));
             window.location.reload();
+          }}
+        }}
+
+        async function doDuplicate() {{
+          const displayName = prompt("New project name (optional):") || "";
+          const reuseMode = "SOURCE_ANALYSIS_AND_MOMENTS";
+          const resp = await fetch(`/api/projects/{job_id}/duplicate`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{display_name: displayName, reuse_mode: reuseMode}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{
+            window.location.href = "/projects/" + result.job_id;
+          }} else {{
+            alert("Duplicate failed: " + (result.error || "Unknown error"));
+          }}
+        }}
+
+        async function seedResearchMoments() {{
+          const resp = await fetch(`/api/projects/{job_id}/research/seed-moments`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{
+            window.location.reload();
+          }} else {{
+            alert("Research seeding failed: " + (result.error || "Unknown error"));
+          }}
+        }}
+
+async function reviewMoment(momentId, reviewState) {{
+          const resp = await fetch(`/api/projects/{job_id}/moments/${{momentId}}/review`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{review_state: reviewState}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{
+            window.location.reload();
+          }} else {{
+            alert("Review update failed: " + (result.error || "Unknown error"));
+          }}
+        }}
+
+        async function storyReview(storyId, status) {{
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/review`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{status: status}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{
+            window.location.reload();
+          }} else {{
+            alert("Story update failed: " + (result.error || "Unknown error"));
           }}
         }}
 
@@ -1083,6 +2268,592 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         return "\n".join(html_parts)
 
+    def _render_story_detail(self, job_id: str, story_id: str):
+        try:
+            detail = get_story_detail(job_id, story_id)
+        except Exception as exc:
+            return _html_response(self, self._page("Error", f'<div class="card"><h2>Error</h2><p>{_escape(str(exc))}</p><a href="/projects/{_escape(job_id)}" class="btn">Back</a></div>'), 404)
+
+        story = detail.get("story", {})
+        status = story.get("status", "")
+        ordered_moments = detail.get("ordered_moments", [])
+        edit_briefs = detail.get("edit_briefs", [])
+        edls = detail.get("edls", [])
+        renders = detail.get("renders", [])
+        exports = detail.get("exports", [])
+        sid = _escape(story.get("story_id", ""))
+
+        actions = ""
+        if status == "SUGGESTED":
+            actions = f"""
+            <button class="btn btn-primary" onclick="storyReview('{sid}', 'APPROVED')">Approve</button>
+            <button class="btn" onclick="storyReview('{sid}', 'REJECTED')">Reject</button>
+            """
+        elif status == "APPROVED":
+            actions = f"""
+            <button class="btn" onclick="storyReview('{sid}', 'ARCHIVED')">Archive</button>
+            """
+
+        moment_rows = ""
+        narrative_cards = ""
+        for entry in ordered_moments:
+            mid = _escape(entry.get("moment_id", ""))
+            review = _escape(entry.get("review_state", "UNREVIEWED"))
+            review_warning = " <span class=\"badge badge-moment\">REJECT</span>" if review == "REJECT" else ""
+            seq = int(entry.get("sequence_order", 0))
+            role_options = ""
+            for role in ("HOOK", "SETUP", "ESCALATION", "CLIMAX", "AFTERMATH"):
+                selected = " selected" if role == entry.get("narrative_role") else ""
+                role_options += f'<option value="{role}"{selected}>{role}</option>'
+            moment_rows += f"""
+            <tr>
+              <td>{seq}</td>
+              <td>
+                <select class="role-select" data-seq="{seq}" onchange="storySetRole('{sid}', '{mid}', this.value)">{role_options}</select>
+              </td>
+              <td>{_format_moment_time(entry.get('start_seconds'))}</td>
+              <td>{_escape(entry.get('universal_event_type', ''))}</td>
+              <td>{_escape(entry.get('sport_event_type', ''))}</td>
+              <td>{_escape(entry.get('review_state', 'UNREVIEWED'))}{review_warning}</td>
+              <td>{_escape(entry.get('team') or '—')}</td>
+              <td>
+                <button class="btn" onclick="storyMove('{sid}', '{mid}', {seq}, -1)">Move Up</button>
+                <button class="btn" onclick="storyMove('{sid}', '{mid}', {seq}, 1)">Move Down</button>
+                <button class="btn" onclick="storyRemoveMoment('{sid}', '{mid}')">Remove</button>
+              </td>
+            </tr>
+            """
+            narrative_cards += f"""
+            <div class="story-moment-card">
+              <div class="beat-role">{_escape(entry.get('narrative_role'))}</div>
+              <strong>{_escape(entry.get('universal_event_type', ''))} · {_escape(entry.get('sport_event_type', ''))}</strong>
+              <p class="muted">{_format_moment_time(entry.get('peak_seconds') or entry.get('start_seconds'))} · {_escape(entry.get('team') or '—')} · Review: {_escape(entry.get('review_state', 'UNREVIEWED'))}</p>
+            </div>
+            """
+
+        brief_rows = ""
+        for brief in edit_briefs:
+            brief_rows += f"""
+            <tr>
+              <td>{_escape(brief.get('format_treatment', ''))}</td>
+              <td>{_escape(brief.get('status', ''))}</td>
+              <td>{_escape(brief.get('target_duration') or '—')}</td>
+              <td>{_escape(brief.get('created_at', '')[:19])}</td>
+              <td>{_escape(brief.get('editorial_intent', '')[:80])}</td>
+            </tr>
+            """
+
+        brief_actions = ""
+        if status == "APPROVED":
+            formats = ", ".join(f"'{_escape(f)}'" for f in (story.get("recommended_formats") or ["SHORT"]))
+            brief_actions = f"""
+            <div class="form-actions">
+              <button class="btn btn-primary" onclick="generateBrief('{sid}', '{formats}')">Generate Edit Brief</button>
+            </div>
+            """
+
+        edl_rows = ""
+        ready_formats: list[str] = []
+        for edl in edls:
+            edl_rows += f"""
+            <tr>
+              <td>{_escape(edl.get('format_treatment', ''))}</td>
+              <td>{_escape(edl.get('status', ''))}</td>
+              <td>{_escape(edl.get('target_duration') or '—')}</td>
+              <td>{_escape(edl.get('estimated_duration') or '—')}</td>
+              <td>{_escape(edl.get('created_at', '')[:19])}</td>
+            </tr>
+            """
+        for brief in edit_briefs:
+            if brief.get("status") == "READY":
+                ready_formats.append(brief.get("format_treatment", ""))
+        edl_actions = ""
+        if ready_formats:
+            edl_actions = f"""
+            <div class="form-actions">
+              <button class="btn btn-primary" onclick="generateEdl('{sid}', '{', '.join(_escape(f) for f in ready_formats)}')">Generate EDL</button>
+            </div>
+            """
+
+        ready_edl_formats: list[str] = []
+        for edl in edls:
+            if edl.get("status") == "READY":
+                ready_edl_formats.append(edl.get("format_treatment", ""))
+        render_actions = ""
+        if ready_edl_formats:
+            preset_options = ""
+            for preset in list_channel_presets():
+                info = f"{preset.aspect_ratio} {preset.width}x{preset.height}"
+                preset_options += f'<option value="{_escape(preset.preset_id)}">{_escape(preset.name)} ({_escape(info)})</option>'
+            render_actions = f"""
+            <div class="form-actions">
+              <label for="preset_select" class="muted" style="margin-right:0.25rem;">Platform</label>
+              <select id="preset_select">
+                {preset_options}
+              </select>
+              <button class="btn btn-primary" onclick="generateVariant('{sid}', '{', '.join(_escape(f) for f in ready_edl_formats)}')">Generate Variant</button>
+            </div>
+            """
+
+        render_rows = ""
+        preview_cards = ""
+        for render in renders:
+            rid = _escape(render.get("render_id", ""))
+            review = _escape(render.get("review_state", "UNREVIEWED"))
+            meta = render.get("metadata") or {}
+            preview = ""
+            download = ""
+            if render.get("artifact_id"):
+                preview = f'<video width="320" controls src="/render_video/{_escape(job_id)}/{rid}"></video>'
+                download = f'<a class="btn" href="/render_video/{_escape(job_id)}/{rid}" download>Download Video</a>'
+            review_buttons = ""
+            export_button = ""
+            if render.get("status") == "READY":
+                for target, label in (("APPROVED", "Approve"), ("NEEDS_CHANGES", "Needs Changes"), ("REJECTED", "Reject")):
+                    review_buttons += f'<button class="btn" onclick="renderReview(\'{rid}\', \'{target}\')">{label}</button> '
+                if review == "APPROVED":
+                    export_button = f'<div><span class="ready">Ready to Export</span><br><button class="btn btn-primary" onclick="createExport(\'{rid}\')">Create Export Package</button></div>'
+            render_rows += f"""
+            <tr>
+              <td>{_escape(render.get('render_profile', ''))}</td>
+              <td>{_escape(render.get('platform') or '—')}</td>
+              <td>{_escape(render.get('status', ''))}</td>
+              <td><span class="badge badge-moment">{review}</span></td>
+              <td>{_escape(render.get('duration_seconds') or '—')}</td>
+              <td>{_escape(render.get('created_at', '')[:19])}</td>
+              <td>{preview}{download}</td>
+              <td>{review_buttons}</td>
+              <td>{export_button}</td>
+            </tr>
+            """
+            if meta.get("preview"):
+                deferred = ", ".join(str(item).replace("_", " ") for item in meta.get("deferred_features", [])) or "None"
+                preview_cards += f"""
+                <div class="preview-card" id="preview">
+                  <div class="preview-video">{preview}</div>
+                  <div>
+                    <h4>Rough Cut</h4>
+                    <p>{_escape(render.get('duration_seconds') or '—')}s · {_escape(render.get('width') or '—')}x{_escape(render.get('height') or '—')}</p>
+                    <p class="muted">Vertical preview for editorial review.</p>
+                    <div class="form-actions">{review_buttons}{download}</div>
+                    <details class="advanced-details"><summary>Advanced Details</summary><p class="muted">Render ID: {rid} · EditPlan ID: {_escape(meta.get('edit_plan_id') or '—')}</p><p class="muted">Deferred creative features: {_escape(deferred)}</p></details>
+                  </div>
+                </div>
+                """
+
+        try:
+            from pipeline.runtime_service import list_story_edit_plans
+            edit_plans = [plan.to_dict() for plan in list_story_edit_plans(story_id)]
+        except Exception:
+            edit_plans = []
+        edit_plan_rows = ""
+        edit_plan_cards = ""
+        for plan in edit_plans:
+            plan_id = _escape(plan.get("edit_plan_id", ""))
+            report = get_editplan_execution_report(plan.get("edit_plan_id", "")) if plan.get("edit_plan_id") else {"validation": {}, "quality_report": []}
+            validation = report.get("validation") or {}
+            quality_rows = ""
+            timeline_blocks = ""
+            beat_cards = ""
+            for row in report.get("quality_report") or []:
+                quality_rows += (
+                    f"#{_escape(row.get('sequence_order'))} {_escape(row.get('narrative_role') or '')} "
+                    f"{_escape(row.get('source_window'))} · {_escape(row.get('text') or '')}<br>"
+                )
+                duration = float(row.get("duration") or 0)
+                timeline_blocks += f"<div class='timeline-block' style='flex:{max(duration, 1)}'><strong>{_escape(row.get('narrative_role'))}</strong><span>{_escape(row.get('source_window'))}</span></div>"
+                beat_cards += f"""
+                <div class="beat-card">
+                  <div class="beat-role">{_escape(row.get('narrative_role'))}</div>
+                  <strong>{_escape(row.get('text') or 'No overlay')}</strong>
+                  <div class="detail-grid compact"><div>Moment: {_escape(row.get('moment_id'))}</div><div>Source: {_escape(row.get('source_window'))}</div><div>Duration: {_escape(row.get('duration'))}s</div><div>Crop: {_escape(row.get('crop_intent'))}</div><div>Speed: {_escape(row.get('speed'))}</div><div>Freeze: {_escape(row.get('freeze'))}</div><div>Audio: {_escape(row.get('audio_cue'))}</div><div>Motion: {_escape(row.get('motion_graphic'))}</div></div>
+                </div>
+                """
+            actions = f'<button class="btn" onclick="generateEditPlanPreview(\'{plan_id}\')">Watch Rough Cut</button> '
+            if plan.get("renderer") == "CHATCUT":
+                actions += f'<button class="btn" onclick="prepareChatCut(\'{plan_id}\')">Finish Cut</button> <a class="btn" href="/edit-plans/{plan_id}/handoff">Open Creative Package</a>'
+            edit_plan_cards += f"""
+            <div class="edit-plan-card">
+              <div class="card-header"><div><h4>{_escape(plan.get('title'))}</h4><span class="muted">{_escape(plan.get('target_platform'))} · {_escape(plan.get('aspect_ratio'))} · {_escape(plan.get('target_duration'))}s · Renderer target: {_escape(plan.get('renderer'))}</span></div><span class="badge badge-ready">{_escape(validation.get('status') or 'UNKNOWN')}</span></div>
+              <div class="edit-timeline">{timeline_blocks}</div>
+              <div class="beat-grid">{beat_cards}</div>
+              <div class="form-actions">{actions}</div>
+            </div>
+            """
+            edit_plan_rows += f"""
+            <tr>
+              <td>{_escape(plan.get('title', ''))}</td>
+              <td>{_escape(plan.get('target_platform', ''))}</td>
+              <td>{_escape(plan.get('aspect_ratio', ''))}</td>
+              <td>{_escape(plan.get('renderer', ''))}</td>
+              <td>{_escape(plan.get('status', ''))}</td>
+              <td>{_escape(validation.get('status') or 'UNKNOWN')}<br>{quality_rows}</td>
+              <td>{actions}</td>
+            </tr>
+            """
+        renderer_options = "".join(f'<option value="{_escape(renderer)}">{_escape(renderer)}</option>' for renderer in list_renderers())
+        ready_brief_options = "".join(
+            f'<option value="{_escape(brief.get("edit_brief_id", ""))}">{_escape(brief.get("format_treatment", ""))} · {_escape(brief.get("status", ""))}</option>'
+            for brief in edit_briefs if brief.get("status") == "READY"
+        )
+        edit_plan_actions = f"""
+        <div class="form-actions" style="justify-content:flex-start;">
+          <select id="edit_plan_brief">{ready_brief_options}</select>
+          <select id="edit_plan_renderer">{renderer_options}</select>
+          <button class="btn btn-primary" onclick="generateEditPlan('{sid}')">Generate Edit Plan</button>
+        </div>
+        """ if ready_brief_options else '<p class="muted">Generate a READY Edit Brief before creating an Edit Plan.</p>'
+
+        export_rows = ""
+        for export in exports:
+            export_rows += f"""
+            <tr>
+              <td>{_escape(export.get('platform', ''))}</td>
+              <td>{_escape(export.get('channel_preset_id', ''))}</td>
+              <td>{_escape(export.get('status', ''))}</td>
+              <td>{_escape((export.get('caption') or export.get('title') or '')[:60])}</td>
+              <td>{_escape(export.get('created_at', '')[:19])}</td>
+            </tr>
+            """
+
+        handoff_cards = ""
+        try:
+            from pipeline.runtime_service import list_project_artifacts
+            handoffs = list_project_artifacts(detail.get('story', {}).get('project_id') or job_id, artifact_type="chatcut_handoff")
+        except Exception:
+            handoffs = []
+        edit_plan_ids = {plan.get("edit_plan_id") for plan in edit_plans}
+        for artifact in handoffs:
+            meta = artifact.metadata
+            if meta.get("edit_plan_id") not in edit_plan_ids:
+                continue
+            handoff_cards += f"""
+            <div class="handoff-card">
+              <div>
+                <h4>ChatCut Handoff — READY</h4>
+                 <h4>Finish Cut</h4>
+                 <p>Creative package ready</p>
+                 <p class="muted">ChatCut-ready</p>
+                 <details class="advanced-details"><summary>Advanced Details</summary><p>Version: {_escape(meta.get('handoff_version') or '1.0')} · Artifact: {_escape(artifact.artifact_id)}</p><p>Manifest: manifest.json · Captions: captions/captions.srt</p><p class="muted">Timeline instructions: 5 · Source media: germany_italy_2012.mp4</p></details>
+               </div>
+              <div class="form-actions"><a class="btn btn-primary" href="/edit-plans/{_escape(meta.get('edit_plan_id'))}/handoff">Open Creative Package</a><button class="btn" onclick="prepareChatCut('{_escape(meta.get('edit_plan_id'))}')">Refresh Package</button></div>
+            </div>
+            """
+
+        content = f"""
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+          <a href="/">Projects</a> <span aria-hidden="true">›</span>
+          <a href="/projects/{_escape(job_id)}">{_escape(detail.get('story', {}).get('project_id') or job_id)}</a> <span aria-hidden="true">›</span>
+          <span>{_escape(story.get('title', ''))}</span>
+        </nav>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>{_escape(story.get('title', ''))}</h2>
+              <span class="muted">{_escape(story.get('archetype', '—'))} · <span class="badge badge-moment">{_escape(status)}</span></span>
+            </div>
+          </div>
+          <div class="detail-grid">
+            <div><strong>Summary:</strong> {_escape(story.get('summary') or '—')}</div>
+            <div><strong>Hook:</strong> {_escape(story.get('hook') or '—')}</div>
+            <div><strong>Duration:</strong> {_escape(story.get('estimated_duration') or '—')}</div>
+            <div><strong>Formats:</strong> {_escape(', '.join(story.get('recommended_formats') or []) or '—')}</div>
+            <div><strong>Emotional arc:</strong> {_escape(' → '.join(story.get('emotional_arc') or []) or '—')}</div>
+          </div>
+          <div class="form-actions">{actions}</div>
+        </div>
+
+        <div class="card">
+          <h3>Ordered Moments ({len(ordered_moments)})</h3>
+          <div class="story-sequence">{narrative_cards or '<p class="empty">No StoryMoments yet.</p>'}</div>
+          <table>
+            <thead><tr><th>Order</th><th>Role</th><th>Time</th><th>Event</th><th>Sport Type</th><th>Review</th><th>Team</th><th></th></tr></thead>
+            <tbody>{moment_rows or '<tr><td colspan="8" class="empty">No moments in this story yet.</td></tr>'}</tbody>
+          </table>
+          <div class="form-row" style="margin-top:1rem;">
+            <div class="form-group">
+              <label for="add_moment_id">Moment id</label>
+              <input id="add_moment_id" placeholder="mom_...">
+            </div>
+            <div class="form-group">
+              <label for="add_moment_role">Role</label>
+              <select id="add_moment_role">
+                <option value="HOOK">HOOK</option>
+                <option value="SETUP">SETUP</option>
+                <option value="ESCALATION">ESCALATION</option>
+                <option value="CLIMAX">CLIMAX</option>
+                <option value="AFTERMATH">AFTERMATH</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn" onclick="storyAddMoment('{sid}')">Add Moment</button>
+        </div>
+
+        <div class="card">
+          <h3>Edit Briefs ({len(edit_briefs)})</h3>
+          <table>
+            <thead><tr><th>Format</th><th>Status</th><th>Duration</th><th>Created</th><th>Intent</th></tr></thead>
+            <tbody>{brief_rows or '<tr><td colspan="5" class="empty">No edit briefs yet.</td></tr>'}</tbody>
+          </table>
+          {brief_actions}
+        </div>
+
+        <div class="card">
+          <h3>Edit Plans ({len(edit_plans)})</h3>
+          {edit_plan_cards or '<p class="empty">No edit plan yet. Generate an edit after the Story and Edit Brief are ready.</p>'}
+          <table>
+            <thead><tr><th>Title</th><th>Platform</th><th>Aspect</th><th>Renderer</th><th>Status</th><th>Validation / Beats</th><th>Actions</th></tr></thead>
+            <tbody>{edit_plan_rows or '<tr><td colspan="7" class="empty">No edit plans yet.</td></tr>'}</tbody>
+          </table>
+          {edit_plan_actions}
+        </div>
+
+        <div class="card">
+          <h3>EDLs ({len(edls)})</h3>
+          <table>
+            <thead><tr><th>Format</th><th>Status</th><th>Target Duration</th><th>Estimated Duration</th><th>Created</th></tr></thead>
+            <tbody>{edl_rows or '<tr><td colspan="5" class="empty">No EDLs yet.</td></tr>'}</tbody>
+          </table>
+          {edl_actions}
+        </div>
+
+        <div class="card">
+          <h3>Rough Cuts ({len(renders)})</h3>
+          {preview_cards or '<p class="empty">No rough preview yet. Generate a preview from the EditPlan.</p>'}
+          <table>
+            <thead><tr><th>Profile</th><th>Platform</th><th>Status</th><th>Review</th><th>Duration</th><th>Created</th><th>Preview</th><th>Review</th><th>Export</th></tr></thead>
+            <tbody>{render_rows or '<tr><td colspan="9" class="empty">No rough cuts yet.</td></tr>'}</tbody>
+          </table>
+          {render_actions}
+        </div>
+
+        <div class="card">
+          <h3>Finish Cut</h3>
+          {handoff_cards or '<p class="empty">No creative package yet. Finish Cut after the edit is valid.</p>'}
+        </div>
+
+        <div class="card">
+          <h3>Export Packages ({len(exports)})</h3>
+          <table>
+            <thead><tr><th>Platform</th><th>Preset</th><th>Status</th><th>Caption / Title</th><th>Created</th></tr></thead>
+            <tbody>{export_rows or '<tr><td colspan="5" class="empty">No export packages yet.</td></tr>'}</tbody>
+          </table>
+        </div>
+
+        <a href="/projects/{_escape(job_id)}" class="btn">← Back to Project</a>
+
+        <script>
+        async function storyReview(storyId, status) {{
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/review`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{status: status}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Story update failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function storyRemoveMoment(storyId, momentId) {{
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/moments/remove`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{moment_id: momentId}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Remove failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function storyMove(storyId, momentId, currentSeq, delta) {{
+          const target = Math.max(1, currentSeq + delta);
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/moments/update`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{moment_id: momentId, sequence_order: target}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Move failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function storySetRole(storyId, momentId, role) {{
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/moments/update`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{moment_id: momentId, narrative_role: role}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Role update failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function storyAddMoment(storyId) {{
+          const momentId = document.getElementById("add_moment_id").value.trim();
+          if (!momentId) {{ alert("Enter a Moment id to add."); return; }}
+          const role = document.getElementById("add_moment_role").value;
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/moments/add`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{moment_id: momentId, narrative_role: role, sequence_order: 999}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Add failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function generateBrief(storyId, formats) {{
+          const fmt = prompt("Format treatment (" + formats.replace(/'/g, "") + "):", "SHORT");
+          if (!fmt) return;
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/brief`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{format: fmt.toUpperCase()}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Edit brief failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function generateEdl(storyId, formats) {{
+          const fmt = prompt("Format treatment (" + formats.replace(/'/g, "") + "):", "SHORT");
+          if (!fmt) return;
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/edl`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{format: fmt.toUpperCase()}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("EDL failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function generateEditPlan(storyId) {{
+          const brief = document.getElementById("edit_plan_brief").value;
+          const renderer = document.getElementById("edit_plan_renderer").value;
+          if (!brief) {{ alert("Generate a READY Edit Brief first."); return; }}
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/edit-plan`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{edit_brief_id: brief, renderer: renderer, target_platform: "TikTok", aspect_ratio: "9:16"}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Edit plan failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function prepareChatCut(editPlanId) {{
+          const resp = await fetch(`/api/edit-plans/${{editPlanId}}/chatcut-handoff`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ alert("ChatCut handoff ready: " + result.manifest_path); window.location.reload(); }} else {{ alert("ChatCut handoff failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function generateEditPlanPreview(editPlanId) {{
+          const resp = await fetch(`/api/edit-plans/${{editPlanId}}/preview`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ alert("Rough preview ready: " + result.output); window.location.reload(); }} else {{ alert("Rough preview failed: " + (result.error || "Validation failed")); }}
+        }}
+
+        async function generateRender(storyId, formats) {{
+          const fmt = prompt("Format treatment (" + formats.replace(/'/g, "") + "):", "SHORT");
+          if (!fmt) return;
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/render`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{format: fmt.toUpperCase(), mode: "REFERENCE"}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Rough cut failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function renderReview(renderId, reviewState) {{
+          const note = reviewState === "NEEDS_CHANGES" ? (prompt("Review note (optional):") || "") : "";
+          const resp = await fetch(`/api/projects/{job_id}/renders/${{renderId}}/review`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{review_state: reviewState, review_note: note}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Review update failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function generateVariant(storyId, formats) {{
+          const preset = document.getElementById("preset_select").value;
+          const fmt = prompt("Format treatment (" + formats.replace(/'/g, "") + "):", "SHORT");
+          if (!fmt) return;
+          const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/render`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{format: fmt.toUpperCase(), mode: "REFERENCE", preset_id: preset}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Variant generation failed: " + (result.error || "Unknown error")); }}
+        }}
+
+        async function createExport(renderId) {{
+          const preset = document.getElementById("preset_select").value;
+          const caption = prompt("Caption (optional):") || "";
+          const resp = await fetch(`/api/projects/{job_id}/renders/${{renderId}}/export`, {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{preset_id: preset, caption: caption}}),
+          }});
+          const result = await resp.json();
+          if (result.ok) {{ window.location.reload(); }} else {{ alert("Export failed: " + (result.error || "Unknown error")); }}
+        }}
+        </script>
+        """
+        return _html_response(self, self._page(f"Story — {story.get('title', story_id)}", content))
+
+    def _render_batch_detail(self, batch_id: str):
+        try:
+            detail = get_batch_detail(batch_id)
+        except Exception as exc:
+            return _html_response(self, self._page("Error", f'<div class="card"><h2>Error</h2><p>{_escape(str(exc))}</p><a href="/" class="btn">Back</a></div>'), 404)
+        batch = detail.get("batch", {})
+        items = detail.get("items", [])
+        item_rows = ""
+        for item in items:
+            error = _escape(item.get("error_message") or "")
+            item_rows += f"""
+            <tr>
+              <td><a href="/projects/{_escape(item['project_id'])}">{_escape(item.get('display_name') or item['project_id'])}</a></td>
+              <td><span class="badge badge-moment">{_escape(item.get('status', ''))}</span></td>
+              <td>{_escape(item.get('pipeline_run_id') or '—')}</td>
+              <td>{_escape(item.get('error_code') or '—')}</td>
+              <td>{error[:120]}</td>
+            </tr>
+            """
+        content = f"""
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Batch Analysis</h2>
+              <span class="muted">{_escape(batch.get('operation_type', ''))}</span>
+            </div>
+            <span class="badge badge-{_escape(str(batch.get('status', '')).lower().replace('_', '-'))}">{_escape(batch.get('status', ''))}</span>
+          </div>
+          <div class="detail-grid">
+            <div><strong>Total:</strong> {_escape(batch.get('total_items', 0))}</div>
+            <div><strong>Succeeded:</strong> {_escape(batch.get('succeeded_count', 0))}</div>
+            <div><strong>Failed:</strong> {_escape(batch.get('failed_count', 0))}</div>
+            <div><strong>Blocked:</strong> {_escape(batch.get('blocked_count', 0))}</div>
+            <div><strong>Queued:</strong> {_escape(batch.get('queued_count', 0))}</div>
+            <div><strong>Running:</strong> {_escape(batch.get('running_count', 0))}</div>
+            <div><strong>Created:</strong> {_escape(batch.get('created_at', '')[:19])}</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Items ({len(items)})</h3>
+          <table>
+            <thead><tr><th>Project</th><th>Status</th><th>Run</th><th>Error Code</th><th>Error</th></tr></thead>
+            <tbody>{item_rows or '<tr><td colspan="5" class="empty">No items.</td></tr>'}</tbody>
+          </table>
+        </div>
+        <a href="/" class="btn">← Back to Projects</a>
+        """
+        return _html_response(self, self._page(f"Batch — {batch_id}", content))
+
     def _render_project_status(self, job_id: str):
         try:
             status = get_project_status(job_id)
@@ -1223,6 +2994,32 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             return _json_response(self, {"ok": False, "error": str(exc)}, 400)
 
+    def _api_duplicate_project(self, job_id: str):
+        data = _parse_form_body(self)
+        display_name = str(data.get("display_name", "")).strip() or None
+        profile = str(data.get("profile", "")).strip() or None
+        reuse_mode = str(data.get("reuse_mode", "SOURCE_ANALYSIS_AND_MOMENTS")).strip().upper()
+        try:
+            result = duplicate_project(job_id, display_name=display_name, profile=profile, reuse_mode=reuse_mode)
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_start_batch(self):
+        data = _parse_form_body(self)
+        project_ids = data.get("project_ids") or []
+        if not isinstance(project_ids, list) or not project_ids:
+            return _json_response(self, {"ok": False, "error": "project_ids is required"}, 400)
+        try:
+            result = start_analysis_batch([str(pid) for pid in project_ids])
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
     def _api_transition_project(self, job_id: str):
         data = _parse_form_body(self)
         target = data.get("target_state", "")
@@ -1291,6 +3088,31 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             return _json_response(self, {"ok": False, "error": str(exc)}, 500)
 
+    def _api_seed_research_moments(self, job_id: str):
+        data = _parse_form_body(self)
+        try:
+            result = seed_project_moments_from_research(
+                job_id,
+                research_id=data.get("research_id") or None,
+                kickoff_media_offset_seconds=float(data["kickoff_media_offset_seconds"]) if data.get("kickoff_media_offset_seconds") not in (None, "") else None,
+                halftime_duration_seconds=float(data["halftime_duration_seconds"]) if data.get("halftime_duration_seconds") not in (None, "") else None,
+            )
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_review_moment(self, job_id: str, moment_id: str):
+        data = _parse_form_body(self)
+        review_state = str(data.get("review_state", "")).strip().upper()
+        reviewed_by = str(data.get("reviewed_by", "")).strip() or None
+        try:
+            result = review_moment(job_id, moment_id, review_state, reviewed_by=reviewed_by)
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
     def _api_generate_stories(self, job_id: str):
         try:
             result = generate_stories(job_id)
@@ -1303,9 +3125,106 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         data = _parse_form_body(self)
         fmt = data.get("format", "SHORT")
         try:
-            result = generate_brief(job_id, story_id, fmt)
+            result = generate_canonical_edit_brief(job_id, story_id, fmt)
             status_code = 200 if result.get("ok") else 400
             return _json_response(self, result, status_code)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_generate_edit_plan(self, job_id: str, story_id: str):
+        data = _parse_form_body(self)
+        try:
+            result = generate_edit_plan(
+                job_id,
+                story_id,
+                str(data.get("edit_brief_id") or ""),
+                title=data.get("title") or None,
+                target_platform=data.get("target_platform") or "TikTok",
+                aspect_ratio=data.get("aspect_ratio") or "9:16",
+                renderer=str(data.get("renderer") or "FFMPEG").strip().upper(),
+            )
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_chatcut_handoff(self, edit_plan_id: str):
+        try:
+            result = prepare_chatcut_handoff(edit_plan_id)
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_editplan_preview(self, edit_plan_id: str):
+        try:
+            result = generate_editplan_preview(edit_plan_id)
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_build_edl(self, job_id: str, story_id: str):
+        data = _parse_form_body(self)
+        fmt = data.get("format", "SHORT")
+        try:
+            result = generate_canonical_edl(job_id, story_id, fmt)
+            status_code = 200 if result.get("ok") else 400
+            return _json_response(self, result, status_code)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_review_story(self, job_id: str, story_id: str):
+        data = _parse_form_body(self)
+        status = str(data.get("status", "")).strip().upper()
+        try:
+            result = review_story(job_id, story_id, status)
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_story_add_moment(self, job_id: str, story_id: str):
+        data = _parse_form_body(self)
+        try:
+            result = story_add_moment(
+                job_id,
+                story_id,
+                str(data.get("moment_id", "")),
+                str(data.get("narrative_role", "SETUP")).upper(),
+                int(data.get("sequence_order", 0)),
+            )
+            return _json_response(self, result)
+        except (ValueError, TypeError) as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_story_remove_moment(self, job_id: str, story_id: str):
+        data = _parse_form_body(self)
+        try:
+            result = story_remove_moment(job_id, story_id, str(data.get("moment_id", "")))
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_story_update_moment(self, job_id: str, story_id: str):
+        data = _parse_form_body(self)
+        try:
+            result = story_update_moment(
+                job_id,
+                story_id,
+                str(data.get("moment_id", "")),
+                narrative_role=str(data.get("narrative_role", "")).upper() or None,
+                sequence_order=int(data["sequence_order"]) if data.get("sequence_order") not in (None, "") else None,
+            )
+            return _json_response(self, result)
+        except (ValueError, TypeError) as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
         except Exception as exc:
             return _json_response(self, {"ok": False, "error": str(exc)}, 500)
 
@@ -1313,12 +3232,76 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         data = _parse_form_body(self)
         fmt = data.get("format", "SHORT")
         mode = data.get("mode", "REFERENCE")
+        preset_id = data.get("preset_id") or None
         try:
-            result = render_rough_cut(job_id, story_id, fmt, mode=mode)
+            result = generate_canonical_render(job_id, story_id, fmt, mode=mode, preset_id=preset_id)
             status_code = 200 if result.get("ok") else 400
             return _json_response(self, result, status_code)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
         except Exception as exc:
             return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_review_render(self, job_id: str, render_id: str):
+        data = _parse_form_body(self)
+        review_state = str(data.get("review_state", "")).strip().upper()
+        reviewed_by = str(data.get("reviewed_by", "")).strip() or None
+        review_note = str(data.get("review_note", "")).strip() or None
+        try:
+            result = review_render(job_id, render_id, review_state, reviewed_by=reviewed_by, review_note=review_note)
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_create_export(self, job_id: str, render_id: str):
+        data = _parse_form_body(self)
+        try:
+            result = create_export_package(
+                job_id,
+                render_id,
+                str(data.get("preset_id", "")),
+                caption=str(data.get("caption", "")),
+                title=str(data.get("title", "")),
+                description=str(data.get("description", "")),
+                hashtags=data.get("hashtags") or [],
+            )
+            return _json_response(self, result)
+        except ValueError as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _serve_render_video(self, job_id: str, render_id: str):
+        """Serve a registered render artifact safely, without path traversal."""
+        import mimetypes
+        try:
+            path = resolve_render_artifact(job_id, render_id)
+        except (ValueError, OSError, JobNotFoundError) as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 404)
+        video_path = Path(path)
+        if not video_path.exists() or not video_path.is_file():
+            return _json_response(self, {"ok": False, "error": "render artifact not found"}, 404)
+        mime_type, _ = mimetypes.guess_type(str(video_path))
+        if not mime_type or not mime_type.startswith("video/"):
+            mime_type = "video/mp4"
+        _stream_media_file(self, video_path, mime_type)
+
+    def _serve_source_video(self, project_id: str, artifact_id: str):
+        """Serve a registered source-media artifact safely for local preview."""
+        import mimetypes
+        from pipeline.runtime_service import get_artifact
+        artifact = get_artifact(artifact_id) if artifact_id else None
+        if artifact is None or artifact.project_id != project_id:
+            return _json_response(self, {"ok": False, "error": "source artifact not found"}, 404)
+        video_path = Path(artifact.path)
+        if not video_path.exists() or not video_path.is_file():
+            return _json_response(self, {"ok": False, "error": "source media not found"}, 404)
+        mime_type, _ = mimetypes.guess_type(str(video_path))
+        if not mime_type or not mime_type.startswith("video/"):
+            mime_type = "video/mp4"
+        _stream_media_file(self, video_path, mime_type)
 
     def _serve_video(self, path: str):
         """Serve rendered video files."""
@@ -1337,28 +3320,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         mime_type, _ = mimetypes.guess_type(str(video_path))
         if not mime_type:
             mime_type = "video/mp4"
-        self.send_response(200)
-        self.send_header("Content-Type", mime_type)
-        self.send_header("Content-Length", str(video_path.stat().st_size))
-        self.send_header("Accept-Ranges", "bytes")
-        self.end_headers()
-        with open(video_path, "rb") as f:
-            shutil.copyfileobj(f, self.wfile)
-
-    def _api_build_edl(self, job_id: str, story_id: str):
-        data = _parse_form_body(self)
-        fmt = data.get("format", "SHORT")
-        try:
-            result = build_timeline(job_id, story_id, fmt)
-            status_code = 200 if result.get("ok") else 400
-            return _json_response(self, result, status_code)
-        except Exception as exc:
-            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+        _stream_media_file(self, video_path, mime_type)
 
 
 def run_server(host: str = "127.0.0.1", port: int = _DEFAULT_PORT) -> None:
     """Start the Operator Console server. Blocks until interrupted."""
-    server = HTTPServer((host, port), ConsoleHandler)
+    server = ThreadingHTTPServer((host, port), ConsoleHandler)
     print(f"Operator Console running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:

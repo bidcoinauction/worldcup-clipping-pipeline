@@ -38,3 +38,9 @@ DETECTION/
 DETECTIONS/
 CLIP_MANIFESTS/*.csv
 MATCH_RESEARCH/WORLD_CUP/psg_arsenal_2min/
+
+# Generated runtime artifacts
+LOGS/
+*.sqlite3
+*.sqlite3.backup-*
+*.egg-info/

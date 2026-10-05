@@ -334,13 +334,24 @@ Return a JSON array of 1-5 stories."""
 
 def _run_story_llm(prompt_text: str, *, provider: str | None = None,
                    model: str | None = None) -> list[dict]:
-    """Call the LLM for story generation. Returns parsed stories."""
-    from .config import get_provider as _get_provider, get_model as _get_model
-    selected_provider = provider or _get_provider("detection")
-    selected_model = model or _get_model("detection")
+    """Call the LLM for story generation. Returns parsed stories.
+
+    Provider selection: explicit *provider*, else ``STORY_PROVIDER`` (default
+    ``openai``). Ollama uses the shared helper; the output contract is identical.
+    """
+    from .provider_service import ollama_generate, story_model, story_provider
+    selected_provider = (provider or story_provider()).strip().lower()
 
     if selected_provider == "openai":
-        return _run_openai_story(prompt_text, model=selected_model)
+        return _run_openai_story(prompt_text, model=model)
+    if selected_provider == "ollama":
+        content = ollama_generate(
+            prompt_text,
+            model=model or story_model(),
+            system_prompt="You are a sports story editor. Return only valid JSON.",
+            json_mode=True,
+        )
+        return _parse_stories_json(content)
     raise ValueError(f"unsupported story generation provider: {selected_provider!r}")
 
 

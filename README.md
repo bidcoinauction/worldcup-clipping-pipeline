@@ -1,33 +1,110 @@
-# Stadium Signal World Cup Clipping Pipeline
+# Stadium Signal (Clipper) — Local-First Sports Media Intelligence
 
-Stadium Signal is a local-first sports story, mythology, and clipping pipeline. The current reference deployment is the World Cup workflow: match metadata, research windows, transcription, prompt-based moment detection, story/edit artifacts, FFmpeg clip export, and review outputs.
+Stadium Signal is a local-first sports media intelligence and clipping workflow.
+Operators move through a Project pipeline:
 
-The repository now has two operator surfaces over the same engine: the existing CLI workflows and a local browser-based Operator Console. It is still not a broad SaaS product, hosted multi-tenant platform, billing system, or autonomous publishing system.
+```text
+Project
+→ Analyze
+→ Review Moments
+→ Build Story
+→ Generate Edit
+→ Rough Cut
+→ Review
+→ Platform Variant
+→ Export
+```
 
-The editorial path is source → transcription → moments → narrative/story interpretation → edit brief → EDL → rough cut/export → human review. Treatments support short-, medium-, and long-form editing; full matches, emotional metadata, and narrative function remain central.
+The reference deployment is the World Cup football workflow, but the runtime is
+sport-agnostic: canonical Moments normalize detection output, Stories reason
+across them, and one approved Story/Edit can produce multiple platform variants
+and Export Packages.
+
+The core is fully local and does not depend on OORT, Airtable, or Slack. Those
+are optional integration adapters.
+
+## Quick Start
+
+```powershell
+git clone <repo> && cd <repo>
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1      # Windows; or source .venv/bin/activate on macOS/Linux
+pip install -r requirements.txt
+python scripts/init_project.py    # first-run: dirs + runtime DB + migrations (idempotent)
+python scripts/doctor.py          # health check (--strict promotes warnings to failures)
+python scripts/console.py         # Operator Console at http://127.0.0.1:8420
+```
+
+No large models are downloaded automatically. FFmpeg/ffprobe must be on `PATH`
+for transcription and rendering.
+
+## Supported Environment
+
+- Python 3.11 or 3.12 (developed on 3.12).
+- FFmpeg and ffprobe on `PATH` (required for transcription audio, duration
+  checks, concat, rendering, and clip export).
+- Optional: `faster-whisper` local transcription (included in requirements).
+- Optional: `OPENAI_API_KEY` only for OpenAI-backed detection/story/edit.
+- Optional integrations (never required): OORT, Airtable, Slack adapters.
+- Windows is the primary supported platform; macOS/Linux are supported but less
+  exercised.
 
 ## Current Capabilities
 
-- CSV/JSON metadata for matches, moments, emotional timelines, clip windows, mythology scores, and match manifests.
+- Local-first Project runtime backed by SQLite (schema versioned, safe additive
+  migrations, automatic pre-upgrade backups).
+- Managed analysis with durable PipelineRuns and events.
+- Canonical Moments with review states and typed directed Moment relationships.
+- Stories, Edit Briefs, EDLs, Renders (with rough-cut review), platform
+  variants, and Export Packages.
+- Project duplication (reuse source/analysis/moments) and batch analysis.
+- Operator Console (dark cinematic UI) for project, moment, story, edit,
+  rough-cut, and export workflows.
+- Ace Stream recording support for Windows capture boxes.
+- CSV/JSON metadata for matches, moments, emotional timelines, clip windows,
+  mythology scores, and match manifests.
 - Local archive path resolution through `FOOTBALL_ARCHIVE_ROOT` or platform defaults.
-- Ace Stream recording support for Windows capture boxes through `scripts/record_live.py`.
-- Local-file processing through manifest and scheduled-match scripts.
 - OpenAI, Claude, Ollama, and faster-whisper integration points, depending on the workflow selected.
-- FFmpeg/ffprobe-based audio extraction, concat, duration inspection, and clip export.
+- FFmpeg/ffprobe-based audio extraction, concat, duration inspection, rough-cut rendering, and clip export.
 - Static review dashboard generation.
-- Local browser-based Operator Console for non-technical project/source setup, analysis, status, review flow, and export-oriented operator actions.
-- Reusable service modules under `pipeline/` for transcription, detection, story/edit artifacts, prompt generation, rendering, clip manifests, configuration, and pilot lifecycle operations.
 - Registered sport profiles: football is the default reference deployment with analysis support; basketball is selectable for configuration/intake/prompt/planning workflows, but its console analysis is disabled (`analysis_supported=False`).
 - Analysis preflight and interrupted-run recovery so missing dependencies or orphaned runs surface as actionable operator states instead of hanging at `RUNNING`.
 
+The repository has two operator surfaces over the same engine: CLI workflows and a local browser-based Operator Console. It is still not a broad SaaS product, hosted multi-tenant platform, billing system, or autonomous publishing system.
+
+The editorial path is source → transcription or research-first timeline → moments → narrative/story interpretation → edit brief → EDL/EditPlan → rough cut/export → human review. Treatments support short-, medium-, and long-form editing; full matches, emotional metadata, and narrative function remain central.
+
 ## Prerequisites
 
-- Python 3.10+ recommended. The current macOS verification also passes under the installed Python 3.9 `pytest` runner after compatibility fixes.
+- Python 3.11 or 3.12 recommended (developed on 3.12).
 - FFmpeg and ffprobe on `PATH` for recording, transcription audio extraction, duration checks, concat, and clip export.
 - Optional: curl for LiveTV resolver fallbacks.
 - Optional: Ace Stream on Windows for live capture.
 - Optional credentials for hosted model workflows: `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY`.
-- Optional local services: Ollama at `OLLAMA_URL` for local detection.
+- Optional local services: Ollama at `OLLAMA_URL`.
+
+## Model Providers
+
+Each model-dependent stage selects its provider independently:
+
+```text
+Transcription    faster-whisper (local)
+Detection        ollama OR openai          (config: providers.detection)
+Story            ollama OR openai          (env: STORY_PROVIDER, default openai)
+Edit Brief       ollama OR openai          (env: EDIT_PROVIDER, default = STORY_PROVIDER)
+```
+
+A fully local model path is `faster-whisper + Ollama + FFmpeg` (transcription,
+detection, story, and edit all local). Ollama uses `OLLAMA_URL`
+(`http://localhost:11434/api/generate`) with `OLLAMA_MODEL` (default `llama3.1`),
+and optional per-stage overrides `OLLAMA_STORY_MODEL` / `OLLAMA_EDIT_MODEL`.
+Provider readiness (Detection / Story / Edit) is surfaced independently by
+`clipper-doctor` and the Console `/system` page. A fully-Ollama workflow does
+not warn about a missing OpenAI key.
+
+The fully-local path is implemented and covered by automated tests; real-media
+RC1 validation was still pending at last check (Ollama was not installed on the
+validation machine). See `planning/rc1-operator-validation.md`.
 
 ## Setup
 
@@ -36,11 +113,32 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+python scripts/init_project.py
+python scripts/doctor.py
 ```
 
 On Windows, use `.venv\Scripts\activate` instead of `source`.
 
-If your shell provides `python` instead of `python3`, either command is acceptable. This workspace currently has no `python` alias, so validation was run with `python3`.
+If your shell provides `python` instead of `python3`, either command is acceptable.
+
+## RC Validation
+
+```powershell
+python scripts/doctor.py                       # structured core health (--strict promotes warnings)
+python scripts/release_check.py                # schema current + data validation + smoke report check
+python scripts/smoke_real_match.py --fast      # deterministic end-to-end smoke (no network)
+python scripts/smoke_real_match.py --input C:\path\match.mp4   # real source validation path
+```
+
+Smoke reports and logs:
+
+- Reports: `data/pilot/smoke/<project_id>/smoke_report.json`
+- Logs: `LOGS/clipper.log`
+- Runtime backups: `data/pilot/backups/`
+
+To diagnose a failure, run `python scripts/doctor.py` first, then inspect the
+smoke report's per-stage status and the technical log. A failed stage never
+fakes completion; reuse is reported explicitly.
 
 ## Operator Console
 
@@ -77,6 +175,10 @@ See `.env.example` for the supported variables:
 - `DEFAULT_WHISPER_MODEL`
 - `OLLAMA_URL`
 - `OLLAMA_MODEL`
+- `STORY_PROVIDER` (openai | ollama; defaults to `openai`)
+- `EDIT_PROVIDER` (openai | ollama; defaults to `STORY_PROVIDER`)
+- `OLLAMA_STORY_MODEL` (optional override; falls back to `OLLAMA_MODEL`)
+- `OLLAMA_EDIT_MODEL` (optional override; falls back to `OLLAMA_MODEL`)
 - `ACCOUNT_POSITIONING` (legacy fallback only; ignored when `account_positioning` is set in `config/pipeline_config.json`)
 
 Do not commit `.env` or files under `secrets/`.
@@ -370,3 +472,13 @@ Windows is the established Ace Stream capture box; macOS is the development/post
 - Confirm media rights before commercial processing or delivery.
 - Treat the World Cup implementation as the current reference deployment, not as a generic commercial platform.
 - Managed pilot operations remain operator-controlled. The Operator Console can start supported local analysis, while review, approval, delivery, and publishing remain explicit human decisions.
+
+## Research-First And Edit Plan Boundary
+
+Clipper now supports a research-first architecture for known historical sports media:
+
+`Match Identity -> Research -> Known Event Timeline -> Media Alignment -> Canonical Moments -> Story -> Edit Brief -> Edit Plan -> Renderer Adapter`.
+
+Research defines what happened, alignment estimates where it happened, media signals explain how it felt, stories define why it matters, edit plans define how to tell it, and renderers execute the plan.
+
+FFmpeg remains the deterministic media engine. ChatCut is treated as a creative handoff/rendering layer underneath Clipper, not as the source of truth. See `planning/research-first-edit-plan-architecture.md`.

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stadium-signal"
+version = "0.1.0rc1"
+description = "Local-first sports media intelligence and clipping workflow"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai",
+    "anthropic",
+    "python-dotenv",
+    "tqdm",
+    "rich",
+    "faster-whisper",
+    "requests",
+    "urllib3",
+    "icalendar",
+]
+
+[project.scripts]
+clipper-init = "pipeline.cli:main_init"
+clipper-doctor = "pipeline.cli:main_doctor"
+clipper-console = "pipeline.cli:main_console"
+clipper-release-check = "pipeline.cli:main_release_check"
+clipper-smoke = "pipeline.cli:main_smoke"
+
+[tool.setuptools]
+packages = ["pipeline", "scripts"]
