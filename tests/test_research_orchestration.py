@@ -99,6 +99,21 @@ def test_external_provider_request_construction_and_portugal_normalization():
     assert fixture["metadata"]["corroboration_state"] == "single-source"
 
 
+def test_external_provider_argentina_croatia_events_do_not_leak_other_fixtures():
+    page = {
+        "title": "2022 FIFA World Cup knockout stage",
+        "extract": "Argentina v Croatia in the 2022 FIFA World Cup semi-final. Lionel Messi scored a penalty and Julián Álvarez scored twice.",
+        "revisions": [{"slots": {"main": {"content": "2022 FIFA World Cup knockout stage\nArgentina v Croatia\nLionel Messi penalty. Julián Álvarez goal. Julián Álvarez scored again in the semi-final."}}}],
+    }
+    provider = _FakeExternalProvider(results=[{"title": page["title"], "snippet": "Argentina Croatia 2022 World Cup football"}], page=page)
+    result = provider.research(MatchCandidate(team_a="Argentina", team_b="Croatia", season="2022", competition="2022 FIFA World Cup", stage="Semifinal", confidence="HIGH"))
+    assert result.ok is True
+    headlines = [event["headline"] for event in result.fixture["events"]]
+    assert "Messi opens from the spot" in headlines
+    assert "Álvarez doubles the lead" in headlines
+    assert "One more red" not in headlines
+
+
 def test_external_provider_ambiguous_and_partial_behavior():
     candidate = MatchCandidate(team_a="Italy", team_b="Germany", season="2006", competition="2006 FIFA World Cup", confidence="HIGH")
     ambiguous = _FakeExternalProvider(results=[{"title": "Italy national football team", "snippet": "Italy Germany 2006 World Cup"}, {"title": "Germany national football team", "snippet": "Italy Germany 2006 World Cup"}], page={"title": "x", "extract": ""}).research(candidate)

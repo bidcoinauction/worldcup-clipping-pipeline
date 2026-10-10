@@ -21,15 +21,19 @@ class DetectionProviderUnavailable(Exception):
 class StoryProviderUnavailable(Exception):
     """Raised before story generation when the selected provider is not ready."""
 
-    def __init__(self, message: str = "Story generation is unavailable. Configure a provider, then retry.") -> None:
+    def __init__(self, message: str = "Story generation is unavailable. Configure a provider, then retry.", *, code: str = "STORY_PROVIDER_UNAVAILABLE", status: dict[str, Any] | None = None) -> None:
         super().__init__(message)
+        self.code = code
+        self.status = status or {}
 
 
 class EditProviderUnavailable(Exception):
     """Raised before edit brief generation when the selected provider is not ready."""
 
-    def __init__(self, message: str = "Edit generation is unavailable. Configure a provider, then retry.") -> None:
+    def __init__(self, message: str = "Edit generation is unavailable. Configure a provider, then retry.", *, code: str = "EDIT_PROVIDER_UNAVAILABLE", status: dict[str, Any] | None = None) -> None:
         super().__init__(message)
+        self.code = code
+        self.status = status or {}
 
 
 def _ollama_base_url() -> str:
@@ -41,7 +45,7 @@ def _ollama_base_url() -> str:
     return url
 
 
-def _ollama_ready(model: str | None = None) -> dict[str, Any]:
+def _ollama_ready(model: str | None = None, *, allow_model_fallback: bool = False) -> dict[str, Any]:
     import requests
 
     base = _ollama_base_url()
@@ -50,12 +54,25 @@ def _ollama_ready(model: str | None = None) -> dict[str, Any]:
         resp = requests.get(f"{base}/api/tags", timeout=2)
         resp.raise_for_status()
         models = [m.get("name", "") for m in resp.json().get("models", [])]
-        model_available = any(expected_model in name or name in expected_model for name in models)
+        selected = _select_ollama_model(expected_model, models, allow_fallback=allow_model_fallback)
+        model_available = selected is not None
         if not model_available:
-            return {"ready": False, "message": f"Ollama is reachable but model '{expected_model}' is not pulled."}
-        return {"ready": True, "message": "Ollama is ready."}
+            return {"ready": False, "status": "MODEL_UNAVAILABLE", "message": f"Ollama is reachable but model '{expected_model}' is not pulled.", "models": models, "model": expected_model}
+        return {"ready": True, "status": "READY", "message": "Ollama is ready.", "models": models, "model": selected}
     except Exception as exc:  # noqa: BLE001
-        return {"ready": False, "message": "Ollama is not reachable. Start the local Ollama service."}
+        return {"ready": False, "status": "UNAVAILABLE", "message": "Ollama is not reachable. Start the local Ollama service.", "error": str(exc)}
+
+
+def _select_ollama_model(preferred: str | None, models: list[str], *, allow_fallback: bool = False) -> str | None:
+    if preferred and any(preferred == name or preferred in name or name in preferred for name in models):
+        return next(name for name in models if preferred == name or preferred in name or name in preferred)
+    if preferred and not allow_fallback:
+        return None
+    for candidate in ("llama3.1", "qwen2.5:3b"):
+        match = next((name for name in models if candidate == name or candidate in name or name in candidate), None)
+        if match:
+            return match
+    return models[0] if models else None
 
 
 def _openai_ready() -> dict[str, Any]:
@@ -120,14 +137,21 @@ def detection_provider() -> str:
     return get_provider("detection")
 
 
+def _explicit_provider(name: str) -> str | None:
+    value = os.environ.get(name)
+    return value.strip().lower() if value and value.strip() else None
+
+
 def story_provider() -> str:
-    """Selected Story generation provider (STORY_PROVIDER, default openai)."""
-    return os.environ.get("STORY_PROVIDER", "openai").strip().lower()
+    """Resolved Story provider. Explicit STORY_PROVIDER wins; otherwise local-only fallback."""
+    status = story_provider_status()
+    return str(status.get("configured_provider") or "")
 
 
 def edit_provider() -> str:
-    """Selected Edit Brief provider (EDIT_PROVIDER, default = STORY_PROVIDER)."""
-    return os.environ.get("EDIT_PROVIDER", story_provider()).strip().lower()
+    """Resolved Edit Brief provider. Explicit EDIT_PROVIDER wins; otherwise Story/local fallback."""
+    status = edit_provider_status()
+    return str(status.get("configured_provider") or "")
 
 
 def story_model() -> str:
@@ -160,16 +184,19 @@ def ollama_generate(prompt: str, model: str | None = None, system_prompt: str | 
     return resp.json()["response"]
 
 
-def stage_provider_status(provider_name: str, model: str | None = None) -> dict[str, Any]:
+def stage_provider_status(provider_name: str, model: str | None = None, *, explicit: bool = True, stage: str = "story") -> dict[str, Any]:
     """Readiness for a stage configured with the given provider name."""
     configured = provider_name
     if configured == "ollama":
         status = _ollama_ready(model=model)
         return {
             "configured_provider": "ollama",
-            "model": model or os.environ.get("OLLAMA_MODEL", "llama3.1"),
+            "model": status.get("model") or model or os.environ.get("OLLAMA_MODEL", "llama3.1"),
             "ready": status["ready"],
+            "status": status.get("status") or ("READY" if status["ready"] else "UNAVAILABLE"),
             "message": status["message"],
+            "explicit": explicit,
+            "stage": stage,
             "providers": {"ollama": status},
         }
     if configured == "openai":
@@ -177,25 +204,66 @@ def stage_provider_status(provider_name: str, model: str | None = None) -> dict[
         return {
             "configured_provider": "openai",
             "ready": status["ready"],
+            "status": "READY" if status["ready"] else "NOT_CONFIGURED",
             "message": status["message"],
+            "explicit": explicit,
+            "stage": stage,
             "providers": {"openai": status},
         }
     return {
         "configured_provider": configured,
         "ready": False,
+        "status": "MISCONFIGURED",
         "message": f"Unknown provider: {configured}",
+        "explicit": explicit,
+        "stage": stage,
         "providers": {},
     }
 
 
+def _local_fallback_status(*, stage: str, model: str) -> dict[str, Any]:
+    allow_fallback = stage in {"story", "edit"} and not (os.environ.get("OLLAMA_MODEL") or os.environ.get("OLLAMA_STORY_MODEL") or os.environ.get("OLLAMA_EDIT_MODEL"))
+    ollama = _ollama_ready(model=model, allow_model_fallback=allow_fallback)
+    if ollama["ready"]:
+        return {
+            "configured_provider": "ollama",
+            "model": ollama.get("model") or model,
+            "ready": True,
+            "status": "READY",
+            "message": "Ollama is ready.",
+            "explicit": False,
+            "stage": stage,
+            "providers": {"ollama": ollama},
+        }
+    return {
+        "configured_provider": None,
+        "model": model,
+        "ready": False,
+        "status": ollama.get("status") if ollama.get("status") == "MODEL_UNAVAILABLE" else "UNAVAILABLE",
+        "message": "Story generation isn't available on this system." if stage == "story" else "Edit generation isn't available on this system.",
+        "explicit": False,
+        "stage": stage,
+        "providers": {"ollama": ollama},
+    }
+
+
 def story_provider_status() -> dict[str, Any]:
-    """Story generation readiness (selected provider)."""
-    return stage_provider_status(story_provider(), model=story_model())
+    """Canonical Story generation readiness with explicit-provider precedence."""
+    explicit = _explicit_provider("STORY_PROVIDER")
+    if explicit:
+        return stage_provider_status(explicit, model=story_model(), explicit=True, stage="story")
+    return _local_fallback_status(stage="story", model=story_model())
 
 
 def edit_provider_status() -> dict[str, Any]:
-    """Edit Brief generation readiness (selected provider)."""
-    return stage_provider_status(edit_provider(), model=edit_model())
+    """Canonical Edit Brief readiness with explicit-provider precedence."""
+    explicit = _explicit_provider("EDIT_PROVIDER")
+    if explicit:
+        return stage_provider_status(explicit, model=edit_model(), explicit=True, stage="edit")
+    story_explicit = _explicit_provider("STORY_PROVIDER")
+    if story_explicit:
+        return stage_provider_status(story_explicit, model=edit_model(), explicit=False, stage="edit")
+    return _local_fallback_status(stage="edit", model=edit_model())
 
 
 def require_detection_provider() -> None:
@@ -210,7 +278,9 @@ def require_story_provider() -> None:
     status = story_provider_status()
     if not status["ready"]:
         raise StoryProviderUnavailable(
-            "Story generation is unavailable. Start Ollama or configure OpenAI, then retry."
+            status.get("message") or "Story generation isn't available on this system.",
+            code=str(status.get("status") or "UNAVAILABLE"),
+            status=status,
         )
 
 
@@ -218,5 +288,7 @@ def require_edit_provider() -> None:
     status = edit_provider_status()
     if not status["ready"]:
         raise EditProviderUnavailable(
-            "Edit generation is unavailable. Start Ollama or configure OpenAI, then retry."
+            status.get("message") or "Edit generation isn't available on this system.",
+            code=str(status.get("status") or "UNAVAILABLE"),
+            status=status,
         )

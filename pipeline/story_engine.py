@@ -115,8 +115,9 @@ def update_story_state(job_id: str, *, status: str, stage: str = "",
     job["story_status"] = status
     if stage:
         job["story_stage"] = stage
-    if status == "RUNNING" and not job.get("story_started_at"):
+    if status == "RUNNING":
         job["story_started_at"] = now
+        job.pop("story_completed_at", None)
     if status in ("COMPLETE", "FAILED", "NEEDS ATTENTION"):
         job["story_completed_at"] = now
     if error:

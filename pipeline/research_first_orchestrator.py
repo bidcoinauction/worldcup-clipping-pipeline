@@ -79,7 +79,7 @@ class ResearchFirstOrchestrator:
         )
         return {
             "ok": True,
-            "status": "STORY_READY" if moments else "RESEARCH_READY",
+            "status": "MOMENTS_READY" if moments else "RESEARCH_READY",
             "candidate": candidate.to_dict(),
             "research_id": research.research_id,
             "event_count": len(events) if events else None,

@@ -44,3 +44,4 @@ LOGS/
 *.sqlite3
 *.sqlite3.backup-*
 *.egg-info/
+.vercel

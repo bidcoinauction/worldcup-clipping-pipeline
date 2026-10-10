@@ -18,6 +18,10 @@ _TEAM_ALIASES = {
     "holland": "Netherlands",
     "mexico": "Mexico",
     "south africa": "South Africa",
+    "argentina": "Argentina",
+    "arg": "Argentina",
+    "croatia": "Croatia",
+    "cro": "Croatia",
 }
 
 
@@ -73,7 +77,10 @@ def identify_match_from_text(text: str, *, user_hint: str | None = None) -> Matc
     if user_hint:
         evidence.append({"type": "user_hint", "value": user_hint})
     lower = combined.lower()
-    competition = "2006 FIFA World Cup" if year == "2006" and ("world" in lower or len(teams) >= 2) else ""
+    competition = ""
+    if year in {"2006", "2022"} and ("world" in lower or len(teams) >= 2):
+        competition = f"{year} FIFA World Cup"
+    stage = "Semifinal" if re.search(r"\bsemi[- ]?final\b", lower) else ""
     confidence = "LOW"
     if len(teams) >= 2 and year:
         confidence = "HIGH" if user_hint or competition else "MEDIUM"
@@ -86,6 +93,7 @@ def identify_match_from_text(text: str, *, user_hint: str | None = None) -> Matc
         team_a=teams[0] if len(teams) >= 1 else "",
         team_b=teams[1] if len(teams) >= 2 else "",
         competition=competition,
+        stage=stage,
         season=year,
         confidence=confidence,
         evidence=evidence,

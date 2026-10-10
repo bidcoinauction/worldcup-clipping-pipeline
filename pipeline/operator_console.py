@@ -17,6 +17,7 @@ import json
 import os
 import csv
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
@@ -130,6 +131,7 @@ from pipeline.runtime_service import (
     update_project_analysis_strategy,
     update_story_moment,
     update_story_status,
+    upsert_project,
     upsert_edit_brief,
     upsert_edl,
     upsert_export_package,
@@ -139,9 +141,12 @@ from pipeline.runtime_service import (
 from pipeline.channel_models import list_channel_presets, resolve_channel_preset, validate_preset_compatibility
 from pipeline.story_adapter import canonical_story_id
 from pipeline.story_models import STORY_STATUSES
-from pipeline.provider_service import DetectionProviderUnavailable, EditProviderUnavailable, StoryProviderUnavailable, require_detection_provider, require_edit_provider, require_story_provider
+from pipeline.provider_service import DetectionProviderUnavailable, EditProviderUnavailable, StoryProviderUnavailable, require_detection_provider, require_edit_provider, require_story_provider, story_provider_status, edit_provider_status
 from pipeline.batch_service import get_batch_runtime_summary as _batch_summary, list_batch_operations as _list_batches, run_analysis_batch as _run_batch
 from pipeline.research_service import load_research_fixture, persist_research_fixture, seed_moments_from_research
+from pipeline.research_first_orchestrator import ResearchFirstOrchestrator
+from pipeline.research_provider import ExternalResearchProvider
+from pipeline.source_alignment import BoundedSourceAlignmentService
 
 # ── Read-only queries ────────────────────────────────────────────────────────
 
@@ -325,6 +330,103 @@ def create_project(intake_data: dict, *, intake_path: str | Path | None = None,
         source=source,
         jobs_dir=jobs_dir,
     )
+
+
+def _intake_source_and_hint(job: dict) -> tuple[str, str]:
+    intake = None
+    intake_path = job.get("intake_manifest_path")
+    if isinstance(intake_path, str) and intake_path.strip():
+        try:
+            intake = json.loads(Path(intake_path).read_text(encoding="utf-8"))
+        except Exception:
+            intake = None
+    media = intake.get("media") if isinstance(intake, dict) and isinstance(intake.get("media"), dict) else {}
+    source_path = str(media.get("local_file_path") or "").strip()
+    hint = str(media.get("match_or_event_name") or "").strip()
+    return source_path, hint
+
+
+def _ensure_source_artifact(project, source_path: str, *, hint: str = ""):
+    resolved = validate_source(source_path)
+    artifact = register_artifact(
+        project_id=project.project_id,
+        artifact_type="source_media",
+        path=resolved,
+        metadata={"match_hint": hint, "source_role": "primary", "registered_from": "add_match_start"},
+    )
+    return upsert_project(
+        project_id=project.project_id,
+        job_id=project.job_id,
+        profile=project.profile,
+        sport=project.sport,
+        display_name=project.display_name,
+        status=project.status,
+        source_artifact_id=artifact.artifact_id,
+        parent_project_id=project.parent_project_id,
+        source_project_id=project.source_project_id,
+        reuse_mode=project.reuse_mode,
+        analysis_strategy=project.analysis_strategy,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+    ), artifact
+
+
+def start_research_first_workflow(job_id: str, *, jobs_dir: str | Path | None = None,
+                                  provider: object | None = None) -> dict:
+    """Start the lightweight research-first workflow for Add Match.
+
+    This validates/registers source media, persists the hint on runtime records,
+    runs identification/research/moment seeding, and stops before story/edit/render.
+    """
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else default_jobs_dir()
+    job = read_job(job_id, jobs_dir=jobs_dir_path)
+    project = index_existing_project(job_id, jobs_dir=jobs_dir_path)
+    project = update_project_analysis_strategy(project.project_id, "RESEARCH_FIRST")
+    source_path, hint = _intake_source_and_hint(job)
+    run = create_pipeline_run(
+        project_id=project.project_id,
+        stage=ANALYSIS_STAGE,
+        status="RUNNING",
+        metadata={"analysis_strategy": "RESEARCH_FIRST", "match_hint": hint, "workflow": "research_first_start"},
+    )
+    append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type="RUN_STARTED", stage="identify", message="Research-first workflow started.", metadata={"match_hint": hint})
+
+    def block(message: str, *, status: str = "BLOCKED", code: str = "WORKFLOW_BLOCKED", extra: dict | None = None) -> dict:
+        metadata = {"analysis_strategy": "RESEARCH_FIRST", "match_hint": hint, "status": extra.get("status") if extra else status, "blocked_reason": message}
+        if extra:
+            metadata.update(extra)
+        update_pipeline_run(run.run_id, status=status, error_code=code, error_message=message, metadata=metadata)
+        append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type=status, stage="research", message=message, metadata=metadata)
+        update_analysis_state(job_id, status="NEEDS ATTENTION", stage="", error=message, jobs_dir=jobs_dir_path)
+        return {"ok": False, "status": status, "error": message, "runtime_run_id": run.run_id, **metadata}
+
+    try:
+        if not source_path:
+            return block("Source path is required.", code="SOURCE_REQUIRED")
+        project, source_artifact = _ensure_source_artifact(project, source_path, hint=hint)
+        append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type="SOURCE_READY", stage="identify", message="Source registered.", metadata={"source_artifact_id": source_artifact.artifact_id, "source_path": str(source_artifact.path)})
+        update_analysis_state(job_id, status="RUNNING", stage="IDENTIFYING", jobs_dir=jobs_dir_path)
+        orchestrator = ResearchFirstOrchestrator(provider=provider or ExternalResearchProvider())
+        result = orchestrator.run(project.project_id, source_artifact.artifact_id, user_hint=hint)
+        candidate = result.get("candidate") or ((result.get("candidates") or [{}])[0] if result.get("candidates") else {})
+        if candidate:
+            append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type="MATCH_IDENTIFIED", stage="identify", message="Match identity candidate resolved.", metadata={"identity_candidate": candidate})
+        if result.get("status") == "NEEDS_CONFIRMATION":
+            return block("Please confirm the identified match before research continues.", code="IDENTITY_CONFIRMATION_REQUIRED", extra={"status": "NEEDS_CONFIRMATION", "identity_candidate": candidate})
+        if not result.get("ok"):
+            message = result.get("error") or f"Research couldn't complete: {result.get('status')}"
+            return block(str(message), status="FAILED" if result.get("status") not in {"RESEARCH_PROVIDER_NOT_CONFIGURED", "NOT_CONFIGURED"} else "BLOCKED", code=str(result.get("status") or "RESEARCH_FAILED"), extra={"status": result.get("status"), "identity_candidate": candidate})
+        update_analysis_state(job_id, status="RUNNING", stage="ALIGNING", jobs_dir=jobs_dir_path)
+        append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type="ALIGNMENT_STARTED", stage="align", message="Bounded source alignment started.")
+        alignment = BoundedSourceAlignmentService().align_research(project.project_id, source_artifact.artifact_id, str(result.get("research_id")))
+        append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type="ALIGNMENT_COMPLETED", stage="align", message="Bounded source alignment completed.", metadata={"usable_moment_count": alignment.get("usable_moment_count"), "elapsed_seconds": alignment.get("elapsed_seconds")})
+        update_analysis_state(job_id, status="COMPLETE", stage="", jobs_dir=jobs_dir_path, analysis_manifest_count=int(result.get("moment_count") or 0))
+        status = "MOMENTS_READY" if int(alignment.get("usable_moment_count") or 0) > 0 else "RESEARCH_READY"
+        update_pipeline_run(run.run_id, status="SUCCEEDED", metadata={"analysis_strategy": "RESEARCH_FIRST", "match_hint": hint, "identity_candidate": candidate, "research_id": result.get("research_id"), "event_count": result.get("event_count"), "moment_count": result.get("moment_count"), "usable_moment_count": alignment.get("usable_moment_count"), "alignment": alignment, "status": status})
+        append_pipeline_event(project_id=project.project_id, run_id=run.run_id, event_type="RUN_SUCCEEDED", stage="align", message="Research-first workflow completed.", metadata=result)
+        return {**result, "ok": True, "status": status, "runtime_run_id": run.run_id, "source_artifact_id": source_artifact.artifact_id, "match_hint": hint, "alignment": alignment}
+    except Exception as exc:
+        return block(str(exc), status="FAILED", code="WORKFLOW_FAILED")
 
 
 def duplicate_project(job_id: str, *, display_name: str | None = None, profile: str | None = None,
@@ -1112,21 +1214,73 @@ def generate_stories(job_id: str, *, jobs_dir: str | Path | None = None,
     """
     try:
         require_story_provider()
+        readiness = story_provider_status()
     except StoryProviderUnavailable as exc:
         return {"ok": False, "status": "FAILED", "error": str(exc),
-                "error_code": "STORY_PROVIDER_UNAVAILABLE"}
-    return _story_generate(
+                "error_code": getattr(exc, "code", "STORY_PROVIDER_UNAVAILABLE"), "provider_status": getattr(exc, "status", {})}
+    project = index_existing_project(job_id, jobs_dir=jobs_dir)
+    from pipeline.detection import read_moments as _read_detected_moments, _write_moments as _write_detected_moments
+    from pipeline.pilot import default_jobs_dir as _default_jobs_dir
+    from pipeline.runtime_service import list_project_moments
+    from pipeline.source_alignment import is_usable_source_moment
+    jobs_dir_path = Path(jobs_dir) if jobs_dir is not None else _default_jobs_dir()
+    usable_moments = [moment for moment in list_project_moments(project.project_id) if is_usable_source_moment(moment)]
+    if not _read_detected_moments(job_id, jobs_dir=jobs_dir_path) and usable_moments:
+        rows = []
+        for moment in sorted(usable_moments, key=lambda item: item.start_seconds):
+            label = moment.sport_event_type or moment.universal_event_type
+            participant = next((p.name for p in moment.participants if p.name), moment.team or label)
+            rows.append({
+                "clip_id": moment.moment_id,
+                "category": moment.universal_event_type,
+                "start_time": str(float(moment.start_seconds)),
+                "end_time": str(float(moment.end_seconds)),
+                "caption": f"{participant} · {label}",
+                "hook_text": f"{participant} {label}",
+                "status": "usable_source_moment",
+                "virality_score": int(round(float(moment.importance or 0.8) * 10)),
+            })
+        _write_detected_moments(job_id, jobs_dir_path, rows)
+    result = _story_generate(
         job_id,
         jobs_dir=jobs_dir,
-        provider=provider,
-        model=model,
+        provider=provider or readiness.get("configured_provider"),
+        model=model or readiness.get("model"),
         dry_run=dry_run,
     )
+    if result.get("ok") and not dry_run:
+        try:
+            from pipeline.story_engine import read_story_suggestions
+            from pipeline.story_adapter import adapt_story_suggestions
+            suggestions = read_story_suggestions(job_id, jobs_dir=jobs_dir_path)
+            canonical = adapt_story_suggestions(suggestions, project_id=project.project_id, moments=usable_moments)
+            result = {**result, "canonical_story_count": len(canonical), "canonical_stories": [story.to_dict() for story in canonical]}
+        except Exception as exc:
+            return {"ok": False, "status": "FAILED", "error": str(exc), "error_code": "STORY_ADAPTER_FAILED"}
+    return result
 
 
 def get_story_status(job_id: str, jobs_dir: str | Path | None = None) -> dict:
     """Read the story generation state for a project (read-only)."""
-    return read_story_state(job_id, jobs_dir=jobs_dir)
+    state = read_story_state(job_id, jobs_dir=jobs_dir)
+    if state.get("story_status") == "RUNNING":
+        started_raw = str(state.get("story_started_at") or "")
+        try:
+            started = datetime.fromisoformat(started_raw.replace("Z", "+00:00")) if started_raw else None
+            if started and started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+        except ValueError:
+            started = None
+        if started and (datetime.now(timezone.utc) - started).total_seconds() > 30 * 60:
+            from pipeline.story_engine import update_story_state
+            update_story_state(
+                job_id,
+                status="FAILED",
+                error="Previous story build was interrupted. Try again.",
+                jobs_dir=jobs_dir,
+            )
+            state = read_story_state(job_id, jobs_dir=jobs_dir)
+    return state
 
 
 def list_stories(job_id: str, jobs_dir: str | Path | None = None) -> list[dict]:
@@ -1214,14 +1368,15 @@ def generate_brief(job_id: str, story_id: str, format_treatment: str,
     """
     try:
         require_edit_provider()
+        readiness = edit_provider_status()
     except EditProviderUnavailable as exc:
         return {"ok": False, "status": "FAILED", "error": str(exc),
-                "error_code": "EDIT_PROVIDER_UNAVAILABLE"}
+                "error_code": getattr(exc, "code", "EDIT_PROVIDER_UNAVAILABLE"), "provider_status": getattr(exc, "status", {})}
     return _brief_generate(
         job_id, story_id, format_treatment,
         jobs_dir=jobs_dir,
-        provider=provider,
-        model=model,
+        provider=provider or readiness.get("configured_provider"),
+        model=model or readiness.get("model"),
         dry_run=dry_run,
     )
 

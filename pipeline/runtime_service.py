@@ -729,6 +729,9 @@ def register_artifact(
             "SELECT * FROM artifacts WHERE project_id = ? AND artifact_type = ? AND path = ?",
             (project_id, artifact_type, path_text),
         ).fetchone()
+        metadata_to_store = dict(metadata or {})
+        if existing:
+            metadata_to_store = {**_json_load_any(existing["metadata"], {}), **metadata_to_store}
         artifact_key = artifact_id or (existing["artifact_id"] if existing else f"art_{uuid.uuid4().hex}")
         conn.execute(
             """
@@ -740,7 +743,7 @@ def register_artifact(
                 parent_artifact_id=excluded.parent_artifact_id,
                 metadata=excluded.metadata
             """,
-            (artifact_key, project_id, artifact_type, path_text, guessed_type, status, parent_artifact_id, now, _json_dumps(metadata)),
+            (artifact_key, project_id, artifact_type, path_text, guessed_type, status, parent_artifact_id, now, _json_dumps(metadata_to_store)),
         )
         row = conn.execute("SELECT * FROM artifacts WHERE project_id = ? AND artifact_type = ? AND path = ?", (project_id, artifact_type, path_text)).fetchone()
     return _row_artifact(row)
@@ -2465,7 +2468,8 @@ def index_existing_project(job_id: str, *, jobs_dir: str | Path | None = None, d
     parent_id = existing.parent_project_id if existing else None
     source_id = existing.source_project_id if existing else project_id
     reuse = existing.reuse_mode if existing else ""
-    strategy = existing.analysis_strategy if existing else "TRANSCRIPT_FIRST"
+    config = intake.get("configuration") if isinstance(intake, dict) and isinstance(intake.get("configuration"), dict) else {}
+    strategy = existing.analysis_strategy if existing else str(config.get("analysis_strategy") or "TRANSCRIPT_FIRST")
     project = upsert_project(
         project_id=project_id,
         job_id=project_id,

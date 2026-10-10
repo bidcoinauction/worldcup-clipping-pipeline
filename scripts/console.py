@@ -23,10 +23,12 @@ if str(ROOT) not in sys.path:
 
 def _preflight() -> str | None:
     """Return an operator-safe error message on failure, else None."""
+    from pipeline.deployment import setup_demo_environment
     from pipeline import runtime_db
     from pipeline.safety import safe_operator_message
 
     try:
+        setup_demo_environment()
         db_path = runtime_db.initialize()
         if not runtime_db.schema_is_current():
             return "Runtime database schema is out of date. Run: python scripts/doctor.py"

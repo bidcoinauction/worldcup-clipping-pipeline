@@ -132,21 +132,38 @@ def _patch_ollama_generate(monkeypatch, raw: str):
 def test_provider_selection_defaults(monkeypatch):
     monkeypatch.delenv("STORY_PROVIDER", raising=False)
     monkeypatch.delenv("EDIT_PROVIDER", raising=False)
-    assert provider_service.story_provider() == "openai"
-    assert provider_service.edit_provider() == "openai"
+    monkeypatch.setattr(provider_service, "_ollama_ready",
+                        lambda **k: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": "llama3.1"})
+    assert provider_service.story_provider() == "ollama"
+    assert provider_service.edit_provider() == "ollama"
 
 
 def test_edit_provider_defaults_to_story_provider(monkeypatch):
     monkeypatch.setenv("STORY_PROVIDER", "ollama")
     monkeypatch.delenv("EDIT_PROVIDER", raising=False)
+    monkeypatch.setattr(provider_service, "_ollama_ready",
+                        lambda model=None: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": "llama3.1"})
     assert provider_service.edit_provider() == "ollama"
 
 
 def test_provider_selection_allows_mixed(monkeypatch):
     monkeypatch.setenv("STORY_PROVIDER", "openai")
     monkeypatch.setenv("EDIT_PROVIDER", "ollama")
+    monkeypatch.setattr(provider_service, "_ollama_ready",
+                        lambda model=None: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": "llama3.1"})
     assert provider_service.story_provider() == "openai"
     assert provider_service.edit_provider() == "ollama"
+
+
+def test_local_fallback_does_not_override_explicit_story_provider(monkeypatch):
+    monkeypatch.setenv("STORY_PROVIDER", "openai")
+    monkeypatch.setattr(provider_service, "_ollama_ready",
+                        lambda model=None: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": "llama3.1"})
+    monkeypatch.setattr(provider_service, "_openai_ready", lambda: {"ready": False, "message": "Set OPENAI_API_KEY."})
+    status = provider_service.story_provider_status()
+    assert status["configured_provider"] == "openai"
+    assert status["ready"] is False
+    assert status["explicit"] is True
 
 
 def test_story_model_fallback(monkeypatch):
@@ -275,7 +292,7 @@ def test_edit_brief_ollama_malformed_output_preserves_story(monkeypatch, media_f
 def test_stage_ready_when_ollama_reachable_and_model_present(monkeypatch):
     monkeypatch.setenv("STORY_PROVIDER", "ollama")
     monkeypatch.setattr(provider_service, "_ollama_ready",
-                        lambda model=None: {"ready": True, "message": "Ollama is ready."})
+                        lambda model=None: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": model or "llama3.1"})
     status = provider_service.story_provider_status()
     assert status["ready"] is True
     assert status["configured_provider"] == "ollama"
@@ -284,9 +301,10 @@ def test_stage_ready_when_ollama_reachable_and_model_present(monkeypatch):
 def test_stage_blocked_when_ollama_model_missing(monkeypatch):
     monkeypatch.setenv("STORY_PROVIDER", "ollama")
     monkeypatch.setattr(provider_service, "_ollama_ready",
-                        lambda model=None: {"ready": False, "message": "Ollama is reachable but model 'x' is not pulled."})
+                        lambda model=None: {"ready": False, "status": "MODEL_UNAVAILABLE", "message": "Ollama is reachable but model 'x' is not pulled."})
     status = provider_service.story_provider_status()
     assert status["ready"] is False
+    assert status["status"] == "MODEL_UNAVAILABLE"
 
 
 def test_stage_blocked_when_openai_selected_no_key(monkeypatch):
@@ -303,7 +321,7 @@ def test_ollama_healthy_no_openai_warning_for_local_stage(monkeypatch):
     monkeypatch.setenv("EDIT_PROVIDER", "ollama")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(provider_service, "_ollama_ready",
-                        lambda model=None: {"ready": True, "message": "Ollama is ready."})
+                        lambda model=None: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": model or "llama3.1"})
     checks = core_health_report()
     provider_status = {c["check_id"]: c["status"] for c in checks}
     assert provider_status["detection_provider"] == "PASS"
@@ -317,7 +335,7 @@ def test_require_story_provider_safe_message(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(provider_service.StoryProviderUnavailable) as exc:
         provider_service.require_story_provider()
-    assert "Story generation is unavailable" in str(exc.value)
+    assert "OPENAI_API_KEY" in str(exc.value)
 
 
 def test_require_edit_provider_safe_message(monkeypatch):
@@ -325,7 +343,7 @@ def test_require_edit_provider_safe_message(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(provider_service.EditProviderUnavailable) as exc:
         provider_service.require_edit_provider()
-    assert "Edit generation is unavailable" in str(exc.value)
+    assert "OPENAI_API_KEY" in str(exc.value)
 
 
 def test_operator_generate_stories_provider_gate(monkeypatch):
@@ -334,8 +352,29 @@ def test_operator_generate_stories_provider_gate(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     result = operator_console.generate_stories("nonexistent_job")
     assert result["ok"] is False
-    assert result["error_code"] == "STORY_PROVIDER_UNAVAILABLE"
-    assert "Story generation is unavailable" in result["error"]
+    assert result["error_code"] == "NOT_CONFIGURED"
+    assert "OPENAI_API_KEY" in result["error"]
+
+
+def test_operator_generate_stories_uses_resolved_local_fallback(monkeypatch):
+    from types import SimpleNamespace
+    from pipeline import operator_console
+    monkeypatch.delenv("STORY_PROVIDER", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    monkeypatch.setattr(provider_service, "_ollama_ready",
+                        lambda **k: {"ready": True, "status": "READY", "message": "Ollama is ready.", "model": "qwen2.5:3b"})
+    captured = {}
+    def fake_story_generate(job_id, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "COMPLETE", "story_count": 1}
+    monkeypatch.setattr(operator_console, "index_existing_project", lambda job_id, jobs_dir=None: SimpleNamespace(project_id=job_id))
+    monkeypatch.setattr(operator_console, "_story_generate", fake_story_generate)
+
+    result = operator_console.generate_stories("job_story")
+
+    assert result["ok"] is True
+    assert captured["provider"] == "ollama"
+    assert captured["model"] == "qwen2.5:3b"
 
 
 def test_smoke_attributes_post_transcription_failure_to_detection_stage(monkeypatch, tmp_path):

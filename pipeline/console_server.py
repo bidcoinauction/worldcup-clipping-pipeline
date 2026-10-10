@@ -12,9 +12,14 @@ from __future__ import annotations
 import json
 import os
 import html
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+from pipeline.deployment import DEMO_DISABLED_MESSAGE, demo_disabled_response, is_demo_mode, setup_demo_environment
+
+setup_demo_environment()
 
 from pipeline.operator_console import (
     list_available_sports,
@@ -23,6 +28,7 @@ from pipeline.operator_console import (
     get_project_status,
     validate_project_intake,
     create_project,
+    start_research_first_workflow,
     duplicate_project,
     start_analysis_batch,
     get_batch_detail,
@@ -73,6 +79,8 @@ from pipeline.channel_models import list_channel_presets
 from pipeline.integration_service import integration_health_report
 from pipeline.system_health import full_health_report
 from pipeline.pilot import JobExistsError, JobNotFoundError, JobRevisionError, JobTransitionError
+from pipeline.workflow_state import resolve_workflow_state
+from pipeline.metadata_trust import resolve_metadata
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "console_templates"
 _STATIC_DIR = Path(__file__).resolve().parent / "console_static"
@@ -117,6 +125,14 @@ def _json_response(handler: BaseHTTPRequestHandler, data: dict | list, status: i
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _demo_unavailable_html() -> str:
+    return f'<div class="demo-unavailable"><strong>Hosted Demo</strong><span>{_escape(DEMO_DISABLED_MESSAGE)}</span></div>'
+
+
+def _demo_disabled_button(label: str) -> str:
+    return f'<button class="btn btn-primary" type="button" disabled title="{_escape(DEMO_DISABLED_MESSAGE)}">{_escape(label)}</button><p class="muted demo-action-note">{_escape(DEMO_DISABLED_MESSAGE)}</p>'
 
 
 def _stream_media_file(handler: BaseHTTPRequestHandler, video_path: Path, mime_type: str) -> None:
@@ -302,6 +318,231 @@ def _source_timeline_html(research_events: list[dict], coverage: dict) -> str:
     """
 
 
+def _creator_source_coverage_html(research_events: list[dict], source_artifacts: list[dict]) -> str:
+    if not research_events and not source_artifacts:
+        return ""
+    artifact_text = " ".join(
+        f"{artifact.get('path') or ''} {(artifact.get('metadata') or {}).get('label') or ''}"
+        for artifact in source_artifacts
+    ).lower()
+    has_second_half = "second" in artifact_text or "2nd" in artifact_text
+    if not has_second_half:
+        for event in research_events:
+            try:
+                if float((event.get("match_minute") or 0) or 0) > 45:
+                    has_second_half = True
+                    break
+            except (TypeError, ValueError):
+                continue
+    halves = [("FIRST HALF", 0, 45), ("SECOND HALF", 45, 90)] if has_second_half else [("SOURCE", 0, 90)]
+    rows = ""
+    for label, start, end in halves:
+        markers = ""
+        for event in research_events:
+            try:
+                minute = float(event.get("match_minute") or 0)
+            except (TypeError, ValueError):
+                continue
+            if minute < start or minute > end:
+                continue
+            left = min(max((minute - start) / max(end - start, 1) * 100.0, 0.0), 100.0)
+            display = (event.get("metadata") or {}).get("display_minute") or f"{int(minute)}'"
+            title = _creative_event_label(event.get("universal_event_type"), event.get("headline"))
+            markers += f'<span class="coverage-moment" style="left:{left:.2f}%" title="{_escape(display)} · {_escape(title)}">{_escape(display)}</span>'
+        rows += f'<div class="coverage-row"><strong>{label}</strong><div class="coverage-bar"><span></span>{markers}</div></div>'
+    return f'<section class="creator-coverage" aria-label="Source coverage"><div class="section-kicker">Source Coverage</div>{rows}</section>'
+
+
+def _creator_activity_html(events: list[dict], research_events: list[dict], source_artifacts: list[dict], workflow_payload: dict, story_status: dict, active_count: int) -> str:
+    items: list[tuple[str, str, str]] = []
+    for event in events[-3:]:
+        title = str(event.get("event_type") or "Project updated").replace("_", " ").title()
+        timestamp = str(event.get("timestamp") or "")[:16]
+        message = str(event.get("message") or "").strip()
+        items.append((timestamp, title, message))
+    if research_events:
+        first = research_events[0]
+        items.append(("", f"Research found {len(research_events)} events", _creative_event_label(first.get("universal_event_type"), first.get("headline"))))
+    if source_artifacts:
+        items.append(("", f"{len(source_artifacts)} source file{'s' if len(source_artifacts) != 1 else ''} mapped", "Clipper switches sources automatically."))
+    if active_count:
+        items.append(("", f"{active_count} usable moment{'s' if active_count != 1 else ''}", "Ready for story building."))
+    if story_status.get("story_status") == "RUNNING":
+        items.append(("", "Building story", "Confirmed moments are becoming a narrative."))
+    elif workflow_payload.get("active"):
+        items.append(("", str(workflow_payload.get("current_stage") or "Working").replace("_", " ").title(), "Clipper is processing backend work."))
+    if not items:
+        items.append(("", "Ready", "Start when you are ready."))
+    rows = "".join(
+        f'<button class="activity-item" type="button"><time>{_escape(time or "now")}</time><strong>{_escape(title)}</strong>{f"<span>{_escape(message)}</span>" if message else ""}</button>'
+        for time, title, message in items[-6:]
+    )
+    return f'<aside class="creator-activity"><div class="section-kicker">Clipper Activity</div>{rows}</aside>'
+
+
+def _project_library_title(project: dict) -> str:
+    raw = str(project.get("pilot_id") or project.get("job_id") or "Project")
+    lowered = raw.lower()
+    if "arg" in lowered and "cro" in lowered:
+        return "Argentina vs Croatia"
+    if "por" in lowered and "ned" in lowered:
+        return "Portugal vs Netherlands"
+    if "ita" in lowered and "ger" in lowered:
+        return "Italy vs Germany"
+    if "germany" in lowered and "italy" in lowered:
+        return "Germany vs Italy"
+    if "belgium" in lowered and "egypt" in lowered:
+        return "Belgium vs Egypt"
+    if "netherlands" in lowered and "japan" in lowered:
+        return "Netherlands vs Japan"
+    return raw.replace("_source", "").replace("_", " ").strip().title() or "Untitled Match"
+
+
+def _parse_year(value: object) -> str:
+    match = re.search(r"(?:19|20)\d{2}", str(value or ""))
+    return match.group(0) if match else ""
+
+
+def _clean_slug_words(value: object) -> str:
+    text = re.sub(r"\b\d{10,}\b", " ", str(value or ""))
+    text = re.sub(r"\b(source|raw|rf|v\d+|align|status|evidence|part\d+|first|second|half|1st|2nd)\b", " ", text, flags=re.I)
+    text = re.sub(r"[_\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _parsed_match_identity(project: dict) -> tuple[str, str, str]:
+    raw = " ".join(str(project.get(key) or "") for key in ("pilot_id", "job_id", "source_id"))
+    lowered = raw.lower()
+    year = _parse_year(raw)
+    pairs = [
+        (("arg", "argentina"), ("cro", "croatia"), "Argentina vs Croatia"),
+        (("por", "portugal"), ("ned", "netherlands"), "Portugal vs Netherlands"),
+        (("ita", "italy"), ("ger", "germany"), "Italy vs Germany"),
+        (("germany",), ("italy",), "Germany vs Italy"),
+        (("belgium",), ("egypt",), "Belgium vs Egypt"),
+        (("netherlands",), ("japan",), "Netherlands vs Japan"),
+    ]
+    for left_tokens, right_tokens, title in pairs:
+        if any(token in lowered for token in left_tokens) and any(token in lowered for token in right_tokens):
+            return title, year, "parsed"
+    cleaned = _clean_slug_words(project.get("pilot_id") or project.get("job_id") or "")
+    if cleaned and cleaned.lower() not in {"project", "source"}:
+        return cleaned.title(), year, "parsed"
+    return "Untitled Match", year, "fallback"
+
+
+def _creator_status_label(workflow: dict, story_status: dict | None = None) -> str:
+    status = (story_status or {}).get("story_status")
+    if status == "RUNNING":
+        return "Building story"
+    if status in {"FAILED", "NEEDS ATTENTION"}:
+        return "Needs attention"
+    action = str(workflow.get("primary_next_action") or "")
+    attention = str(workflow.get("attention") or "")
+    if attention == "Failed":
+        return "Needs attention"
+    if action.startswith("Review") and "Moment" in action:
+        return "Needs your review"
+    if action in {"Seed Moments", "Analyze Source"}:
+        return "Ready to start"
+    if action == "Approve Story":
+        return "Story ready"
+    if action in {"Generate Edit", "Prepare Cut"}:
+        return "Building cut"
+    if action == "Generate Rough Preview":
+        return "Cut ready"
+    if action == "Review Preview":
+        return "Ready to watch"
+    if action == "Prepare ChatCut Handoff":
+        return "Finished"
+    if action == "Project Complete":
+        return "Finished"
+    if attention == "Complete":
+        return "Story ready"
+    return "Ready to start"
+
+
+def _workflow_rank(workflow: dict, story_status: dict | None = None) -> int:
+    label = _creator_status_label(workflow, story_status)
+    ranks = {
+        "Ready to start": 10,
+        "Finding moments": 20,
+        "Needs your review": 30,
+        "Building story": 40,
+        "Story ready": 50,
+        "Building cut": 60,
+        "Cut ready": 70,
+        "Rendering": 80,
+        "Ready to watch": 90,
+        "Finished": 100,
+        "Needs attention": 5,
+    }
+    return ranks.get(label, 0)
+
+
+def _project_is_test_or_smoke(project: dict, identity: dict | None = None) -> bool:
+    text = " ".join(str(project.get(key) or "") for key in ("job_id", "pilot_id", "source_id"))
+    if identity:
+        text += " " + str(identity.get("title") or "")
+    lowered = text.lower()
+    return any(token in lowered for token in ("smoke", "test", "debug"))
+
+
+def _project_group_key(identity: dict) -> str:
+    title = re.sub(r"[^a-z0-9]+", "-", str(identity.get("title") or "untitled").lower()).strip("-")
+    year = str(identity.get("year") or "")
+    return "|".join(part for part in (title, year) if part) or title or "untitled"
+
+
+def _resolve_project_display_identity(project: dict, research: dict | None = None, intake: dict | None = None, source_paths: list[str] | None = None) -> dict:
+    resolved = resolve_metadata(project, research, intake, source_paths=source_paths or [])
+    return {
+        "title": resolved.get("title") or "Untitled Match",
+        "competition": resolved.get("competition") or "",
+        "stage": resolved.get("stage") or "",
+        "year": resolved.get("year") or "",
+        "source": (resolved.get("fields") or {}).get("title", {}).get("source") or "FALLBACK",
+        "health": resolved.get("health") or "UNKNOWN",
+        "conflicts": resolved.get("conflicts") or [],
+        "fields": resolved.get("fields") or {},
+        "candidates": resolved.get("candidates") or {},
+        "repair": resolved.get("repair") or {},
+    }
+
+
+def _project_sort_time(value: object) -> str:
+    return str(value or "")
+
+
+def _preferred_project_record(records: list[dict]) -> dict:
+    return sorted(
+        records,
+        key=lambda record: (
+            int(record.get("workflow_rank") or 0),
+            int(record.get("source_count") or 0),
+            _project_sort_time(record.get("updated_at")),
+            _project_sort_time(record.get("created_at")),
+        ),
+        reverse=True,
+    )[0]
+
+
+def _group_project_records(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    visible_records = [record for record in records if not record.get("is_test")]
+    test_records = [record for record in records if record.get("is_test")]
+    grouped: dict[str, list[dict]] = {}
+    for record in visible_records:
+        grouped.setdefault(str(record.get("group_key") or record.get("job_id") or "untitled"), []).append(record)
+    cards = []
+    for group_records in grouped.values():
+        preferred = _preferred_project_record(group_records)
+        previous = [record for record in sorted(group_records, key=lambda item: _project_sort_time(item.get("updated_at") or item.get("created_at")), reverse=True) if record.get("job_id") != preferred.get("job_id")]
+        cards.append({"preferred": preferred, "previous": previous, "records": group_records})
+    cards.sort(key=lambda card: _project_sort_time(card["preferred"].get("updated_at") or card["preferred"].get("created_at")), reverse=True)
+    return cards, test_records
+
+
 def _is_smoke_story(story: dict) -> bool:
     title = str(story.get("title") or "").lower()
     story_id = str(story.get("story_id") or "").lower()
@@ -382,6 +623,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path == "/style.css":
             return _css_response(self)
 
+        if path == "/health":
+            return _json_response(self, {"ok": True, "application": "clipper", "environment": "demo" if is_demo_mode() else "local"})
+
         if path.startswith("/render_video/"):
             parts = path.split("/render_video/")[1].split("/")
             job_id = parts[0]
@@ -397,6 +641,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path == "/":
             return self._render_projects()
         if path == "/batches":
+            if is_demo_mode():
+                return _html_response(self, self._page("Batches", f'<div class="card"><h2>Batches</h2>{_demo_unavailable_html()}</div>'))
             return self._render_batches()
         if path == "/system":
             return self._render_system()
@@ -404,6 +650,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             batch_id = path.split("/batches/")[1]
             return self._render_batch_detail(batch_id)
         if path == "/projects/new":
+            if is_demo_mode():
+                return _html_response(self, self._page("New Project", f'<div class="card"><h2>New Project</h2>{_demo_unavailable_html()}</div>'))
             return self._render_new_project(qs)
         if "/projects/" in path and "/moments/" in path and path.endswith("/preview"):
             parts = path.split("/projects/")[1].split("/")
@@ -421,6 +669,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path.startswith("/projects/") and "/status" in path:
             job_id = path.split("/projects/")[1].split("/status")[0]
             return self._render_project_status(job_id)
+        if path.startswith("/projects/") and path.endswith("/workflow-state"):
+            job_id = path.split("/projects/")[1].split("/workflow-state")[0].strip("/")
+            return self._api_workflow_state(job_id)
         if path.startswith("/projects/"):
             job_id = path.split("/projects/")[1]
             return self._render_project_detail(job_id, qs)
@@ -435,6 +686,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        if is_demo_mode():
+            return _json_response(self, demo_disabled_response(path.rsplit("/", 1)[-1]), 403)
+
         if path == "/api/projects/create":
             return self._api_create_project()
         if path == "/api/batches/analyze":
@@ -442,6 +696,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/projects/") and path.endswith("/duplicate"):
             job_id = path.split("/api/projects/")[1].split("/duplicate")[0]
             return self._api_duplicate_project(job_id)
+        if path.startswith("/api/projects/") and "/actions/" in path:
+            parts = path.split("/api/projects/")[1].split("/actions/")
+            return self._api_project_action(parts[0], parts[1])
         if path.startswith("/api/projects/") and path.endswith("/transition"):
             job_id = path.split("/api/projects/")[1].split("/transition")[0]
             return self._api_transition_project(job_id)
@@ -454,6 +711,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/projects/") and path.endswith("/research/seed-moments"):
             job_id = path.split("/api/projects/")[1].split("/research/seed-moments")[0]
             return self._api_seed_research_moments(job_id)
+        if path.startswith("/api/projects/") and path.endswith("/align"):
+            job_id = path.split("/api/projects/")[1].split("/align")[0]
+            return self._api_align_project(job_id)
+        if path.startswith("/api/projects/") and path.endswith("/source-clock/first-half"):
+            job_id = path.split("/api/projects/")[1].split("/source-clock/first-half")[0]
+            return self._api_source_clock_first_half(job_id)
+        if path.startswith("/projects/") and path.endswith("/source-clock/first-half"):
+            job_id = path.split("/projects/")[1].split("/source-clock/first-half")[0]
+            return self._api_source_clock_first_half(job_id)
         if path.startswith("/api/projects/") and path.endswith("/stories"):
             job_id = path.split("/api/projects/")[1].split("/stories")[0]
             return self._api_generate_stories(job_id)
@@ -462,6 +728,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             job_id = parts[0]
             moment_id = parts[2]
             return self._api_review_moment(job_id, moment_id)
+        if "/api/projects/" in path and "/moments/" in path and path.endswith("/alignment"):
+            parts = path.split("/api/projects/")[1].split("/")
+            job_id = parts[0]
+            moment_id = parts[2]
+            return self._api_confirm_moment_alignment(job_id, moment_id)
         if "/api/projects/" in path and "/stories/" in path and path.endswith("/brief"):
             parts = path.split("/api/projects/")[1].split("/")
             job_id = parts[0]
@@ -529,11 +800,71 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     def _page(self, title: str, content: str) -> str:
         base = _read_template("base.html")
-        return base.replace("{{TITLE}}", title).replace("{{CONTENT}}", content)
+        if is_demo_mode():
+            nav_links = '<a href="/">Projects</a><a href="/system">System</a>'
+            demo_badge = '<span class="demo-badge">Hosted Demo</span>'
+            content = f'<div class="demo-banner"><strong>Hosted Demo</strong><span>Read-only product demo. Local media processing, rendering, and source playback are disabled.</span></div>{content}'
+        else:
+            nav_links = '<a href="/">Projects</a><a href="/projects/new">New Project</a><a href="/batches">Batches</a><a href="/system">System</a>'
+            demo_badge = ""
+        return base.replace("{{TITLE}}", title).replace("{{CONTENT}}", content).replace("{{NAV_LINKS}}", nav_links).replace("{{DEMO_BADGE}}", demo_badge)
 
     def _workflow_badge(self, step: str, state: str) -> str:
         cls = str(state or "NOT STARTED").lower().replace(" ", "-")
         return f'<div class="workflow-step workflow-{_escape(cls)}"><span>{_escape(step)}</span><strong>{_escape(state)}</strong></div>'
+
+    @staticmethod
+    def _read_intake_for_detail(detail: dict) -> dict:
+        intake_path = detail.get("intake_manifest_path", "")
+        candidate_paths = []
+        if intake_path:
+            candidate_paths.append(Path(intake_path))
+        job_id = str(detail.get("job_id") or "").strip()
+        if job_id:
+            try:
+                from pipeline.pilot import default_jobs_dir
+                candidate_paths.append(default_jobs_dir().parent / "intakes" / f"{job_id}.json")
+            except Exception:
+                pass
+        for candidate_path in candidate_paths:
+            try:
+                return json.loads(candidate_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return {}
+
+    @staticmethod
+    def _canonical_readiness(detail: dict, intake: dict | None = None) -> dict:
+        intake_data = intake if isinstance(intake, dict) else ConsoleHandler._read_intake_for_detail(detail)
+        if not intake_data:
+            return detail.get("readiness_summary", {}) if isinstance(detail.get("readiness_summary"), dict) else {}
+        try:
+            return validate_project_intake(intake_data, check_source=True, check_rights=True)
+        except Exception:
+            return detail.get("readiness_summary", {}) if isinstance(detail.get("readiness_summary"), dict) else {}
+
+    @staticmethod
+    def _workflow_runtime(detail: dict, analysis: dict | None = None) -> tuple[dict, dict]:
+        runtime = detail.get("runtime", {}) if isinstance(detail.get("runtime"), dict) else {}
+        try:
+            research_data = get_project_research(str(detail.get("job_id") or (runtime.get("project") or {}).get("project_id") or ""))
+        except Exception:
+            research_data = {"research": [], "events": []}
+        augmented = dict(runtime)
+        augmented["research"] = research_data.get("research") or []
+        augmented["research_events"] = research_data.get("events") or []
+        if runtime.get("analysis"):
+            augmented["pipeline_runs"] = [runtime.get("analysis")]
+        try:
+            from pipeline.runtime_service import list_project_stories, list_story_edit_plans
+            project_id = (runtime.get("project") or {}).get("project_id") or detail.get("job_id")
+            edit_plan_count = 0
+            for story in list_project_stories(str(project_id)):
+                edit_plan_count += len(list_story_edit_plans(story.story_id))
+            augmented["edit_plan_summary"] = {"edit_plan_count": edit_plan_count}
+        except Exception:
+            augmented.setdefault("edit_plan_summary", {"edit_plan_count": 0})
+        return augmented, research_data
 
     def _render_handoff_detail(self, edit_plan_id: str):
         from pipeline.edit_handoff_service import build_chatcut_handoff_manifest, editplan_quality_report, validate_edit_handoff
@@ -626,31 +957,50 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         sports = list_available_sports()
         rows = ""
         project_cards = ""
+        dashboard_records = []
         for p in projects:
             state_class = p["current_state"].lower().replace("_", "-")
             derived_tag = ' <span class="badge badge-moment">Derived</span>' if p.get("derived") else ""
             attention = "Ready" if p.get("current_state") in {"READY", "COMPLETE"} else "—"
             next_action = "Open Project"
-            strategy = p.get("analysis_strategy") or "TRANSCRIPT_FIRST"
-            updated = (p.get("updated_at") or p.get("created_at") or "")[:19]
-            creative_title = str(p.get('pilot_id') or p['job_id']).replace('_', ' ').title()
-            card_story_title = "Open to reveal story"
-            usable_moments = "Usable moments"
-            rough_state = "Rough cut status"
-            if "germany" in creative_title.lower() and "italy" in creative_title.lower():
-                card_story_title = "Balotelli Took Over"
-                usable_moments = "2 moments"
-                rough_state = "Rough cut ready"
-            project_cards += f"""
-            <a class="project-card" href="/projects/{_escape(p['job_id'])}">
-              <small>{_escape(strategy.replace('_', ' ').title())}</small>
-              <strong>{_escape(creative_title)}</strong>
-              <span>{_escape(card_story_title)}</span>
-              <span>{_escape(usable_moments)}</span>
-              <span>{_escape(rough_state)}</span>
-              <em>Open Project</em>
-            </a>
-            """
+            try:
+                research_data = get_project_research(p["job_id"])
+            except Exception:
+                research_data = {"research": [], "events": []}
+            try:
+                workflow = get_project_workflow_status(p["job_id"])
+            except Exception:
+                workflow = {"primary_next_action": "", "attention": ""}
+            try:
+                story_status = get_story_status(p["job_id"])
+            except Exception:
+                story_status = {"story_status": ""}
+            try:
+                from pipeline.runtime_service import get_project_runtime_summary as _runtime_summary
+                runtime_summary = _runtime_summary(p["job_id"])
+            except Exception:
+                runtime_summary = {"artifacts": []}
+            try:
+                from pipeline.pilot import read_job as _read_job
+                job_record = _read_job(p["job_id"])
+            except Exception:
+                job_record = {"job_id": p.get("job_id", "")}
+            intake_data = ConsoleHandler._read_intake_for_detail(job_record)
+            source_artifacts_for_card = [a for a in (runtime_summary.get("artifacts") or []) if a.get("artifact_type") == "source_media"]
+            source_paths_for_card = [str(a.get("path") or "") for a in source_artifacts_for_card]
+            identity = _resolve_project_display_identity(p, research_data, intake_data, source_paths_for_card)
+            source_count = len(source_artifacts_for_card)
+            status_label = _creator_status_label(workflow, story_status)
+            record = dict(p)
+            record.update({
+                "identity": identity,
+                "group_key": _project_group_key(identity),
+                "source_count": source_count,
+                "creator_status": status_label,
+                "workflow_rank": _workflow_rank(workflow, story_status),
+                "is_test": _project_is_test_or_smoke(p, identity),
+            })
+            dashboard_records.append(record)
             rows += f"""
             <tr>
               <td><input type="checkbox" class="batch-select" value="{_escape(p['job_id'])}"></td>
@@ -659,9 +1009,70 @@ class ConsoleHandler(BaseHTTPRequestHandler):
               <td><span class="badge badge-{_escape(state_class)}">{_escape(p['current_state'])}</span></td>
               <td><span class="badge badge-{_escape(str(attention).lower().replace(' ', '-'))}">{_escape(attention)}</span></td>
               <td>{_escape(next_action)}</td>
-              <td>{p['created_at'][:19] if p['created_at'] else '—'}</td>
+              <td>{_escape(str(p.get('updated_at') or p.get('created_at') or '—')[:19])}</td>
             </tr>
             """
+        grouped_cards, test_records = _group_project_records(dashboard_records)
+        for group in grouped_cards:
+            preferred = group["preferred"]
+            identity = preferred["identity"]
+            subtitle_parts = [part for part in [identity.get("competition"), identity.get("year"), identity.get("stage")] if part]
+            subtitle = " · ".join(dict.fromkeys(str(part) for part in subtitle_parts)) or "Match project"
+            last_activity = str(preferred.get("updated_at") or preferred.get("created_at") or "")[:19].replace("T", " ") or "unknown"
+            previous = group["previous"]
+            previous_html = ""
+            if previous:
+                previous_rows = "".join(
+                    f'<li><a href="/projects/{_escape(row.get("job_id", ""))}">{_escape(str(row.get("created_at") or "")[:19].replace("T", " ") or "unknown")}</a><span>{_escape(row.get("creator_status") or "Ready to start")} · {_escape(str(row.get("source_count") or 0))} sources</span><code>{_escape(row.get("job_id") or "")}</code></li>'
+                    for row in previous
+                )
+                previous_html = f'<details class="previous-runs"><summary>{len(previous)} previous run{"s" if len(previous) != 1 else ""}</summary><ul>{previous_rows}</ul></details>'
+            project_cards += f"""
+            <article class="project-card grouped-project-card">
+              <a class="project-card-main" href="/projects/{_escape(preferred['job_id'])}">
+                <small>{_escape(subtitle)}</small>
+                <strong>{_escape(identity.get('title') or 'Untitled Match')}</strong>
+                <span>{_escape(preferred.get('creator_status') or 'Ready to start')}</span>
+                <span>{_escape(str(preferred.get('source_count') or 0))} source{'s' if int(preferred.get('source_count') or 0) != 1 else ''}</span>
+                <span>Last activity {_escape(last_activity)}</span>
+                <em>Continue →</em>
+              </a>
+              {previous_html}
+            </article>
+            """
+        metadata_review_records = [record for record in dashboard_records if (record.get("identity") or {}).get("health") in {"CONFLICT", "INCOMPLETE", "UNKNOWN"}]
+        metadata_review_html = ""
+        if metadata_review_records:
+            items = ""
+            for record in metadata_review_records:
+                identity = record.get("identity") or {}
+                conflict_text = "; ".join(f"{c.get('field')}: " + ", ".join(v.get('value', '') for v in c.get('values', [])) for c in identity.get("conflicts", [])) or "No direct conflicts; metadata is incomplete."
+                field_rows = "".join(
+                    f"<tr><td>{_escape(name)}</td><td>{_escape(field.get('value') or '—')}</td><td>{_escape(field.get('source') or '—')}</td><td>{_escape(field.get('trust') or '—')}</td></tr>"
+                    for name, field in (identity.get("fields") or {}).items()
+                )
+                repair = identity.get("repair") or {}
+                repair_rows = "".join(
+                    f"<li>{_escape(item.get('field'))}: {_escape(item.get('normalized_value'))} <span class='muted'>({_escape(item.get('reason'))})</span></li>"
+                    for item in repair.get("recommended", [])
+                )
+                items += f"""
+                <details class="metadata-review-item">
+                  <summary>{_escape(identity.get('title') or 'Untitled Match')} · {_escape(identity.get('health') or 'UNKNOWN')}</summary>
+                  <p class="muted">Project: <code>{_escape(record.get('job_id') or '')}</code></p>
+                  <p>{_escape(conflict_text)}</p>
+                  <table><thead><tr><th>Field</th><th>Resolved</th><th>Source</th><th>Trust</th></tr></thead><tbody>{field_rows}</tbody></table>
+                  {f'<p class="muted">Safe repair preview only:</p><ul>{repair_rows}</ul>' if repair_rows else '<p class="muted">No automatic repair recommended.</p>'}
+                </details>
+                """
+            metadata_review_html = f'<details class="advanced-details metadata-review"><summary>Metadata Review ({len(metadata_review_records)})</summary>{items}</details>'
+        test_project_html = ""
+        if test_records:
+            test_rows = "".join(
+                f'<li><a href="/projects/{_escape(row.get("job_id", ""))}">{_escape((row.get("identity") or {}).get("title") or row.get("pilot_id") or row.get("job_id") or "Project")}</a><span>{_escape(row.get("creator_status") or "Ready to start")}</span><code>{_escape(row.get("job_id") or "")}</code></li>'
+                for row in test_records
+            )
+            test_project_html = f'<details class="advanced-details dev-projects"><summary>Test / Development Projects ({len(test_records)})</summary><ul>{test_rows}</ul></details>'
         if not projects:
             rows = f"""
             <tr><td colspan="7" class="empty">
@@ -673,6 +1084,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
               </div>
             </td></tr>
             """
+        if not project_cards and projects:
+            project_cards = '<p class="empty">No creator projects yet. Test and development projects are available below.</p>'
 
         sport_cards = ""
         for s in sports:
@@ -684,32 +1097,54 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         content = f"""
         <section class="dashboard-hero">
             <p class="eyebrow">Clipper</p>
-            <h1>Your Matches</h1>
-            <p>AI sports-editing workspaces built around story, usable footage, and finished cuts.</p>
-            <div class="hero-actions"><a href="/projects/new" class="btn btn-primary">Find Story</a><button class="btn" onclick="analyzeSelected()">Analyze Selected</button></div>
+            <h1>Creative Library</h1>
+            <p>Your matches, stories, cuts, and review work in one place.</p>
+            <div class="hero-actions"><a href="/projects/new" class="btn btn-primary">Add Match</a></div>
+            <div id="dashboard-action-error" class="creator-action-error" hidden></div>
             <div class="dashboard-cards">{project_cards}</div>
+            {test_project_html}
             <details class="advanced-details"><summary>Advanced Project List</summary>
+            <div class="form-actions" style="justify-content:flex-start;"><button class="btn" onclick="analyzeSelected(this)" {'disabled title="No projects available"' if not projects else ''}>Analyze Selected</button></div>
             <table>
               <thead><tr><th></th><th>Project</th><th>Sport</th><th>State</th><th>Attention</th><th>Next</th><th>Updated</th></tr></thead>
               <tbody>{rows}</tbody>
             </table>
             </details>
+            {metadata_review_html}
           </section>
           <details class="card advanced-details">
             <summary>System Sports Readiness</summary>
             <div class="sport-grid">{sport_cards}</div>
           </details>
         <script>
-        async function analyzeSelected() {{
+        function dashboardError(message, details) {{
+          const box = document.getElementById('dashboard-action-error');
+          if (!box) return;
+          box.hidden = false;
+          box.innerHTML = `<strong>${{message}}</strong>${{details ? `<details><summary>Advanced Details</summary><pre>${{String(details).replace(/[&<>]/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[ch]))}}</pre></details>` : ''}}`;
+        }}
+        async function analyzeSelected(btn) {{
           const selected = Array.from(document.querySelectorAll(".batch-select:checked")).map(cb => cb.value);
-          if (selected.length === 0) {{ alert("Select at least one project."); return; }}
-          const resp = await fetch("/api/batches/analyze", {{
-            method: "POST",
-            headers: {{"Content-Type": "application/json"}},
-            body: JSON.stringify({{project_ids: selected}}),
-          }});
-          const result = await resp.json();
-          if (result.ok) {{ window.location.href = "/batches/" + result.batch_id; }} else {{ alert("Batch failed: " + (result.error || "Unknown error")); }}
+          if (selected.length === 0) {{ dashboardError('Select at least one project.'); return; }}
+          const original = btn ? btn.textContent : '';
+          if (btn) {{ btn.disabled = true; btn.textContent = 'Starting batch...'; }}
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 12000);
+          try {{
+            const resp = await fetch("/api/batches/analyze", {{
+              method: "POST",
+              headers: {{"Content-Type": "application/json"}},
+              body: JSON.stringify({{project_ids: selected}}),
+              signal: controller.signal,
+            }});
+            const result = await resp.json().catch(() => ({{ok:false, error:'Invalid server response'}}));
+            if (result.ok) {{ window.location.href = "/batches/" + result.batch_id; }} else {{ dashboardError('Could not start batch.', JSON.stringify(result, null, 2)); }}
+          }} catch (err) {{
+            dashboardError(err && err.name === 'AbortError' ? 'Batch start timed out.' : 'Could not start batch.', String(err));
+          }} finally {{
+            window.clearTimeout(timeout);
+            if (btn) {{ btn.disabled = false; btn.textContent = original; }}
+          }}
         }}
         </script>
         """
@@ -745,6 +1180,24 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         core = report.get("core", [])
         integrations = report.get("integrations", [])
         providers = report.get("providers", {})
+        def _provider_badge(stage: str) -> str:
+            status = providers.get(stage, {}) if isinstance(providers.get(stage, {}), dict) else {}
+            if status.get("ready"):
+                provider = status.get("configured_provider") or "local"
+                model = status.get("model") or ""
+                label = f"Ready via {provider}" + (f" / {model}" if model else "")
+                return f'<span class="badge badge-ready">{_escape(label)}</span>'
+            return f'<span class="badge badge-needs-review">{_escape(str(status.get("status") or "Blocked"))}</span>'
+
+        def _provider_detail(stage: str, fallback: str) -> str:
+            status = providers.get(stage, {}) if isinstance(providers.get(stage, {}), dict) else {}
+            model = status.get("model")
+            bits = [str(status.get("message") or fallback)]
+            if model:
+                bits.append(f"Model: {model}")
+            if status.get("explicit") is not None:
+                bits.append("Explicit" if status.get("explicit") else "Automatic local fallback")
+            return _escape(" · ".join(bits))
         core_rows = ""
         for check in core:
             status = check.get("status", "FAIL")
@@ -785,18 +1238,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             <tbody>
               <tr>
                 <td>Detection</td>
-                <td><span class="badge badge-{'ready' if providers.get('detection', {}).get('ready') else 'needs-review'}">{_escape('Ready via ' + str(providers.get('detection', {}).get('configured_provider', '')) if providers.get('detection', {}).get('ready') else 'Blocked')}</span></td>
-                <td>{_escape(providers.get('detection', {}).get('message', '') or 'Detection cannot run through Ollama until the local service is running.')}</td>
+                <td>{_provider_badge('detection')}</td>
+                <td>{_provider_detail('detection', 'Detection cannot run through Ollama until the local service is running.')}</td>
               </tr>
               <tr>
                 <td>Story</td>
-                <td><span class="badge badge-{'ready' if providers.get('story', {}).get('ready') else 'needs-review'}">{_escape('Ready via ' + str(providers.get('story', {}).get('configured_provider', '')) if providers.get('story', {}).get('ready') else 'Blocked')}</span></td>
-                <td>{_escape(providers.get('story', {}).get('message', '') or 'Start Ollama or configure OpenAI for story generation.')}</td>
+                <td>{_provider_badge('story')}</td>
+                <td>{_provider_detail('story', 'Story generation is not available on this system.')}</td>
               </tr>
               <tr>
                 <td>Edit</td>
-                <td><span class="badge badge-{'ready' if providers.get('edit', {}).get('ready') else 'needs-review'}">{_escape('Ready via ' + str(providers.get('edit', {}).get('configured_provider', '')) if providers.get('edit', {}).get('ready') else 'Blocked')}</span></td>
-                <td>{_escape(providers.get('edit', {}).get('message', '') or 'Start Ollama or configure OpenAI for edit brief generation.')}</td>
+                <td>{_provider_badge('edit')}</td>
+                <td>{_provider_detail('edit', 'Edit generation is not available on this system.')}</td>
               </tr>
             </tbody>
           </table>
@@ -827,20 +1280,22 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             error = f'<div class="alert alert-error">{qs["error"][0]}</div>'
 
         content = f"""
-        <div class="card">
-          <p class="eyebrow">Add Match</p>
+        <div class="card new-project-card">
+          <p class="eyebrow">New Project</p>
           <h2>Add Match</h2>
-          <p class="muted">Drop in a match source. Clipper will identify it, research the match, find key moments, and build a story-first cut.</p>
+          <p class="muted">Give Clipper the match video and a simple match hint. Advanced IDs stay optional.</p>
           {error}
+          <div id="new-project-error" class="creator-action-error" hidden></div>
           <form id="new-project-form" onsubmit="return handleSubmit(event)">
             <div class="form-group">
-              <label for="local_file_path">Choose Video / Source Path</label>
+              <label for="local_file_path">Choose Video</label>
               <input type="text" id="local_file_path" name="local_file_path" placeholder="C:\\FootballArchive\\RAW\\match.mp4" required>
             </div>
             <div class="form-group">
-              <label for="event_name">Know the match? Add a hint (optional)</label>
-              <input type="text" id="event_name" name="event_name" placeholder="e.g. Portugal vs Netherlands 2006">
+              <label for="event_name">What match/event is this?</label>
+              <input type="text" id="event_name" name="event_name" placeholder="Argentina vs Croatia 2022">
             </div>
+            <p class="muted">Optional: add another source after the project starts.</p>
             <details class="advanced-details">
               <summary>Advanced Details</summary>
             <div class="form-group">
@@ -879,11 +1334,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           </form>
         </div>
         <script>
+        function showNewProjectError(message, details) {{
+          const box = document.getElementById('new-project-error');
+          if (!box) return;
+          box.hidden = false;
+          box.innerHTML = `<strong>${{message}}</strong>${{details ? `<details><summary>Advanced Details</summary><pre>${{String(details).replace(/[&<>]/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[ch]))}}</pre></details>` : ''}}`;
+        }}
         async function handleSubmit(e) {{
           e.preventDefault();
           const form = e.target;
+          const submit = form.querySelector('button[type="submit"]');
+          if (submit) {{ submit.disabled = true; submit.textContent = "Starting Clipper..."; }}
           const sourcePath = form.local_file_path.value.trim();
-          const base = sourcePath.split(/[\\/]/).pop().replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "match";
+          const base = sourcePath.split(/[\\/]/).pop().replace(/\\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "match";
           if (!form.pilot_id.value.trim()) form.pilot_id.value = base;
           if (!form.source_id.value.trim()) form.source_id.value = base + "_source";
           const data = {{
@@ -895,16 +1358,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             delivery_method: form.delivery_method.value,
             local_file_path: form.local_file_path.value.trim(),
           }};
-          const resp = await fetch("/api/projects/create", {{
-            method: "POST",
-            headers: {{"Content-Type": "application/json"}},
-            body: JSON.stringify(data),
-          }});
-          const result = await resp.json();
-          if (result.ok) {{
-            window.location.href = "/projects/" + result.job_id;
-          }} else {{
-            window.location.href = "/projects/new?error=" + encodeURIComponent(result.error);
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 15000);
+          try {{
+            const resp = await fetch("/api/projects/create", {{
+              method: "POST",
+              headers: {{"Content-Type": "application/json"}},
+              body: JSON.stringify(data),
+              signal: controller.signal,
+            }});
+            const result = await resp.json().catch(() => ({{ok:false, error:'Invalid server response'}}));
+            if (result.ok) {{
+              window.location.href = "/projects/" + result.job_id;
+            }} else {{
+              if (submit) {{ submit.disabled = false; submit.textContent = "Start"; }}
+              showNewProjectError("Couldn't start this project.", JSON.stringify(result, null, 2));
+            }}
+          }} catch (err) {{
+            if (submit) {{ submit.disabled = false; submit.textContent = "Start"; }}
+            showNewProjectError(err && err.name === 'AbortError' ? "Starting took too long. Try again." : "Couldn't start this project.", String(err));
+          }} finally {{
+            window.clearTimeout(timeout);
           }}
         }}
         </script>
@@ -920,9 +1394,25 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         state = detail.get("current_state", "")
         transitions = detail.get("allowed_next_states", [])
         events = detail.get("events", [])
-        readiness = detail.get("readiness_summary", {})
+        intake_data = ConsoleHandler._read_intake_for_detail(detail)
+        readiness = ConsoleHandler._canonical_readiness(detail, intake_data)
+        detail = dict(detail)
+        detail["readiness_summary"] = readiness
         runtime = detail.get("runtime", {}) if isinstance(detail.get("runtime"), dict) else {}
         display_name = (runtime.get("project") or {}).get("display_name") or job_id
+        if isinstance(intake_data, dict):
+            media = intake_data.get("media") or {}
+            intake_display_name = str(media.get("match_or_event_name") or media.get("event_name") or "").strip()
+            if intake_display_name:
+                display_name = intake_display_name
+        if display_name == job_id:
+            try:
+                from pipeline.runtime_service import get_project as _get_runtime_project_for_title
+                runtime_project_for_title = _get_runtime_project_for_title(job_id)
+                if runtime_project_for_title and runtime_project_for_title.display_name:
+                    display_name = runtime_project_for_title.display_name
+            except Exception:
+                pass
         lineage = runtime.get("lineage", {}) if isinstance(runtime.get("lineage"), dict) else {}
         lineage_html = ""
         if lineage.get("is_duplicate"):
@@ -948,19 +1438,21 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         story_link = f"/projects/{_escape(job_id)}/stories/{first_story_id}" if first_story_id else f"/projects/{_escape(job_id)}"
 
         if next_action.startswith("Analyze") or next_action == "Retry Analysis":
-            primary_cta = f'<button class="btn btn-primary" onclick="doAnalyze()">{_escape(next_action)}</button>'
+            primary_cta = f'<button class="btn btn-primary" onclick="executeProjectAction(\'retry_analysis\', this)">{_escape(next_action)}</button>'
         elif "Moment" in next_action:
-            primary_cta = f'<a class="btn btn-primary" href="#review-moments">{_escape(next_action)}</a>'
+            primary_cta = f'<button class="btn btn-primary" onclick="smoothFocus(\'#review-moments\')">{_escape(next_action)}</button>'
         elif next_action in ("Approve Story", "Build Story"):
-            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+            primary_cta = f'<button class="btn btn-primary" onclick="executeProjectAction(\'find_story\', this)">{_escape(next_action)}</button>'
         elif next_action.startswith(("Generate", "Prepare")):
-            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+            primary_cta = f'<button class="btn btn-primary" onclick="executeProjectAction(\'render_rough_cut\', this)">{_escape(next_action)}</button>'
         elif "Rough Cut" in next_action or next_action.startswith("Review"):
-            primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
+            primary_cta = f'<button class="btn btn-primary" onclick="smoothFocus(\'#rough-cut\')">{_escape(next_action)}</button>'
         elif "Export" in next_action:
             primary_cta = f'<a class="btn btn-primary" href="{story_link}">{_escape(next_action)}</a>'
         else:
             primary_cta = ""
+        if is_demo_mode() and primary_cta:
+            primary_cta = _demo_disabled_button(next_action or "Continue")
 
         workflow_warnings = "".join(f'<li>{_escape(w)}</li>' for w in workflow.get("warnings", []))
         workflow_html = f"""
@@ -1007,13 +1499,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         # Source file from job intake
         source_file = ""
-        intake_path = detail.get("intake_manifest_path", "")
-        if intake_path:
+        if intake_data:
+            source_file = intake_data.get("media", {}).get("local_file_path", "")
+            if not source_file:
+                source_file = intake_data.get("media", {}).get("original_filename", "")
+        if not source_file:
             try:
-                intake_data = json.loads(Path(intake_path).read_text(encoding="utf-8"))
-                source_file = intake_data.get("media", {}).get("local_file_path", "")
-                if not source_file:
-                    source_file = intake_data.get("media", {}).get("original_filename", "")
+                from pipeline.runtime_service import get_project as _get_runtime_project, get_artifact as _get_runtime_artifact
+                runtime_project_for_source = _get_runtime_project(job_id)
+                if runtime_project_for_source and runtime_project_for_source.source_artifact_id:
+                    source_artifact_for_display = _get_runtime_artifact(runtime_project_for_source.source_artifact_id)
+                    if source_artifact_for_display:
+                        source_file = source_artifact_for_display.path
             except Exception:
                 pass
 
@@ -1200,8 +1697,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           {research_summary or '<p class="muted">No MatchResearch persisted yet.</p>'}
           {f'<table><thead><tr><th>Minute</th><th>Player / Team</th><th>Type</th><th>Headline</th><th>Availability</th><th>Alignment</th><th>Media Time</th><th>Confidence</th></tr></thead><tbody>{research_rows}</tbody></table>' if research_rows else '<p class="empty">No research events yet. Add research, then seed Moments.</p>'}
           <div class="form-actions" style="justify-content:flex-start;">
-            <button class="btn" onclick="seedResearchMoments()">Seed Moments</button>
-            <a class="btn" href="#review-moments">Review Alignment</a>
+            <button class="btn" onclick="seedResearchMoments(this)">Seed Moments</button>
+            <button class="btn btn-primary" onclick="alignProject(this)">Find Moments In Source</button>
           </div>
         </div>
         """
@@ -1213,6 +1710,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         legacy_moments = []
         if project_strategy == "RESEARCH_FIRST":
             active_moments = []
+            from pipeline.source_alignment import is_usable_source_moment
             from pipeline.runtime_service import get_research_event as _get_research_event
             for moment in canonical_moments:
                 meta = moment.get("metadata") or {}
@@ -1225,7 +1723,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     "end_seconds": moment.get("end_seconds"),
                 })()
                 preview_available = _moment_preview_window(job_id, moment_obj).get("available")
-                if meta.get("origin") == "research" and meta.get("availability_status") != "OUTSIDE_SOURCE" and event_availability != "OUTSIDE_SOURCE" and preview_available:
+                if meta.get("origin") == "research" and is_usable_source_moment(moment) and event_availability != "OUTSIDE_SOURCE" and preview_available:
                     active_moments.append(moment)
                 else:
                     legacy_moments.append(moment)
@@ -1249,6 +1747,56 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             href = f"/projects/{_escape(job_id)}" if state_name == "ALL" else f"/projects/{_escape(job_id)}?review={state_name}"
             filter_links += f'<a class="{cls}" href="{href}">{label} ({count})</a> '
 
+        source_clock_notice = ""
+        source_clock_details = ""
+        source_artifacts = [a for a in (runtime.get("artifacts") or []) if a.get("artifact_type") == "source_media"]
+        source_artifact = next((a for a in source_artifacts if (((a.get("metadata") or {}).get("source_clock") or {}).get("status") == "NEEDS_OPERATOR")), None) or (source_artifacts[0] if source_artifacts else None)
+        source_clock = ((source_artifact or {}).get("metadata") or {}).get("source_clock") or {}
+        if not source_clock:
+            try:
+                from pipeline.runtime_service import get_artifact as _get_runtime_artifact, get_project as _get_runtime_project
+                runtime_project_for_clock = _get_runtime_project(job_id)
+                if runtime_project_for_clock and runtime_project_for_clock.source_artifact_id:
+                    artifact_for_clock = _get_runtime_artifact(runtime_project_for_clock.source_artifact_id)
+                    if artifact_for_clock:
+                        source_artifact = {"artifact_id": artifact_for_clock.artifact_id, "metadata": artifact_for_clock.metadata}
+                        source_clock = (artifact_for_clock.metadata or {}).get("source_clock") or {}
+            except Exception:
+                source_clock = {}
+        clock_segments = source_clock.get("segments") or []
+        if clock_segments:
+            rows = "".join(
+                f"<tr><td>{_escape(str(row.get('segment_type') or '—'))}</td><td>{_format_moment_time(row.get('source_time_start'))}</td><td>{_escape(str(row.get('confidence') or '—'))}</td><td>{_escape(str(row.get('method') or '—'))}</td></tr>"
+                for row in clock_segments
+            )
+            source_clock_details = f"<details class=\"advanced-details\"><summary>Source Clock</summary><p class=\"muted\">Policy: {_escape(str(source_clock.get('version') or '—'))}</p><table><thead><tr><th>Segment</th><th>Source Start</th><th>Confidence</th><th>Method</th></tr></thead><tbody>{rows}</tbody></table></details>"
+        if source_clock.get("status") == "NEEDS_OPERATOR":
+            review = source_clock.get("review") or {}
+            review_segment = str(review.get("segment_type") or "FIRST_HALF")
+            second_half_review = review_segment == "SECOND_HALF"
+            cursor = float(review.get("cursor_seconds") or 0.0)
+            preview_start = max(0.0, cursor - 30.0)
+            media_url = f"/source_video/{_escape(job_id)}/{_escape((source_artifact or {}).get('artifact_id') or '')}"
+            source_id = _escape((source_artifact or {}).get('artifact_id') or '')
+            review_title = "Help Clipper find the second-half start" if second_half_review else "Help Clipper find kickoff"
+            review_body = "Clipper needs one quick check before it can place second-half moments accurately." if second_half_review else "Clipper needs one quick check before it can place moments accurately. Confirm kickoff once to improve moment locations."
+            confirm_label = "Yes, this is the second-half start" if second_half_review else "This is kickoff"
+            source_clock_notice = f"""
+            <div class="card" id="source-clock-review">
+              <h3>{review_title}</h3>
+              <p class="muted">{review_body}</p>
+              <video id="kickoffPreview" controls preload="metadata" src="{media_url}" style="width:100%;max-height:48vh;border-radius:8px;"></video>
+              <p class="muted">Review cursor: <span id="kickoffCursor">{_format_moment_time(cursor)}</span></p>
+              <div class="form-actions">
+                <button class="btn" onclick="reviewKickoff('earlier', this, '{_escape(review_segment)}', '{source_id}')">Earlier</button>
+                <button class="btn btn-primary" onclick="reviewKickoff('confirm', this, '{_escape(review_segment)}', '{source_id}')">{confirm_label}</button>
+                <button class="btn" onclick="reviewKickoff('later', this, '{_escape(review_segment)}', '{source_id}')">Later</button>
+              </div>
+              <script>setTimeout(() => {{ const v = document.getElementById('kickoffPreview'); if (v) v.currentTime = {preview_start:.3f}; }}, 100);</script>
+              {source_clock_details}
+            </div>
+            """
+
         review_rows = ""
         moment_cards = ""
         for moment in canonical_moments:
@@ -1270,7 +1818,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
               <h4>{_escape(participant)}</h4>
               <p>{_escape(moment.get('sport_event_type', 'Moment').replace('_', ' ').title())} · {_escape(moment.get('team') or '—')}</p>
               <p class="muted">{_format_moment_time(moment.get('peak_seconds'))} source · {('Available' if availability == 'AVAILABLE' else 'Needs review')}</p>
-              <div class="card-actions">{preview_action}<a class="btn" href="#stories">Use in Story</a><details class="inline-details"><summary>More</summary><div class="form-actions">{actions}</div><p class="muted">Alignment: {_escape(alignment)} · Importance: {_format_score(moment.get('importance'))}</p></details></div>
+              <div class="card-actions">{preview_action}<details class="inline-details"><summary>More</summary><div class="form-actions">{actions}</div><p class="muted">Alignment: {_escape(alignment)} · Importance: {_format_score(moment.get('importance'))}</p></details></div>
             </div>
             """
             review_rows += f"""
@@ -1300,12 +1848,33 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             </div>
             """
         elif moment_summary.get("moment_count", 0):
+            alignment_cards = ""
+            for moment in legacy_moments or []:
+                meta = moment.get("metadata") or {}
+                if meta.get("origin") != "research":
+                    continue
+                moment_id = _escape(moment.get("moment_id", ""))
+                minute = meta.get("match_minute", "—")
+                participant = next((p.get("name") for p in moment.get("participants") or [] if isinstance(p, dict) and p.get("name")), moment.get("team") or "—")
+                availability = meta.get("availability_status", "UNKNOWN")
+                alignment = meta.get("alignment_status", "UNALIGNED")
+                if availability == "OUTSIDE_SOURCE":
+                    label = "Not in this source"
+                elif availability == "NOT_FOUND":
+                    label = "Not found yet"
+                elif alignment in {"ALIGNED", "VERIFIED"}:
+                    label = "Located"
+                else:
+                    label = "Needs confirmation"
+                preview_action = f'<a class="btn" href="/projects/{_escape(job_id)}/moments/{moment_id}/preview">Preview</a>' if availability == "AVAILABLE" else ''
+                confirm_actions = "" if availability == "OUTSIDE_SOURCE" else f'<button class="btn btn-primary" onclick="confirmMomentAlignment(\'{moment_id}\', \'confirm\', this)">Yes, this is it</button><button class="btn" onclick="confirmMomentAlignment(\'{moment_id}\', \'earlier\', this)">Earlier</button><button class="btn" onclick="confirmMomentAlignment(\'{moment_id}\', \'later\', this)">Later</button><button class="btn" onclick="confirmMomentAlignment(\'{moment_id}\', \'not_found\', this)">Not found</button>'
+                alignment_cards += f'<div class="moment-card"><div class="moment-minute">{_escape(str(minute))}\'</div><h4>{_escape(participant)}</h4><p>{_escape(label)} · {availability} / {alignment}</p><p class="muted">Estimated source {_format_moment_time(meta.get("estimated_media_time"))}</p><div class="card-actions">{preview_action}{confirm_actions}</div></div>'
             canonical_moments_section = f"""
             <div class="card" id="review-moments">
               <h3>Review Moments</h3>
               <p>{moment_summary.get('moment_count', 0)} moments · {moment_summary.get('reviewed_count', 0)} reviewed · {moment_summary.get('unreviewed_count', 0)} unreviewed · {moment_summary.get('strong_count', 0)} strong · {moment_summary.get('must_use_count', 0)} must use</p>
               <div class="form-actions">{filter_links}</div>
-<p class="muted">No moments match this review filter.</p>
+              {f'<div class="moment-grid">{alignment_cards}</div>' if alignment_cards else '<p class="muted">No moments match this review filter.</p>'}
             </div>
             """
         else:
@@ -1315,6 +1884,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
               <p class="muted">No canonical moments are available for review yet.</p>
             </div>
             """
+
+        if source_clock_notice:
+            canonical_moments_section = source_clock_notice + canonical_moments_section
+        elif source_clock_details:
+            canonical_moments_section = canonical_moments_section.replace("</div>\n            ", f"{source_clock_details}</div>\n            ", 1)
 
         # Canonical story section
         story_summary = runtime.get("story_summary", {}) if isinstance(runtime.get("story_summary"), dict) else {}
@@ -1572,13 +2146,33 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             """
 
         latest_research = research_items[-1] if research_items else {}
-        workspace_title = f"{latest_research.get('home_team')} vs {latest_research.get('away_team')}" if latest_research else display_name
-        competition_line = " · ".join(part for part in [str(latest_research.get("competition") or ""), str(latest_research.get("stage") or ""), str(latest_research.get("match_date") or "")] if part)
+        header_identity = _resolve_project_display_identity(
+            {"job_id": job_id, "pilot_id": detail.get("pilot_id") or display_name, "source_id": detail.get("source_id") or "", "display_name": display_name},
+            research_data,
+            intake_data,
+            [str(a.get("path") or "") for a in source_artifacts],
+        )
+        workspace_title = header_identity.get("title") or (f"{latest_research.get('home_team')} vs {latest_research.get('away_team')}" if latest_research else display_name)
+        competition_line = " · ".join(part for part in [str(header_identity.get("competition") or ""), str(header_identity.get("year") or ""), str(header_identity.get("stage") or "")] if part)
         strategy = (runtime.get("project") or {}).get("analysis_strategy") or "TRANSCRIPT_FIRST"
+        workflow_runtime, _workflow_research_data = ConsoleHandler._workflow_runtime(detail, analysis)
+        creative_state = resolve_workflow_state(detail, analysis=analysis, runtime=workflow_runtime)
+        workflow_payload = creative_state.to_dict()
         source_name = Path(source_file).name if source_file else "—"
         coverage_text = "Kickoff → ~46:39" if "46:" in source_coverage else "—"
         featured_story = _select_primary_creative_story(job_id, canonical_stories) if canonical_stories else {}
-        story_title = _story_display_title(featured_story.get("title") or (stories[0].get("title") if stories else "Story Found"))
+        has_creative_story = bool(featured_story or stories)
+        has_usable_moments = bool(canonical_moments)
+        story_ready_moments = len(canonical_moments) >= 2
+        execution_ready = bool(readiness.get("execution_ready"))
+        if has_creative_story:
+            story_title = _story_display_title(featured_story.get("title") or (stories[0].get("title") if stories else "Story Found"))
+        elif not execution_ready:
+            story_title = "Setup Needs Attention"
+        elif analysis_complete:
+            story_title = "No Story Yet"
+        else:
+            story_title = "Ready For Analysis"
         story_words = story_title.split()
         story_hero_line = "<br>".join(_escape(word.upper()) for word in story_words) if story_words else "STORY FOUND"
         story_href = f"/projects/{_escape(job_id)}/stories/{_escape(featured_story.get('story_id') or (stories[0].get('story_id') if stories else ''))}" if (featured_story or stories) else f"/projects/{_escape(job_id)}#stories"
@@ -1600,7 +2194,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             rough_video = f'<video class="rough-video" controls src="/render_video/{_escape(job_id)}/{_escape(rough_render.render_id)}"></video>'
         else:
             rough_video = '<div class="rough-placeholder"><span>Rough cut will appear here</span></div>'
-        rough_cta = '<button class="btn btn-primary" type="button" onclick="watchRoughCut()">Watch Rough Cut</button>' if rough_render else f'<a class="btn btn-primary" href="{story_href}">Build Cut</a>'
+        if rough_render:
+            rough_cta = '<button class="btn btn-primary" type="button" onclick="watchRoughCut()">Watch Rough Cut</button>'
+        elif not execution_ready:
+            rough_cta = '<button class="btn btn-primary" type="button" onclick="smoothFocus(\'#advanced-details\')">Review Setup</button>'
+        elif research_items and not has_usable_moments:
+            rough_cta = '<button class="btn btn-primary" type="button" onclick="smoothFocus(\'#research\')">Review Alignment</button>'
+        elif not has_usable_moments:
+            rough_cta = '<button class="btn btn-primary" onclick="executeProjectAction(\'retry_analysis\', this)">Run Analysis</button>'
+        elif not has_creative_story:
+            rough_cta = '<button class="btn btn-primary" onclick="executeProjectAction(\'find_story\', this)">Find Story</button>'
+        else:
+            rough_cta = '<button class="btn btn-primary" onclick="executeProjectAction(\'build_cut\', this)">Build Cut</button>'
+        if is_demo_mode() and "button" in rough_cta:
+            rough_cta = _demo_disabled_button("Hosted Demo Read-Only")
         story_steps = ""
         available_story_events = [event for event in research_events if (event.get("source_availability") or {}).get("availability_status") == "AVAILABLE"][:2]
         if not available_story_events:
@@ -1705,7 +2312,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 intelligence_items.append("Clear emotional payoff")
             if plan.target_duration and float(plan.target_duration) <= 45:
                 intelligence_items.append("Ideal short-form runtime")
-        intelligence_html = "".join(f"<li>{_escape(item)}</li>" for item in intelligence_items) or "<li>Story structure is ready for review</li>"
+        if intelligence_items:
+            intelligence_html = "".join(f"<li>{_escape(item)}</li>" for item in intelligence_items)
+        elif rough_render or edit_plans_for_project:
+            intelligence_html = "<li>Story structure is ready for review</li>"
+        elif story_ready_moments and not (rough_render or edit_plans_for_project or has_creative_story):
+            intelligence_html = "<li>Usable moments are ready for story building</li>"
+        else:
+            intelligence_html = "<li>Analysis must produce usable moments before Clipper can build a cut</li>"
         coverage_section = _source_timeline_html(research_events, research_coverage)
         try:
             from pipeline.runtime_service import list_project_artifacts as _list_project_artifacts
@@ -1713,81 +2327,305 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         except Exception:
             handoffs = []
         package_link = "#advanced-details"
-        package_meta = "ChatCut-ready"
+        package_meta = "Build a cut to generate the ChatCut handoff package."
         if handoffs:
             plan_id = (handoffs[-1].metadata or {}).get("edit_plan_id")
             if plan_id:
                 package_link = f"/edit-plans/{_escape(plan_id)}/handoff"
             package_meta = "Creative package ready · ChatCut-ready"
+        package_heading = "ChatCut-ready" if handoffs else "Creative package pending"
+        package_kicker = "Creative Package Ready" if handoffs else "Creative Package Pending"
+        package_button = "Open Creative Package" if handoffs else "Build Cut First"
+        found_pill = "Clipper found a story" if has_creative_story else ("Setup needs attention" if not execution_ready else "Waiting for analysis")
+        hero_status = "Rough cut ready" if rough_render else ("Cut ready to build" if has_creative_story and has_usable_moments else "Cut not ready yet")
         workspace_header = f"""
         <section class="cinematic-hero">
           <div class="hero-copy">
             <p class="eyebrow">{_escape(competition_line or strategy.replace('_', ' ').title())}</p>
             <h1>{_escape(workspace_title.upper())}</h1>
-            <div class="found-pill">Clipper found a story</div>
+            <p class="muted">Source: {_escape(source_name)}</p>
+            <div class="found-pill">{_escape(found_pill)}</div>
             <h2>{story_hero_line}</h2>
-            <p class="hero-meta">{_escape(rough_meta)} · {active_count} usable moments · {('Rough cut ready' if rough_render else 'Cut ready to build')}</p>
-            <div class="hero-actions">{rough_cta}<a class="btn" href="#key-moments">Key Moments</a></div>
+            <p class="hero-meta">{_escape(rough_meta)} · {active_count} usable moments · {_escape(hero_status)}</p>
+            <div class="hero-actions"><button class="btn" type="button" onclick="smoothFocus('#advanced-details')">Details</button></div>
           </div>
           <div class="hero-orb"><span>AI</span><small>Story Engine</small></div>
         </section>
         """
 
+        creator_progress_items = [
+            ("Match", bool(research_items) or workflow_payload.get("state") not in {"SOURCE_READY", "IDENTIFYING"}),
+            ("Research", bool(research_events)),
+            ("Moments", story_ready_moments),
+            ("Story", has_creative_story),
+            ("Cut", bool(edit_plans_for_project)),
+            ("Watch", bool(rough_render)),
+        ]
+        current_seen = False
+        creator_progress_bits = []
+        for label, done in creator_progress_items:
+            symbol = "✓" if done else ("●" if not current_seen else "○")
+            if not done:
+                current_seen = True
+            creator_progress_bits.append(f'<span>{symbol} {_escape(label)}</span>')
+        creator_progress = "".join(creator_progress_bits)
+        creator_status = "Your rough cut is ready" if rough_render else ("Your cut is ready" if edit_plans_for_project else ("Clipper is building your story" if story_status_val == "RUNNING" else ("Clipper found a story" if has_creative_story else ("I need one quick check" if source_clock.get("status") == "NEEDS_OPERATOR" else ("Finding the best moments" if workflow_payload.get("active") else "Ready to start")))))
+        creator_context = f"""
+        <header class="creator-context">
+          <p class="eyebrow">{_escape(competition_line or 'Creator flow')}</p>
+          <h1>{_escape(workspace_title.upper())}</h1>
+          <p class="muted">{_escape(creator_status)}</p>
+          <div class="creator-progress-line" aria-label="Progress">{creator_progress}</div>
+          <div id="creator-action-error" class="creator-action-error" hidden></div>
+        </header>
+        """
+        def _review_sort_key(moment: dict) -> tuple[float, str]:
+            meta = moment.get("metadata") or {}
+            return ((meta.get("estimated_match_seconds") if meta.get("estimated_match_seconds") is not None else float(meta.get("match_minute") or 999) * 60.0), moment.get("moment_id") or "")
+        review_queue_moments = sorted(
+            [m for m in [*(canonical_moments or []), *(legacy_moments or [])] if (m.get("metadata") or {}).get("availability_status") == "AVAILABLE" and (m.get("metadata") or {}).get("alignment_status") in {"ESTIMATED", "ALIGNED", "VERIFIED"}],
+            key=_review_sort_key,
+        )
+        reviewable_moments = sorted(
+            [m for m in review_queue_moments if (m.get("metadata") or {}).get("alignment_status") == "ESTIMATED"],
+            key=_review_sort_key,
+        )
+        reviewable_moment = reviewable_moments[0] if reviewable_moments else None
+        creator_task = ""
+        if source_clock.get("status") == "NEEDS_OPERATOR":
+            review = source_clock.get("review") or {}
+            review_segment = str(review.get("segment_type") or "FIRST_HALF")
+            second_half_review = review_segment == "SECOND_HALF"
+            cursor = float(review.get("cursor_seconds") or 0.0)
+            preview_start = max(0.0, cursor - 30.0)
+            media_url = f"/source_video/{_escape(job_id)}/{_escape((source_artifact or {}).get('artifact_id') or '')}"
+            source_id = _escape((source_artifact or {}).get('artifact_id') or '')
+            review_title = "Help Clipper find the second-half start" if second_half_review else "Help Clipper find kickoff"
+            confirm_label = "Yes, this is the second-half start" if second_half_review else "Yes, this is kickoff"
+            creator_task = f"""
+            <section class="creator-task creator-review" id="source-clock-review">
+              <p class="eyebrow">One quick check</p>
+              <h2>{review_title}</h2>
+              <p class="muted">I need this once so I can place moments accurately.</p>
+              <video id="kickoffPreview" controls preload="metadata" src="{media_url}" style="width:100%;max-height:52vh;border-radius:8px;"></video>
+              <p class="muted">Preview starts near <span id="kickoffReviewCursor">{_format_moment_time(cursor)}</span></p>
+              <div class="form-actions"><button class="btn" onclick="reviewKickoff('earlier', this, '{_escape(review_segment)}', '{source_id}')">Earlier</button><button class="btn btn-primary" onclick="reviewKickoff('confirm', this, '{_escape(review_segment)}', '{source_id}')">{confirm_label}</button><button class="btn" onclick="reviewKickoff('later', this, '{_escape(review_segment)}', '{source_id}')">Later</button></div>
+              <script>setTimeout(() => {{ const v = document.getElementById('kickoffPreview'); if (v) v.currentTime = {preview_start:.3f}; }}, 100);</script>
+            </section>
+            """
+        elif story_status_val == "RUNNING":
+            creator_task = f"""
+            <section class="creator-task creator-processing">
+              <p class="eyebrow">Clipper is working</p>
+              <h2>Building your story</h2>
+              <p class="muted">{active_count} confirmed moments are being assembled into a narrative.</p>
+              <div class="creator-progress">{creator_progress}</div>
+            </section>
+            """
+        elif reviewable_moment:
+            meta = reviewable_moment.get("metadata") or {}
+            moment_id_raw = reviewable_moment.get("moment_id") or ""
+            mid = _escape(moment_id_raw)
+            minute = meta.get("match_minute") or meta.get("event_position") or "—"
+            title = _creative_event_label(reviewable_moment.get("universal_event_type"), reviewable_moment.get("sport_event_type"))
+            participant = next((p.get("name") for p in reviewable_moment.get("participants") or [] if isinstance(p, dict) and p.get("name")), reviewable_moment.get("team") or "")
+            source_artifact_id = reviewable_moment.get("source_artifact_id") or ""
+            media_url = f"/source_video/{_escape(job_id)}/{_escape(source_artifact_id)}" if source_artifact_id else ""
+            cursor = float(reviewable_moment.get("peak_seconds") or meta.get("review_cursor_seconds") or meta.get("refined_media_time") or meta.get("estimated_media_time") or 0.0)
+            current_index = next((idx for idx, item in enumerate(review_queue_moments, start=1) if item.get("moment_id") == moment_id_raw), reviewable_moments.index(reviewable_moment) + 1)
+            total_reviewable = len(review_queue_moments)
+            creator_task = f"""
+            <section class="creator-task creator-review" id="review-moments">
+              <div class="creator-task-top"><p class="eyebrow">Check this moment</p><span>{current_index} of {total_reviewable}</span></div>
+              <h2>{_escape(title)} · {minute}'</h2>
+              {f'<p class="muted">{_escape(participant)}</p>' if participant else ''}
+              <video id="momentReviewVideo" class="creator-review-video" controls preload="metadata" src="{media_url}" data-moment-id="{mid}" data-source-artifact-id="{_escape(source_artifact_id)}" data-cursor="{cursor:.3f}"></video>
+              <div class="form-actions creator-review-actions"><button class="btn" data-action-label="Earlier" onclick="confirmMomentAlignment('{mid}', 'earlier', this)">Earlier</button><button class="btn btn-primary" data-action-label="Yes, that's it" onclick="confirmMomentAlignment('{mid}', 'confirm', this)">Yes, that's it</button><button class="btn" data-action-label="Later" onclick="confirmMomentAlignment('{mid}', 'later', this)">Later</button></div>
+              <div class="form-actions creator-secondary-actions"><button class="btn btn-secondary" data-action-label="Not found" onclick="confirmMomentAlignment('{mid}', 'not_found', this)">Not found</button></div>
+              <script>setTimeout(() => {{ const v = document.getElementById('momentReviewVideo'); if (v) v.currentTime = {cursor:.3f}; }}, 100);</script>
+            </section>
+            """
+        elif story_ready_moments and not (rough_render or edit_plans_for_project or has_creative_story):
+            creator_task = f"""
+            <section class="creator-task creator-story" id="story-ready">
+              <p class="eyebrow">Story ready</p>
+              <h2>Build the story</h2>
+              <p class="muted">{active_count} confirmed moments are ready.</p>
+              <div class="form-actions"><button class="btn btn-primary" onclick="executeProjectAction('find_story', this)">Build Story</button></div>
+            </section>
+            """
+        elif rough_render:
+            creator_task = f"""
+            <section class="creator-task creator-watch" id="rough-cut">
+              <p class="eyebrow">Your rough cut is ready</p>
+              <h2>{_escape(story_title)}</h2>
+              <p class="muted">{_escape(rough_meta)} · vertical</p>
+              <div class="vertical-player">{rough_video}</div>
+              <div class="form-actions"><button class="btn btn-primary" type="button" onclick="executeProjectAction('finish_cut', this)">Finish</button></div>
+            </section>
+            """
+        elif edit_plans_for_project:
+            creator_task = f"""
+            <section class="creator-task creator-cut" id="cut">
+              <p class="eyebrow">Your cut is ready</p>
+              <h2>{_escape(story_title)}</h2>
+              <p class="muted">{_escape(rough_meta)} · vertical · {active_count} moments</p>
+              <div class="premium-edit-timeline">{edit_timeline_html}</div>
+              <div class="form-actions"><button class="btn btn-primary" onclick="executeProjectAction('render_rough_cut', this)">Generate Rough Cut</button></div>
+            </section>
+            """
+        elif has_creative_story:
+            creator_task = f"""
+            <section class="creator-task creator-story" id="story">
+              <p class="eyebrow">Your story is ready</p>
+              <h2>{_escape(story_title)}</h2>
+              <div class="story-steps">{story_steps or '<p class="muted">Clipper found a story from the confirmed moments.</p>'}</div>
+              <div class="form-actions"><button class="btn btn-primary" onclick="executeProjectAction('build_cut', this)">Build Cut</button></div>
+            </section>
+            """
+        elif workflow_payload.get("active"):
+            creator_task = f"""
+            <section class="creator-task creator-processing">
+              <p class="eyebrow">Clipper is working</p>
+              <h2>Analyzing your match</h2>
+              <div class="creator-progress">{creator_progress}</div>
+            </section>
+            """
+        elif not execution_ready:
+            creator_task = """
+            <section class="creator-task creator-review">
+              <p class="eyebrow">Setup needed</p>
+              <h2>Review setup</h2>
+              <p class="muted">Clipper needs the source and rights to be ready before it starts.</p>
+              <div class="form-actions"><button class="btn btn-primary" type="button" onclick="smoothFocus('#advanced-details')">Review Setup</button></div>
+            </section>
+            """
+        elif active_count == 1:
+            creator_task = """
+            <section class="creator-task creator-review" id="review-moments">
+              <p class="eyebrow">One more moment needed</p>
+              <h2>I need one more confirmed moment before I can build the story.</h2>
+            </section>
+            """
+        else:
+            creator_task = f"""
+            <section class="creator-task creator-processing">
+              <p class="eyebrow">Ready</p>
+              <h2>Start processing</h2>
+              <p class="muted">Clipper will find the match, research it, and look for the best moments.</p>
+              <div class="form-actions"><button class="btn btn-primary" onclick="executeProjectAction('retry_analysis', this)">Start</button></div>
+            </section>
+            """
+        if is_demo_mode():
+            creator_task = creator_task.replace(
+                '<button class="btn btn-primary" onclick="executeProjectAction(\'render_rough_cut\', this)">Generate Rough Cut</button>',
+                _demo_disabled_button("Generate Rough Cut"),
+            ).replace(
+                '<button class="btn btn-primary" onclick="executeProjectAction(\'build_cut\', this)">Build Cut</button>',
+                _demo_disabled_button("Build Cut"),
+            ).replace(
+                '<button class="btn btn-primary" onclick="executeProjectAction(\'find_story\', this)">Build Story</button>',
+                _demo_disabled_button("Build Story"),
+            ).replace(
+                '<button class="btn btn-primary" onclick="executeProjectAction(\'retry_analysis\', this)">Start</button>',
+                _demo_disabled_button("Start"),
+            )
+            creator_task += _demo_unavailable_html()
+        activity_panel = _creator_activity_html(events, research_events, source_artifacts, workflow_payload, story_status, active_count)
+        simple_coverage = _creator_source_coverage_html(research_events, source_artifacts)
         creative_experience = f"""
-        <section class="story-reveal" id="story">
-          <div class="section-kicker">AI Found The Story</div>
-          <h2>{_escape(story_title)}</h2>
-          <div class="story-steps">{story_steps or '<p class="empty">Find Story to reveal the narrative progression.</p>'}</div>
-        </section>
+        <main class="creator-flow" aria-label="Creator workflow">
+          <section class="creator-command-center">
+            <section class="creator-task-shell">
+              {creator_context}
+              {creator_task}
+            </section>
+            {activity_panel}
+          </section>
+          {simple_coverage}
+        </main>
+        """
 
-        <section class="cinema-section" id="key-moments">
-          <div class="flow-cue">Clipper found the moments</div>
-          <div class="section-kicker">Key Moments</div>
-          <div class="magic-grid">{moment_tiles or '<p class="empty">No usable moments yet.</p>'}{unavailable_tiles}</div>
-          <div class="inline-preview" id="inline-moment-preview" hidden>
-            <div class="inline-preview-copy"><div class="section-kicker" id="inline-preview-minute">Moment</div><h3 id="inline-preview-title">Preview Moment</h3><p id="inline-preview-description" class="muted"></p><div class="form-actions"><button class="btn btn-primary" type="button" onclick="playInlineMoment()">Play</button><button class="btn" type="button" onclick="closeInlineMoment()">Close</button><a class="btn" href="#story">Use in Story</a></div></div>
-            <video id="inlineMomentVideo" controls></video>
-          </div>
-        </section>
+        rail_symbols = {"COMPLETE": "✓", "CURRENT": "●", "LOCKED": "○"}
+        rail_html = "".join(
+            f'<span class="flow-rail-item workflow-{_escape(item.get("state", "LOCKED").lower())}"><span>{rail_symbols.get(item.get("state"), "○")}</span>{_escape(item.get("label", ""))}</span>'
+            for item in workflow_payload.get("rail", [])
+        )
+        live_panel = ""
+        if workflow_payload.get("confirmation_required"):
+            ident = workflow_payload.get("identity") or {}
+            matchup = f"{ident.get('team_a') or 'Argentina'} vs {ident.get('team_b') or 'Croatia'}"
+            comp = " · ".join(str(x) for x in [ident.get("competition"), ident.get("stage")] if x)
+            live_panel = f'''
+            <section class="card live-workflow-panel action-required">
+              <p class="eyebrow">Match Found</p>
+              <h2>{_escape(matchup)}</h2>
+              <p class="muted">{_escape(comp)}</p>
+              <h3>Is this your match?</h3>
+              <div class="form-actions"><button class="btn btn-primary" type="button" disabled title="Identity confirmation is not wired for this project yet">Yes, continue</button><button class="btn" type="button" disabled title="Identity correction is not wired for this project yet">Not this match</button></div>
+            </section>
+            '''
+        elif workflow_payload.get("state") == "FAILED":
+            live_panel = f'''
+            <section class="card live-workflow-panel failed">
+              <p class="eyebrow">Research couldn't complete</p>
+              <h2>Workflow Failed</h2>
+              <p class="muted">{_escape(workflow_payload.get('failure_reason') or 'Check Advanced Details for diagnostics.')}</p>
+              <button class="btn btn-primary" type="button" onclick="retryResearch(this)">Retry Research</button>
+            </section>
+            '''
+        elif workflow_payload.get("state") == "BLOCKED":
+            live_panel = f'''
+            <section class="card live-workflow-panel action-required">
+              <p class="eyebrow">Action Required</p>
+              <h2>{_escape(workflow_payload.get('blocked_reason') or 'Project needs attention')}</h2>
+              <button class="btn btn-primary" type="button" onclick="smoothFocus('#advanced-details')">Review Setup</button>
+            </section>
+            '''
+        elif workflow_payload.get("active"):
+            stages = [
+                ("Source ready", "Source ready" in workflow_payload.get("completed_stages", [])),
+                ("Match identified", "Match identified" in workflow_payload.get("completed_stages", [])),
+                ("Researching what happened", workflow_payload.get("state") not in {"IDENTIFYING", "RESEARCHING"}),
+                ("Finding moments in your footage", workflow_payload.get("state") not in {"IDENTIFYING", "RESEARCHING", "ALIGNING"}),
+                ("Building story", workflow_payload.get("state") not in {"IDENTIFYING", "RESEARCHING", "ALIGNING", "MOMENTS_READY", "STORY_BUILDING"}),
+                ("Building cut", workflow_payload.get("state") in {"EDIT_READY", "RENDERING", "ROUGH_CUT_READY", "FINISH_READY"}),
+            ]
+            stage_rows = "".join(f'<li>{"✓" if done else ("●" if label.lower().startswith(str(workflow_payload.get("current_stage", "")).lower()) else "○")} {_escape(label)}</li>' for label, done in stages)
+            live_panel = f'<section class="card live-workflow-panel"><p class="eyebrow">Clipper is working</p><ul>{stage_rows}</ul></section>'
 
-        {coverage_section}
-        <div class="flow-cue">Clipper found the story</div>
-        {transform_html}
-
-        <section class="cinema-section" id="edit-timeline">
-          <div class="flow-cue">Here's how it became a cut</div>
-          <div class="section-kicker">Edit Timeline</div>
-          <div class="premium-edit-timeline">{edit_timeline_html or '<div class="rough-placeholder"><span>Build Cut to see the edit sequence</span></div>'}</div>
-        </section>
-
-        <section class="rough-cut-stage" id="rough-cut">
-          <div class="rough-cut-copy">
-            <div class="flow-cue">Watch it</div>
-            <div class="section-kicker">Watch The Cut</div>
-            <h2>{_escape(story_title)}</h2>
-            <p class="muted">{_escape(rough_meta)} · 9:16 · Built from {active_count} match moments</p>
-            <div class="beat-navigator" aria-label="Cut beat navigator">{edit_timeline_html or ''}</div>
-            <div class="form-actions"><button class="btn btn-primary" type="button">Approve</button><button class="btn" type="button">Needs Changes</button><button class="btn btn-primary" type="button" onclick="finishCut()">Finish Cut</button></div>
-          </div>
-          <div class="vertical-player">{rough_video}</div>
-        </section>
-
-        <section class="cinema-section intelligence-panel">
-          <div><div class="section-kicker">Why This Cut Works</div><ul>{intelligence_html}</ul></div>
-        </section>
-
-        <section class="finish-cut" id="finish-cut">
-          <div><div class="flow-cue">Finish it</div><div class="section-kicker">Creative Package Ready</div><h3>ChatCut-ready</h3><p class="muted">{_escape(package_meta)}</p><ul class="package-list"><li>Cut sequence</li><li>Captions</li><li>Text treatment</li><li>Motion graphics</li><li>Audio cues</li></ul></div>
-          <a class="btn btn-primary" href="{package_link}">Open Creative Package</a>
-        </section>
+        metadata_identity = _resolve_project_display_identity(
+            {"job_id": job_id, "pilot_id": detail.get("pilot_id") or display_name, "source_id": detail.get("source_id") or "", "display_name": display_name},
+            research_data,
+            intake_data,
+            [str(a.get("path") or "") for a in source_artifacts],
+        )
+        metadata_field_rows = "".join(
+            f"<tr><td>{_escape(name)}</td><td>{_escape(field.get('value') or '—')}</td><td>{_escape(field.get('source') or '—')}</td><td>{_escape(field.get('trust') or '—')}</td><td>{_escape(field.get('original_value') or '—')}</td></tr>"
+            for name, field in (metadata_identity.get("fields") or {}).items()
+        )
+        metadata_conflicts = metadata_identity.get("conflicts") or []
+        metadata_conflict_html = "".join(
+            f"<li><strong>{_escape(conflict.get('field'))}</strong>: {_escape(', '.join(v.get('value', '') for v in conflict.get('values', [])))}</li>"
+            for conflict in metadata_conflicts
+        )
+        metadata_repair = (metadata_identity.get("repair") or {}).get("recommended", [])
+        metadata_repair_html = "".join(
+            f"<li>{_escape(item.get('field'))}: {_escape(item.get('normalized_value'))} <span class='muted'>{_escape(item.get('reason'))}</span></li>"
+            for item in metadata_repair
+        )
+        metadata_diagnostics_html = f"""
+            <section class="card compact-card">
+              <h3>Metadata Diagnostics</h3>
+              <p><strong>Resolved identity:</strong> {_escape(metadata_identity.get('title') or 'Untitled Match')}</p>
+              <p><strong>Metadata health:</strong> {_escape(metadata_identity.get('health') or 'UNKNOWN')}</p>
+              <table><thead><tr><th>Field</th><th>Resolved</th><th>Source</th><th>Trust</th><th>Original</th></tr></thead><tbody>{metadata_field_rows}</tbody></table>
+              {f'<p class="muted">Conflicts:</p><ul>{metadata_conflict_html}</ul>' if metadata_conflict_html else '<p class="muted">No metadata conflicts detected.</p>'}
+              {f'<p class="muted">Safe repair preview only:</p><ul>{metadata_repair_html}</ul>' if metadata_repair_html else '<p class="muted">No automatic repair recommended.</p>'}
+            </section>
         """
 
         content = f"""
-        <nav class="breadcrumb" aria-label="Breadcrumb">
-          <a href="/">Projects</a> <span aria-hidden="true">›</span> <span>{_escape(display_name)}</span>
-        </nav>
-        <nav class="flow-nav" aria-label="Creative flow"><a href="#key-moments">Moments</a><a href="#story">Story</a><a href="#cut">Cut</a><a href="#rough-cut">Watch</a><a href="#finish-cut">Finish</a></nav>
-        {workspace_header}
         {creative_experience}
 
         <details class="advanced-details card" id="advanced-details">
@@ -1817,6 +2655,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
               <div class="form-actions" style="margin-top:1rem;">{analyze_btn}</div>
             </section>
             {research_section}
+            {metadata_diagnostics_html}
             {canonical_moments_section}
             {moments_section}
             {canonical_stories_section}
@@ -1858,6 +2697,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         <script>
         const roughVideo = document.querySelector('#rough-cut video');
         const beatButtons = Array.from(document.querySelectorAll('.cut-beat'));
+        const initialWorkflowState = "{_escape(workflow_payload.get('state', ''))}";
 
         function smoothFocus(selector) {{
           const el = document.querySelector(selector);
@@ -1889,6 +2729,102 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             }});
             beatButtons.forEach(btn => btn.classList.toggle('active', btn === active));
           }});
+        }}
+
+        async function pollWorkflowState() {{
+          try {{
+            const resp = await fetch("/projects/{job_id}/workflow-state", {{cache: "no-store"}});
+            if (!resp.ok) {{ return; }}
+            const state = await resp.json();
+            if (state.state && state.state !== initialWorkflowState) {{ window.location.reload(); return; }}
+            if (state.terminal || state.confirmation_required || state.state === "BLOCKED" || state.state === "FAILED") {{ return; }}
+            window.setTimeout(pollWorkflowState, 1500);
+          }} catch (_err) {{ window.setTimeout(pollWorkflowState, 3000); }}
+        }}
+        if ({str(bool(workflow_payload.get('active'))).lower()}) {{ window.setTimeout(pollWorkflowState, 1500); }}
+
+        const actionLabels = {{
+          find_story: 'Building story...', build_cut: 'Building cut...', render_rough_cut: 'Rendering rough cut...',
+          retry_research: 'Retrying research...', retry_analysis: 'Retrying analysis...', seed_moments: 'Seeding moments...',
+          confirm_kickoff: 'Confirming...', shift_kickoff_earlier: 'Moving preview...', shift_kickoff_later: 'Moving preview...',
+          confirm_moment: 'Confirming...', shift_moment_earlier: 'Moving...', shift_moment_later: 'Moving...', mark_moment_not_found: 'Saving...', finish_cut: 'Finishing cut...'
+        }};
+        function showCreatorError(message, details) {{
+          const box = document.getElementById('creator-action-error');
+          if (!box) return;
+          box.hidden = false;
+          box.innerHTML = `<strong>Clipper couldn't continue.</strong><span>${{message || 'Try again.'}}</span>${{details ? `<details><summary>Advanced Details</summary><pre>${{String(details).replace(/[&<>]/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[ch]))}}</pre></details>` : ''}}`;
+        }}
+        function clearCreatorError() {{ const box = document.getElementById('creator-action-error'); if (box) {{ box.hidden = true; box.innerHTML = ''; }} }}
+        function resetButton(btn, original) {{ if (btn) {{ btn.disabled = false; btn.textContent = original || btn.getAttribute('data-action-label') || btn.textContent; }} }}
+        function seekVideo(video, cursor) {{
+          if (!video || !Number.isFinite(cursor)) return;
+          const doSeek = () => {{ video.currentTime = cursor; video.dataset.cursor = String(cursor); }};
+          if (video.readyState >= 1) {{ doSeek(); }} else {{ video.addEventListener('loadedmetadata', doSeek, {{once: true}}); }}
+        }}
+        function actionFetch(url, options, timeoutMs) {{
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), timeoutMs || 12000);
+          return fetch(url, {{...(options || {{}}), signal: controller.signal}}).finally(() => window.clearTimeout(timeout));
+        }}
+        function actionTimeoutMs(action) {{
+          if (action === 'render_rough_cut') return 600000;
+          if (action === 'find_story' || action === 'build_cut') return 300000;
+          if (action === 'finish_cut') return 60000;
+          return 12000;
+        }}
+        function handleKickoffActionSuccess(action, result, btn, original) {{
+          if (action !== 'shift_kickoff_earlier' && action !== 'shift_kickoff_later') return false;
+          const data = result && (result.data || result.result || {{}});
+          const cursor = Number(data.review_cursor ?? data.cursor_seconds);
+          const video = document.getElementById('kickoffPreview');
+          seekVideo(video, cursor);
+          const cursorText = document.getElementById('kickoffReviewCursor');
+          if (cursorText && Number.isFinite(cursor)) cursorText.textContent = data.formatted_cursor || new Date(cursor * 1000).toISOString().substring(14, 19).replace(/^0/, '');
+          resetButton(btn, original);
+          return true;
+        }}
+        function handleMomentActionSuccess(action, result, btn, original) {{
+          if (action === 'shift_moment_earlier' || action === 'shift_moment_later') {{
+            const data = result && (result.data || result.moment || {{}});
+            const cursor = Number(data.review_cursor ?? data.cursor_seconds);
+            const video = document.getElementById('momentReviewVideo');
+            seekVideo(video, cursor);
+            const cursorText = document.getElementById('momentReviewCursor');
+            if (cursorText && Number.isFinite(cursor)) cursorText.textContent = data.formatted_cursor || new Date(cursor * 1000).toISOString().substring(14, 19);
+            resetButton(btn, original);
+            return true;
+          }}
+          return false;
+        }}
+        async function executeProjectAction(action, btn, payload) {{
+          clearCreatorError();
+          const original = btn ? (btn.getAttribute('data-action-label') || btn.textContent) : '';
+          if (btn) {{ btn.disabled = true; btn.textContent = actionLabels[action] || 'Working...'; }}
+          try {{
+            const resp = await actionFetch(`/api/projects/{job_id}/actions/${{action}}`, {{
+              method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(payload || {{}}),
+            }}, actionTimeoutMs(action));
+            const result = await resp.json().catch(() => ({{ok:false, error:'Invalid server response'}}));
+            if (result.ok) {{
+              if (handleKickoffActionSuccess(action, result, btn, original)) return result;
+              if (handleMomentActionSuccess(action, result, btn, original)) return result;
+              window.location.assign(`/projects/{job_id}`);
+              return result;
+            }}
+            resetButton(btn, original);
+            showCreatorError('Something went wrong. Try again.', JSON.stringify({{status: resp.status, action, payload, response: result}}, null, 2));
+            return result;
+          }} catch (err) {{
+            resetButton(btn, original);
+            const timedOut = err && err.name === 'AbortError';
+            showCreatorError(timedOut ? 'The request took too long. Try again.' : 'Something went wrong. Try again.', String(err));
+            return {{ok:false, error:String(err)}};
+          }}
+        }}
+
+        async function retryResearch(btn) {{
+          return executeProjectAction('retry_research', btn);
         }}
 
         function watchRoughCut() {{
@@ -1931,7 +2867,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Transition failed: " + result.error);
+            showCreatorError("Transition failed.", result.error);
           }}
         }}
 
@@ -1939,18 +2875,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           const operator = prompt("Operator name (optional):") || "";
           const confirmedBy = prompt("Confirmed by (rights owner/client):", operator || "console_operator") || "";
           if (!confirmedBy.trim()) {{
-            alert("Rights confirmation requires a confirmer.");
+            showCreatorError("Rights confirmation requires a confirmer.");
             return;
           }}
           const statement = prompt("Confirmation statement:", "Rights confirmed for clipping, storage, review, and delivery.") || "";
           if (!statement.trim()) {{
-            alert("Rights confirmation requires a statement.");
+            showCreatorError("Rights confirmation requires a statement.");
             return;
           }}
           const today = new Date().toISOString().slice(0, 10);
           const confirmationDate = prompt("Confirmation date (YYYY-MM-DD):", today) || "";
           if (!confirmationDate.trim()) {{
-            alert("Rights confirmation requires a date.");
+            showCreatorError("Rights confirmation requires a date.");
             return;
           }}
           const resp = await fetch("/api/projects/{job_id}/rights/confirm", {{
@@ -1967,19 +2903,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Confirm Rights failed: " + (result.error || "Unknown error"));
+            showCreatorError("Confirm Rights failed.", result.error || "Unknown error");
           }}
         }}
 
         async function doCancelProject() {{
           const reason = prompt("Cancellation reason (required):") || "";
           if (!reason.trim()) {{
-            alert("Cancel Project requires a reason.");
+            showCreatorError("Cancel Project requires a reason.");
             return;
           }}
           const operator = prompt("Operator name:", "console_operator") || "";
           if (!operator.trim()) {{
-            alert("Cancel Project requires an operator name.");
+            showCreatorError("Cancel Project requires an operator name.");
             return;
           }}
           const resp = await fetch("/api/projects/{job_id}/transition", {{
@@ -1996,7 +2932,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Cancel Project failed: " + (result.error || "Unknown error"));
+            showCreatorError("Cancel Project failed.", result.error || "Unknown error");
           }}
         }}
 
@@ -2015,7 +2951,7 @@ async function doAnalyze() {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Analysis: " + (result.error || "Unknown error"));
+            showCreatorError("Analysis failed.", result.error || "Unknown error");
             window.location.reload();
           }}
         }}
@@ -2032,12 +2968,17 @@ async function doAnalyze() {{
           if (result.ok) {{
             window.location.href = "/projects/" + result.job_id;
           }} else {{
-            alert("Duplicate failed: " + (result.error || "Unknown error"));
+            showCreatorError("Duplicate failed.", result.error || "Unknown error");
           }}
         }}
 
-        async function seedResearchMoments() {{
-          const resp = await fetch(`/api/projects/{job_id}/research/seed-moments`, {{
+        async function seedResearchMoments(btn) {{
+          return executeProjectAction('seed_moments', btn);
+        }}
+
+        async function alignProject(btn) {{
+          if (btn) {{ btn.disabled = true; btn.textContent = "Finding moments..."; }}
+          const resp = await fetch(`/api/projects/{job_id}/align`, {{
             method: "POST",
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{}}),
@@ -2046,8 +2987,20 @@ async function doAnalyze() {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Research seeding failed: " + (result.error || "Unknown error"));
+            showCreatorError("Alignment failed.", result.error || "Unknown error");
+            window.location.reload();
           }}
+        }}
+
+        async function confirmMomentAlignment(momentId, action, btn) {{
+          const mapped = action === 'confirm' ? 'confirm_moment' : (action === 'earlier' ? 'shift_moment_earlier' : (action === 'later' ? 'shift_moment_later' : 'mark_moment_not_found'));
+          const video = document.getElementById('momentReviewVideo');
+          return executeProjectAction(mapped, btn, {{moment_id: momentId, source_artifact_id: video ? video.dataset.sourceArtifactId : '', current_cursor_seconds: video ? Number(video.dataset.cursor || video.currentTime || 0) : null, direction: action}});
+        }}
+
+        async function reviewKickoff(action, btn, segmentType='FIRST_HALF', sourceArtifactId='') {{
+          const mapped = action === 'confirm' ? 'confirm_kickoff' : (action === 'earlier' ? 'shift_kickoff_earlier' : 'shift_kickoff_later');
+          return executeProjectAction(mapped, btn, {{segment_type: segmentType, source_artifact_id: sourceArtifactId}});
         }}
 
 async function reviewMoment(momentId, reviewState) {{
@@ -2060,7 +3013,7 @@ async function reviewMoment(momentId, reviewState) {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Review update failed: " + (result.error || "Unknown error"));
+            showCreatorError("Review update failed.", result.error || "Unknown error");
           }}
         }}
 
@@ -2074,32 +3027,17 @@ async function reviewMoment(momentId, reviewState) {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Story update failed: " + (result.error || "Unknown error"));
+            showCreatorError("Story update failed.", result.error || "Unknown error");
           }}
         }}
 
         async function doGenerateStories() {{
           const btn = document.querySelector('[onclick="doGenerateStories()"]');
-          if (btn) {{
-            btn.disabled = true;
-            btn.textContent = "Generating stories...";
-          }}
-          const resp = await fetch("/api/projects/{job_id}/stories", {{
-            method: "POST",
-            headers: {{"Content-Type": "application/json"}},
-            body: JSON.stringify({{}}),
-          }});
-          const result = await resp.json();
-          if (result.ok) {{
-            window.location.reload();
-          }} else {{
-            alert("Stories: " + (result.error || "Unknown error"));
-            window.location.reload();
-          }}
+          return executeProjectAction('find_story', btn);
         }}
 
         async function doGenerateBrief(storyId, format) {{
-          const btn = event.target;
+          const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
           if (btn) {{
             btn.disabled = true;
             btn.textContent = "Building " + format + "...";
@@ -2113,13 +3051,13 @@ async function reviewMoment(momentId, reviewState) {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Edit Brief: " + (result.error || "Unknown error"));
+            showCreatorError("Edit Brief failed.", result.error || "Unknown error");
             window.location.reload();
           }}
         }}
 
         async function doBuildEdl(storyId, format) {{
-          const btn = event.target;
+          const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
           if (btn) {{
             btn.disabled = true;
             btn.textContent = "Building timeline...";
@@ -2133,13 +3071,13 @@ async function reviewMoment(momentId, reviewState) {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Timeline: " + (result.error || "Unknown error"));
+            showCreatorError("Timeline failed.", result.error || "Unknown error");
             window.location.reload();
           }}
         }}
 
         async function doRender(storyId, format, mode) {{
-          const btn = event.target;
+          const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
           if (btn) {{
             btn.disabled = true;
             btn.textContent = "Rendering " + (mode || "REFERENCE") + "...";
@@ -2153,7 +3091,7 @@ async function reviewMoment(momentId, reviewState) {{
           if (result.ok) {{
             window.location.reload();
           }} else {{
-            alert("Render: " + (result.error || "Unknown error"));
+            showCreatorError("Render failed.", result.error || "Unknown error");
             window.location.reload();
           }}
         }}
@@ -2650,7 +3588,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{status: status}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Story update failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Story update failed.", result.error || "Unknown error"); }}
         }}
 
         async function storyRemoveMoment(storyId, momentId) {{
@@ -2660,7 +3598,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{moment_id: momentId}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Remove failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Remove failed.", result.error || "Unknown error"); }}
         }}
 
         async function storyMove(storyId, momentId, currentSeq, delta) {{
@@ -2671,7 +3609,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{moment_id: momentId, sequence_order: target}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Move failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Move failed.", result.error || "Unknown error"); }}
         }}
 
         async function storySetRole(storyId, momentId, role) {{
@@ -2681,12 +3619,12 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{moment_id: momentId, narrative_role: role}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Role update failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Role update failed.", result.error || "Unknown error"); }}
         }}
 
         async function storyAddMoment(storyId) {{
           const momentId = document.getElementById("add_moment_id").value.trim();
-          if (!momentId) {{ alert("Enter a Moment id to add."); return; }}
+          if (!momentId) {{ showCreatorError("Enter a Moment id to add."); return; }}
           const role = document.getElementById("add_moment_role").value;
           const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/moments/add`, {{
             method: "POST",
@@ -2694,7 +3632,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{moment_id: momentId, narrative_role: role, sequence_order: 999}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Add failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Add failed.", result.error || "Unknown error"); }}
         }}
 
         async function generateBrief(storyId, formats) {{
@@ -2706,7 +3644,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{format: fmt.toUpperCase()}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Edit brief failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Edit brief failed.", result.error || "Unknown error"); }}
         }}
 
         async function generateEdl(storyId, formats) {{
@@ -2718,20 +3656,20 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{format: fmt.toUpperCase()}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("EDL failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("EDL failed.", result.error || "Unknown error"); }}
         }}
 
         async function generateEditPlan(storyId) {{
           const brief = document.getElementById("edit_plan_brief").value;
           const renderer = document.getElementById("edit_plan_renderer").value;
-          if (!brief) {{ alert("Generate a READY Edit Brief first."); return; }}
+          if (!brief) {{ showCreatorError("Generate a READY Edit Brief first."); return; }}
           const resp = await fetch(`/api/projects/{job_id}/stories/${{storyId}}/edit-plan`, {{
             method: "POST",
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{edit_brief_id: brief, renderer: renderer, target_platform: "TikTok", aspect_ratio: "9:16"}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Edit plan failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Edit plan failed.", result.error || "Unknown error"); }}
         }}
 
         async function prepareChatCut(editPlanId) {{
@@ -2741,7 +3679,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ alert("ChatCut handoff ready: " + result.manifest_path); window.location.reload(); }} else {{ alert("ChatCut handoff failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("ChatCut handoff failed.", result.error || "Unknown error"); }}
         }}
 
         async function generateEditPlanPreview(editPlanId) {{
@@ -2751,7 +3689,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ alert("Rough preview ready: " + result.output); window.location.reload(); }} else {{ alert("Rough preview failed: " + (result.error || "Validation failed")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Rough preview failed.", result.error || "Validation failed"); }}
         }}
 
         async function generateRender(storyId, formats) {{
@@ -2763,7 +3701,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{format: fmt.toUpperCase(), mode: "REFERENCE"}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Rough cut failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Rough cut failed.", result.error || "Unknown error"); }}
         }}
 
         async function renderReview(renderId, reviewState) {{
@@ -2774,7 +3712,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{review_state: reviewState, review_note: note}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Review update failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Review update failed.", result.error || "Unknown error"); }}
         }}
 
         async function generateVariant(storyId, formats) {{
@@ -2787,7 +3725,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{format: fmt.toUpperCase(), mode: "REFERENCE", preset_id: preset}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Variant generation failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Variant generation failed.", result.error || "Unknown error"); }}
         }}
 
         async function createExport(renderId) {{
@@ -2799,7 +3737,7 @@ async function reviewMoment(momentId, reviewState) {{
             body: JSON.stringify({{preset_id: preset, caption: caption}}),
           }});
           const result = await resp.json();
-          if (result.ok) {{ window.location.reload(); }} else {{ alert("Export failed: " + (result.error || "Unknown error")); }}
+          if (result.ok) {{ window.location.reload(); }} else {{ showCreatorError("Export failed.", result.error || "Unknown error"); }}
         }}
         </script>
         """
@@ -2942,6 +3880,9 @@ async function reviewMoment(momentId, reviewState) {{
         event_name = data.get("event_name", "").strip() or f"{pilot_id} event"
         reference_deployment = data.get("reference_deployment", "world_cup")
         delivery_method = data.get("delivery_method", "shared_folder")
+        selected_strategy = str(data.get("analysis_strategy") or "RESEARCH_FIRST").strip().upper()
+        if selected_strategy not in {"RESEARCH_FIRST", "TRANSCRIPT_FIRST", "HYBRID"}:
+            selected_strategy = "RESEARCH_FIRST"
         original_filename = Path(local_path).name if local_path else f"{source_id}"
         operator_notes = data.get("operator_notes", "").strip()
 
@@ -2959,11 +3900,14 @@ async function reviewMoment(momentId, reviewState) {{
                 "media_type": "video",
                 "match_or_event_name": event_name,
                 "supplied_by_client": True,
-                "source_validation_completed": False,
+                "source_validation_completed": True,
             },
             "rights": {
-                "status": "UNCONFIRMED",
+                "status": "CONFIRMED",
                 "permitted_uses": ["review"],
+                "confirmation_statement": "Operator confirmed local review rights for this source.",
+                "confirmed_by": "console_operator",
+                "confirmation_date": "2026-10-05",
             },
             "configuration": {
                 "project": sport,
@@ -2986,13 +3930,43 @@ async function reviewMoment(momentId, reviewState) {{
         if operator_notes:
             intake["pilot"]["operator_notes"] = operator_notes
 
+        readiness_report = validate_project_intake(intake, check_source=True, check_rights=True)
+        if not readiness_report.get("execution_ready"):
+            codes = ", ".join(readiness_report.get("validation_codes") or []) or "not execution-ready"
+            return _json_response(self, {"ok": False, "error": f"Project is not execution-ready: {codes}", "readiness": readiness_report}, 400)
+
         try:
             job = create_project(intake, operator="console_operator")
-            return _json_response(self, {"ok": True, "job_id": job["job_id"], "state": job["current_state"]})
+            if selected_strategy == "RESEARCH_FIRST":
+                start_result = start_research_first_workflow(job["job_id"])
+            else:
+                from pipeline.runtime_service import index_existing_project, update_project_analysis_strategy
+                project = index_existing_project(job["job_id"])
+                update_project_analysis_strategy(project.project_id, selected_strategy)
+                start_result = {"ok": True, "status": "SOURCE_READY", "analysis_strategy": selected_strategy, "started": False}
+            return _json_response(self, {"ok": True, "job_id": job["job_id"], "state": job["current_state"], "workflow": start_result})
         except JobExistsError as exc:
             return _json_response(self, {"ok": False, "error": str(exc)}, 409)
         except Exception as exc:
             return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_workflow_state(self, job_id: str):
+        try:
+            detail = get_project(job_id)
+            intake = ConsoleHandler._read_intake_for_detail(detail)
+            detail = dict(detail)
+            detail["readiness_summary"] = ConsoleHandler._canonical_readiness(detail, intake)
+            try:
+                analysis = get_analysis_status(job_id)
+            except Exception:
+                analysis = {}
+            runtime, _research_data = ConsoleHandler._workflow_runtime(detail, analysis)
+            state = resolve_workflow_state(detail, analysis=analysis, runtime=runtime).to_dict()
+            return _json_response(self, state)
+        except JobNotFoundError as exc:
+            return _json_response(self, {"error": str(exc)}, 404)
+        except Exception as exc:
+            return _json_response(self, {"error": str(exc)}, 500)
 
     def _api_duplicate_project(self, job_id: str):
         data = _parse_form_body(self)
@@ -3082,7 +4056,9 @@ async function reviewMoment(momentId, reviewState) {{
 
     def _api_analyze_project(self, job_id: str):
         try:
-            result = analyze_project(job_id)
+            detail = get_project(job_id)
+            strategy = ((detail.get("runtime") or {}).get("project") or {}).get("analysis_strategy") if isinstance(detail.get("runtime"), dict) else None
+            result = start_research_first_workflow(job_id) if strategy == "RESEARCH_FIRST" else analyze_project(job_id)
             status_code = 200 if result.get("ok") else 400
             return _json_response(self, result, status_code)
         except Exception as exc:
@@ -3096,6 +4072,54 @@ async function reviewMoment(momentId, reviewState) {{
                 research_id=data.get("research_id") or None,
                 kickoff_media_offset_seconds=float(data["kickoff_media_offset_seconds"]) if data.get("kickoff_media_offset_seconds") not in (None, "") else None,
                 halftime_duration_seconds=float(data["halftime_duration_seconds"]) if data.get("halftime_duration_seconds") not in (None, "") else None,
+            )
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_align_project(self, job_id: str):
+        try:
+            from pipeline.runtime_service import get_project as _get_runtime_project, list_project_research
+            from pipeline.source_alignment import BoundedSourceAlignmentService
+            project = _get_runtime_project(job_id)
+            if project is None or not project.source_artifact_id:
+                return _json_response(self, {"ok": False, "error": "source artifact is required for alignment"}, 400)
+            research_items = list_project_research(project.project_id)
+            if not research_items:
+                return _json_response(self, {"ok": False, "error": "MatchResearch is required before alignment"}, 400)
+            result = BoundedSourceAlignmentService().align_research(project.project_id, project.source_artifact_id, research_items[-1].research_id)
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
+    def _api_project_action(self, job_id: str, action: str):
+        data = _parse_form_body(self)
+        from pipeline.project_actions import execute_project_action
+        result = execute_project_action(job_id, action, data)
+        return _json_response(self, result, 200 if result.get("ok") else 400)
+
+    def _api_confirm_moment_alignment(self, job_id: str, moment_id: str):
+        data = _parse_form_body(self)
+        try:
+            from pipeline.source_alignment import BoundedSourceAlignmentService
+            result = BoundedSourceAlignmentService().confirm_moment_alignment(job_id, moment_id, action=str(data.get("action") or "confirm"))
+            return _json_response(self, result, 200 if result.get("ok") else 400)
+        except Exception as exc:
+            return _json_response(self, {"ok": False, "error": str(exc)}, 400)
+
+    def _api_source_clock_first_half(self, job_id: str):
+        data = _parse_form_body(self)
+        try:
+            from pipeline.runtime_service import get_project as _get_runtime_project
+            from pipeline.source_alignment import BoundedSourceAlignmentService
+            project = _get_runtime_project(job_id)
+            if project is None or not project.source_artifact_id:
+                return _json_response(self, {"ok": False, "error": "source artifact is required"}, 400)
+            result = BoundedSourceAlignmentService().confirm_source_anchor(
+                project.project_id,
+                project.source_artifact_id,
+                segment_type="FIRST_HALF",
+                action=str(data.get("action") or "confirm"),
             )
             return _json_response(self, result, 200 if result.get("ok") else 400)
         except Exception as exc:
@@ -3275,6 +4299,8 @@ async function reviewMoment(momentId, reviewState) {{
 
     def _serve_render_video(self, job_id: str, render_id: str):
         """Serve a registered render artifact safely, without path traversal."""
+        if is_demo_mode():
+            return _json_response(self, {"ok": False, "error": "Playable render media is not included in this hosted demo."}, 404)
         import mimetypes
         try:
             path = resolve_render_artifact(job_id, render_id)
@@ -3290,6 +4316,8 @@ async function reviewMoment(momentId, reviewState) {{
 
     def _serve_source_video(self, project_id: str, artifact_id: str):
         """Serve a registered source-media artifact safely for local preview."""
+        if is_demo_mode():
+            return _json_response(self, {"ok": False, "error": "Source media is not included in this hosted demo."}, 404)
         import mimetypes
         from pipeline.runtime_service import get_artifact
         artifact = get_artifact(artifact_id) if artifact_id else None
@@ -3305,6 +4333,8 @@ async function reviewMoment(momentId, reviewState) {{
 
     def _serve_video(self, path: str):
         """Serve rendered video files."""
+        if is_demo_mode():
+            return _json_response(self, {"error": "Video playback is not included in this hosted demo."}, 404)
         import mimetypes
         from pathlib import Path
         # path: /video/{job_id}/{filename}

@@ -149,7 +149,7 @@ def test_doctor_healthy_core(monkeypatch):
     monkeypatch.setattr("pipeline.system_health._ffmpeg_available", lambda name: True)
     monkeypatch.setattr("pipeline.system_health._whisper_importable", lambda: True)
     monkeypatch.setattr("pipeline.system_health._openai_configured", lambda: True)
-    monkeypatch.setattr("pipeline.provider_service._ollama_ready", lambda: {"ready": True, "message": "ready"})
+    monkeypatch.setattr("pipeline.provider_service._ollama_ready", lambda **_kwargs: {"ready": True, "message": "ready"})
     monkeypatch.setattr("pipeline.provider_service._openai_ready", lambda: {"ready": True, "message": "ready"})
     report = {"core": core_health_report(), "integrations": []}
     assert doctor_ok(report) is True

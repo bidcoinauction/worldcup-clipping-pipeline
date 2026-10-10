@@ -14,7 +14,7 @@ from tests.test_runtime_managed_analysis import _make_job
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("STADIUM_RUNTIME_DB", str(tmp_path / "runtime.sqlite3"))
     monkeypatch.setenv("STADIUM_RUNTIME_BACKUPS", str(tmp_path / "backups"))
-    for key in ("OPENAI_API_KEY", "OLLAMA_URL"):
+    for key in ("OPENAI_API_KEY", "OLLAMA_URL", "STORY_PROVIDER", "EDIT_PROVIDER", "OLLAMA_MODEL", "OLLAMA_STORY_MODEL", "OLLAMA_EDIT_MODEL"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -50,6 +50,7 @@ def test_detection_model_uses_configured_stage_model(monkeypatch):
 
 
 def test_openai_ready_and_story_provider(monkeypatch):
+    monkeypatch.setenv("STORY_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-provider-test-value-abcdef123456")
     monkeypatch.setattr(provider_service, "_openai_ready", lambda: {"ready": True, "message": "OpenAI is configured."})
     status = provider_service.story_provider_status()
@@ -58,9 +59,28 @@ def test_openai_ready_and_story_provider(monkeypatch):
 
 
 def test_story_provider_unavailable_when_no_openai(monkeypatch):
+    monkeypatch.setenv("STORY_PROVIDER", "openai")
     monkeypatch.setattr(provider_service, "_openai_ready", lambda: {"ready": False, "message": "Set OPENAI_API_KEY."})
-    with pytest.raises(Exception, match="OpenAI"):
+    with pytest.raises(Exception, match="OPENAI_API_KEY"):
         require_story_provider()
+
+
+def test_story_provider_auto_falls_back_to_local_ollama(monkeypatch):
+    monkeypatch.setattr(provider_service, "_ollama_ready", lambda **k: {"ready": True, "status": "READY", "message": "ready", "model": "llama3.1"})
+    status = provider_service.story_provider_status()
+    assert status["ready"] is True
+    assert status["configured_provider"] == "ollama"
+    assert status["explicit"] is False
+    assert provider_service.story_provider() == "ollama"
+
+
+def test_story_provider_no_external_fallback_when_local_unavailable(monkeypatch):
+    monkeypatch.setattr(provider_service, "_ollama_ready", lambda **k: {"ready": False, "status": "UNAVAILABLE", "message": "not reachable"})
+    status = provider_service.story_provider_status()
+    assert status["ready"] is False
+    assert status["configured_provider"] is None
+    assert status["status"] == "UNAVAILABLE"
+    assert "openai" not in json.dumps(status).lower()
 
 
 def test_no_provider_secrets_leak(monkeypatch):
@@ -93,11 +113,11 @@ def test_ollama_ready_when_endpoint_and_configured_model_present(monkeypatch):
 
 
 def test_ollama_missing_configured_model_not_ready(monkeypatch):
-    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3.1")
     _patch_ollama_http(monkeypatch, payload=[{"name": "some-other-model"}])
-    status = provider_service._ollama_ready()
+    status = provider_service._ollama_ready(model="llama3.1")
     assert status["ready"] is False
-    assert "qwen2.5:3b" in status["message"]
+    assert "llama3.1" in status["message"]
 
 
 def test_ollama_unreachable_not_ready(monkeypatch):

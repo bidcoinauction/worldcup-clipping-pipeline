@@ -9,6 +9,7 @@ from typing import Any
 from .edit_plan_models import EditBeat, EditPlan, MotionGraphicTemplateRef, TimelineInstruction
 from .runtime_service import (
     get_edit_brief,
+    get_moment,
     list_story_moments,
     upsert_edit_beat,
     upsert_edit_plan,
@@ -95,15 +96,19 @@ def build_timeline_instructions(edit_plan: EditPlan, beats: list[EditBeat], *, s
     timeline = 0.0
     result: list[TimelineInstruction] = []
     for beat in sorted(beats, key=lambda item: item.sequence_order):
+        moment = get_moment(beat.source_moment_id, db_path=db_path) if beat.source_moment_id else None
         duration = beat.target_duration or 4.0
+        resolved_source_artifact_id = source_artifact_id or (moment.source_artifact_id if moment else None)
+        source_start = beat.source_start if beat.source_start is not None else (moment.start_seconds if moment else None)
+        source_end = beat.source_end if beat.source_end is not None else (moment.end_seconds if moment else None)
         instruction = TimelineInstruction(
             instruction_id=_stable_id("inst", edit_plan.edit_plan_id, beat.edit_beat_id, "clip"),
             edit_plan_id=edit_plan.edit_plan_id,
             edit_beat_id=beat.edit_beat_id,
             instruction_type="CLIP",
-            source_artifact_id=source_artifact_id,
-            source_in=beat.source_start,
-            source_out=beat.source_end,
+            source_artifact_id=resolved_source_artifact_id,
+            source_in=source_start,
+            source_out=source_end,
             timeline_start=timeline,
             timeline_duration=duration,
             text=beat.text_overlay,

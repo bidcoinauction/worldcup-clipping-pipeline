@@ -236,6 +236,8 @@ class ExternalResearchProvider:
     def _events(self, candidate: MatchCandidate, text: str) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         lower = text.lower()
+        def has_phrase(value: str) -> bool:
+            return re.search(rf"(?<![a-z]){re.escape(value.lower())}(?![a-z])", lower) is not None
         def add(minute: int, label: str, native: str, team: str | None, player: str | None, headline: str, importance: float = 0.85):
             events.append({
                 "match_minute": minute,
@@ -251,7 +253,7 @@ class ExternalResearchProvider:
                 "metadata": {"display_minute": label, "event_position": {"sport": "football", "period": "match", "display_label": label}, "research_confidence": "HIGH"},
                 "source_refs": [{"provider": self.name, "confidence": "HIGH"}],
             })
-        if "maniche" in lower:
+        if has_phrase("maniche"):
             add(23, "23", "goal", "Portugal" if "portugal" in lower else candidate.team_a, "Maniche", "Maniche scores")
         for minute, label, player, team, headline in [
             (46, "45+1", "Costinha", "Portugal", "Portugal down to ten"),
@@ -259,12 +261,18 @@ class ExternalResearchProvider:
             (78, "78", "Deco", "Portugal", "Deco sent off"),
             (95, "90+5", "Giovanni van Bronckhorst", "Netherlands", "One more red"),
         ]:
-            if player.lower().split()[0] in lower or player.lower() in lower:
+            if has_phrase(player.lower()):
                 add(minute, label, player and "red card", team, player, headline, 0.9)
-        if "grosso" in lower:
+        if has_phrase("grosso"):
             add(119, "119", "goal", "Italy", "Fabio Grosso", "Grosso breaks through", 1.0)
-        if "del piero" in lower:
+        if has_phrase("del piero"):
             add(121, "120+1", "goal", "Italy", "Alessandro Del Piero", "Del Piero ends it", 1.0)
+        if has_phrase("lionel messi") and has_phrase("argentina") and has_phrase("croatia"):
+            add(34, "34", "penalty goal", "Argentina", "Lionel Messi", "Messi opens from the spot", 1.0)
+        if has_phrase("julián álvarez") or has_phrase("julian alvarez"):
+            add(39, "39", "goal", "Argentina", "Julián Álvarez", "Álvarez doubles the lead", 0.95)
+            if has_phrase("2022 fifa world cup knockout stage") or has_phrase("semi-final") or has_phrase("semifinal"):
+                add(69, "69", "goal", "Argentina", "Julián Álvarez", "Álvarez finishes the semifinal", 1.0)
         return events
 
 

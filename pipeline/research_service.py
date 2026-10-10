@@ -265,14 +265,11 @@ def seed_moments_from_research(research_id: str, *, kickoff_media_offset_seconds
 def list_available_research_moments(project_id: str, *, research_id: str | None = None,
                                     db_path: str | Path | None = None) -> list[Moment]:
     """Return research-origin moments available as footage for this source."""
+    from .source_alignment import is_usable_source_moment
     moments = [m for m in list_project_moments(project_id, db_path=db_path) if m.metadata.get("origin") == "research"]
     if research_id is not None:
         moments = [m for m in moments if m.metadata.get("research_id") == research_id]
-    return [
-        m for m in moments
-        if m.metadata.get("availability_status", "AVAILABLE") == "AVAILABLE"
-        and m.metadata.get("alignment_status") in {"ALIGNED", "VERIFIED"}
-    ]
+    return [m for m in moments if is_usable_source_moment(m)]
 
 
 _TIMESTAMP_RE = re.compile(r"\[(\d+(?:\.\d+)?)s\s*-\s*(\d+(?:\.\d+)?)s\](.*)")

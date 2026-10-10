@@ -94,6 +94,7 @@ def test_full_operator_journey(tmp_path, monkeypatch):
     body = {
         "sport": "football", "pilot_id": "journey_pilot", "source_id": "journey_source",
         "event_name": "Journey Match", "local_file_path": str(source), "delivery_method": "shared_folder",
+        "analysis_strategy": "TRANSCRIPT_FIRST",
     }
     status, result = _post(ConsoleHandler, _FakeHandler, "/api/projects/create", body)
     assert status == 200 and result["ok"] is True

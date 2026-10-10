@@ -279,15 +279,20 @@ def prepare_chatcut_handoff_v1(edit_plan: EditPlan, *, output_dir: str | Path | 
 def _preview_ffmpeg_args(edit_plan: EditPlan, output_path: Path) -> list[str]:
     instructions = _ordered_instructions(edit_plan)
     beats = {beat.edit_beat_id: beat for beat in list_edit_beats(edit_plan.edit_plan_id)}
-    source_ids = {instruction.source_artifact_id for instruction in instructions if instruction.source_artifact_id}
-    if len(source_ids) != 1:
-        raise ValueError("FFmpeg preview currently requires exactly one source artifact")
-    artifact = get_artifact(next(iter(source_ids)))
-    if artifact is None:
+    source_ids: list[str] = []
+    for instruction in instructions:
+        if not instruction.source_artifact_id:
+            raise ValueError("timeline instruction missing source artifact")
+        if instruction.source_artifact_id not in source_ids:
+            source_ids.append(instruction.source_artifact_id)
+    artifacts = {source_id: get_artifact(source_id) for source_id in source_ids}
+    if any(artifact is None for artifact in artifacts.values()):
         raise ValueError("source artifact not found")
+    input_indexes = {source_id: index for index, source_id in enumerate(source_ids)}
     filter_parts: list[str] = []
     concat_inputs: list[str] = []
     for index, instruction in enumerate(instructions):
+        input_index = input_indexes[instruction.source_artifact_id or ""]
         beat = beats.get(instruction.edit_beat_id or "")
         moment = get_moment(beat.source_moment_id) if beat and beat.source_moment_id else None
         composition_mode = composition_for_instruction(instruction, beat=beat, moment=moment)
@@ -297,7 +302,7 @@ def _preview_ffmpeg_args(edit_plan: EditPlan, output_path: Path) -> list[str]:
         trimmed = f"trim{index}"
         label = f"v{index}"
         filter_parts.append(
-            f"[0:v]trim=start={instruction.source_in}:duration={source_duration},setpts=PTS-STARTPTS,setpts={pts_factor:.8f}*PTS[{trimmed}];"
+            f"[{input_index}:v]trim=start={instruction.source_in}:duration={source_duration},setpts=PTS-STARTPTS,setpts={pts_factor:.8f}*PTS[{trimmed}];"
             f"{ffmpeg_video_filter_for_mode(composition_mode, input_label=trimmed, output_label=label)}"
         )
         concat_inputs.append(f"[{label}]")
@@ -305,21 +310,25 @@ def _preview_ffmpeg_args(edit_plan: EditPlan, output_path: Path) -> list[str]:
     audio_parts: list[str] = []
     audio_inputs: list[str] = []
     for index, instruction in enumerate(instructions):
+        input_index = input_indexes[instruction.source_artifact_id or ""]
         source_duration = float(instruction.source_out or 0) - float(instruction.source_in or 0)
         timeline_duration = float(instruction.timeline_duration or source_duration)
         tempo = source_duration / timeline_duration if timeline_duration else 1.0
         label = f"a{index}"
-        audio_parts.append(f"[0:a]atrim=start={instruction.source_in}:duration={source_duration},asetpts=PTS-STARTPTS,{_atempo_filter(tempo)}[{label}]")
+        audio_parts.append(f"[{input_index}:a]atrim=start={instruction.source_in}:duration={source_duration},asetpts=PTS-STARTPTS,{_atempo_filter(tempo)}[{label}]")
         audio_inputs.append(f"[{label}]")
     audio_parts.append(f"{''.join(audio_inputs)}concat=n={len(instructions)}:v=0:a=1[outa]")
-    return [
-        "ffmpeg", "-y", "-i", artifact.path,
+    args = ["ffmpeg", "-y"]
+    for source_id in source_ids:
+        args.extend(["-i", artifacts[source_id].path])
+    args.extend([
         "-filter_complex", ";".join(filter_parts + audio_parts),
         "-map", "[outv]", "-map", "[outa]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
         "-c:a", "aac", "-b:a", "128k", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(output_path),
-    ]
+    ])
+    return args
 
 
 def _atempo_filter(tempo: float) -> str:

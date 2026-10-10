@@ -239,6 +239,34 @@ def test_deterministic_handoff_captions_overlays_and_motion_graphics(tmp_path):
     assert editplan_quality_report(plan)[0]["motion_graphic"] == "TITLE"
 
 
+def test_edit_plan_timeline_ffmpeg_and_chatcut_support_multiple_sources(tmp_path):
+    project = upsert_project(project_id="multi_project", job_id="multi_project", profile="football", sport="football", display_name="Argentina vs Croatia", status="READY")
+    source1 = register_artifact(project_id=project.project_id, artifact_type="source_media", path=tmp_path / "first.mp4", metadata={"duration_seconds": 3000.0})
+    source2 = register_artifact(project_id=project.project_id, artifact_type="source_media", path=tmp_path / "second.mp4", metadata={"duration_seconds": 3000.0})
+    m1 = upsert_moment(Moment(moment_id="m34", project_id=project.project_id, source_artifact_id=source1.artifact_id, sport="football", universal_event_type="SCORE", sport_event_type="goal", start_seconds=10, peak_seconds=14, end_seconds=18, metadata={"availability_status": "AVAILABLE", "alignment_status": "VERIFIED"}))
+    m2 = upsert_moment(Moment(moment_id="m69", project_id=project.project_id, source_artifact_id=source2.artifact_id, sport="football", universal_event_type="SCORE", sport_event_type="goal", start_seconds=20, peak_seconds=24, end_seconds=28, metadata={"availability_status": "AVAILABLE", "alignment_status": "VERIFIED"}))
+    story = create_story(project_id=project.project_id, story_id="story_multi", title="Story", archetype="INDIVIDUAL_PERFORMANCE", status="APPROVED")
+    add_story_moment(story.story_id, m1.moment_id, "HOOK", 1)
+    add_story_moment(story.story_id, m2.moment_id, "CLIMAX", 2)
+    brief = upsert_edit_brief(project_id=project.project_id, story_id=story.story_id, format_treatment="SHORT", status="READY", target_duration=12)
+    plan = generate_edit_plan_from_story(project_id=project.project_id, story_id=story.story_id, edit_brief_id=brief.edit_brief_id, title="Multi", renderer="FFMPEG")
+    instructions = build_timeline_instructions(plan, list_edit_beats(plan.edit_plan_id))
+
+    assert [row.source_artifact_id for row in instructions] == [source1.artifact_id, source2.artifact_id]
+    ffmpeg = render_ffmpeg_preview_from_edit_plan(plan, output_dir=tmp_path, dry_run=True)
+    assert ffmpeg["ok"] is True
+    assert ffmpeg["command"].count("-i") == 2
+    assert str(tmp_path / "first.mp4") in ffmpeg["command"]
+    assert str(tmp_path / "second.mp4") in ffmpeg["command"]
+    assert any("[0:v]trim" in part for part in ffmpeg["command"])
+    assert any("[1:v]trim" in part for part in ffmpeg["command"])
+
+    manifest = build_chatcut_handoff_manifest(plan)
+    assert set(manifest["source_references"]) == {source1.artifact_id, source2.artifact_id}
+    assert [item["source_artifact_id"] for item in manifest["timeline"]] == [source1.artifact_id, source2.artifact_id]
+    assert {row["artifact_id"] for row in manifest["source_media"]} == {source1.artifact_id, source2.artifact_id}
+
+
 def test_ffmpeg_preview_dry_run_consumes_same_timeline_instructions(tmp_path):
     plan, _source = _timeline_plan(tmp_path)
     result = render_ffmpeg_preview_from_edit_plan(plan, output_dir=tmp_path, source_duration_seconds=100, dry_run=True)

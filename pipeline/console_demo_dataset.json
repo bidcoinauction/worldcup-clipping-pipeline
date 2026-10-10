@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "generated_for": "clipper_vercel_demo_v1",
+  "job_id": "demo_argentina_croatia_2022_semifinal",
+  "project_id": "demo_argentina_croatia_2022_semifinal",
+  "created_at": "2026-10-09T00:00:00+00:00",
+  "project": {
+    "profile": "football",
+    "sport": "football",
+    "display_name": "Argentina vs Croatia",
+    "status": "READY",
+    "analysis_strategy": "RESEARCH_FIRST"
+  },
+  "job": {
+    "schema_version": 1,
+    "current_state": "READY",
+    "pilot_id": "argentina_croatia_2022_demo",
+    "source_id": "argentina_croatia_2022_demo_source",
+    "project_id": "football",
+    "analysis_status": "COMPLETE",
+    "analysis_stage": "",
+    "story_status": "COMPLETE",
+    "story_stage": "",
+    "readiness_summary": {
+      "structurally_valid": true,
+      "source_ready": false,
+      "rights_cleared": true,
+      "execution_ready": false,
+      "config_references_valid": true,
+      "validation_codes": ["HOSTED_DEMO_READ_ONLY"],
+      "issues": [
+        {
+          "path": "media.local_file_path",
+          "code": "HOSTED_DEMO_MEDIA_UNAVAILABLE",
+          "message": "Source video is not packaged with the hosted demo. Project, story, and cut metadata are available read-only."
+        }
+      ]
+    }
+  },
+  "intake": {
+    "intake_version": 1,
+    "pilot": {
+      "pilot_id": "argentina_croatia_2022_demo",
+      "project": "football",
+      "reference_deployment": "world_cup"
+    },
+    "media": {
+      "source_id": "argentina_croatia_2022_demo_source",
+      "local_file_path": "",
+      "original_filename": "demo-media-unavailable",
+      "media_type": "video",
+      "match_or_event_name": "Argentina vs Croatia",
+      "supplied_by_client": false,
+      "source_validation_completed": false,
+      "demo_media_note": "No playable source video is included in the hosted demo."
+    },
+    "rights": {
+      "status": "DEMO_METADATA_ONLY",
+      "permitted_uses": ["metadata_review"],
+      "confirmation_statement": "Hosted demo contains metadata only; no source match video is included.",
+      "confirmed_by": "clipper_demo_seed",
+      "confirmation_date": "2026-10-09"
+    },
+    "configuration": {
+      "project": "football",
+      "brand": "world_cup",
+      "editorial_taxonomy": "world_cup",
+      "operational_taxonomy": "world_cup",
+      "detection_template": "prompt",
+      "export_profiles": ["vertical_clean", "source"],
+      "delivery_destination": "EXPORTS"
+    },
+    "review_and_delivery": {
+      "human_review_required": true,
+      "approval_method": "console",
+      "delivery_method": "hosted_demo_read_only",
+      "delivery_directory": "",
+      "expected_deliverables": ["metadata", "story", "cut_timeline"],
+      "publishing_included": false
+    }
+  },
+  "research": {
+    "research_id": "demo_research_arg_cro_2022",
+    "competition": "2022 FIFA World Cup",
+    "season": "2022",
+    "match_date": "2022-12-13",
+    "home_team": "Argentina",
+    "away_team": "Croatia",
+    "home_score": 3,
+    "away_score": 0,
+    "venue": "Lusail Stadium",
+    "stage": "Semifinal",
+    "importance": 0.94,
+    "summary": "Argentina beat Croatia 3-0 in the 2022 FIFA World Cup semifinal, with Lionel Messi scoring a penalty and Julian Alvarez scoring twice.",
+    "stakes": "A place in the World Cup Final and the continuation of Messi's last-run mythology.",
+    "historical_context": "The demo uses metadata-only state derived from public match facts and existing Clipper structures. No source match video is packaged."
+  },
+  "events": [
+    {
+      "event_id": "demo_event_messi_penalty",
+      "match_minute": 34,
+      "universal_event_type": "SCORE",
+      "sport_event_type": "penalty goal",
+      "team": "Argentina",
+      "participants": [{"name": "Lionel Messi", "role": "scorer", "team": "Argentina"}],
+      "headline": "Messi opens the scoring",
+      "description": "Messi converts from the spot to give Argentina control of the semifinal.",
+      "score_before": "0-0",
+      "score_after": "1-0",
+      "importance": 0.96,
+      "confidence": 0.95,
+      "narrative_role": "HOOK"
+    },
+    {
+      "event_id": "demo_event_alvarez_breakthrough",
+      "match_minute": 39,
+      "universal_event_type": "SCORE",
+      "sport_event_type": "goal",
+      "team": "Argentina",
+      "participants": [{"name": "Julian Alvarez", "role": "scorer", "team": "Argentina"}],
+      "headline": "Alvarez breaks through",
+      "description": "Alvarez drives through transition and finishes for Argentina's second.",
+      "score_before": "1-0",
+      "score_after": "2-0",
+      "importance": 0.93,
+      "confidence": 0.95,
+      "narrative_role": "ESCALATION"
+    },
+    {
+      "event_id": "demo_event_alvarez_finish",
+      "match_minute": 69,
+      "universal_event_type": "SCORE",
+      "sport_event_type": "goal",
+      "team": "Argentina",
+      "participants": [
+        {"name": "Julian Alvarez", "role": "scorer", "team": "Argentina"},
+        {"name": "Lionel Messi", "role": "creator", "team": "Argentina"}
+      ],
+      "headline": "Alvarez finishes it",
+      "description": "Messi creates the third and Alvarez completes the semifinal's decisive sequence.",
+      "score_before": "2-0",
+      "score_after": "3-0",
+      "importance": 0.98,
+      "confidence": 0.95,
+      "narrative_role": "CLIMAX"
+    }
+  ],
+  "story": {
+    "story_id": "demo_story_messi_last_run",
+    "title": "Messi Turns The Semifinal Into Destiny",
+    "summary": "A short-form arc from penalty pressure to Alvarez's transition dagger and Messi's late creation.",
+    "archetype": "INDIVIDUAL_PERFORMANCE",
+    "status": "APPROVED",
+    "hook": "The semifinal stops being balanced the moment Messi steps to the spot.",
+    "emotional_arc": ["pressure", "release", "acceleration", "coronation"],
+    "estimated_duration": 34,
+    "recommended_formats": ["SHORT", "MEDIUM"]
+  },
+  "edit_brief": {
+    "edit_brief_id": "demo_brief_arg_cro_short",
+    "format_treatment": "SHORT",
+    "status": "READY",
+    "editorial_intent": "Show the match turning from tension into inevitability without pretending source video is hosted.",
+    "target_duration": 34
+  },
+  "edit_plan": {
+    "edit_plan_id": "demo_cut_arg_cro_short",
+    "title": "Messi Turns The Semifinal Into Destiny",
+    "target_platform": "TikTok",
+    "target_duration": 34,
+    "aspect_ratio": "9:16",
+    "hook_text": "Messi did not just score. He changed the temperature of the semifinal.",
+    "story_archetype": "INDIVIDUAL_PERFORMANCE",
+    "status": "READY",
+    "renderer": "FFMPEG",
+    "beats": [
+      {"sequence_order": 1, "narrative_role": "HOOK", "event_id": "demo_event_messi_penalty", "purpose": "Open on pressure", "description": "Penalty pressure establishes Messi's burden.", "source_start": 2040, "source_end": 2075, "target_duration": 9, "text_overlay": "THE MOMENT IT TILTED"},
+      {"sequence_order": 2, "narrative_role": "ESCALATION", "event_id": "demo_event_alvarez_breakthrough", "purpose": "Speed changes the game", "description": "Alvarez turns the semifinal into transition chaos.", "source_start": 2340, "source_end": 2375, "target_duration": 11, "text_overlay": "ALVAREZ BREAKS THROUGH"},
+      {"sequence_order": 3, "narrative_role": "CLIMAX", "event_id": "demo_event_alvarez_finish", "purpose": "Pay off the story", "description": "Messi creates, Alvarez finishes, Argentina breathe out.", "source_start": 4140, "source_end": 4180, "target_duration": 14, "text_overlay": "DESTINY ARRIVES"}
+    ]
+  }
+}
