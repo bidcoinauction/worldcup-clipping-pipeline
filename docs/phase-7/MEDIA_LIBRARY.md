@@ -14,7 +14,7 @@ Clipper runtime records
   -> stadium_signal.media_catalog/v1 catalog file (local, read-only)
   -> Stadium Signal Lite media_library.py validates + sanitizes
   -> GET /api/library (metadata only, no paths, no object URIs)
-  -> optional loopback-only GET /preview?path=... (Range-capable, allow-listed)
+  -> optional loopback-only GET /preview?asset=... (Range-capable, allow-listed)
 ```
 
 ## Scope And Guardrails
@@ -105,10 +105,11 @@ in the catalog are absolute local paths under the runtime roots
   network URLs, traversal/relative paths, and any leaked source path, then
   serves a sanitized `GET /api/library`. It has no catalog-path awareness in the
   payload: absolute local paths are never serialized.
-- `media_preview.py` serves `GET /preview?path=<abs path>` from the loopback
-  server with HTTP `Range` support. A path is accepted only when it is absolute,
-  traversal-free, resolves inside a configured root, exists, and has an allowed
-  media extension.
+- `media_preview.py` serves `GET /preview?asset=<asset_id>` from the loopback
+  server with HTTP `Range` support. The opaque asset reference is resolved
+  through the active catalog; the resulting path is accepted only when it is
+  absolute, traversal-free, inside a configured root, exists, and has an
+  allowed media extension. Filesystem paths never enter the browser payload.
 - The `Library` view lists assets with type/visibility badges, processing and
   storage state, and a `Preview` action when a local preview is available.
   Playback uses the existing in-app HTML5 player.

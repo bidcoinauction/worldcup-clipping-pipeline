@@ -303,6 +303,105 @@ def register_local_source(
     }
 
 
+def _registration_from_existing_job(
+    intake: dict,
+    *,
+    job_id: str,
+    jobs_dir: str | Path | None,
+    report: dict | None = None,
+    intake_root: str | None = None,
+) -> dict:
+    """Rebuild a registration view for an existing job (resume path).
+
+    Used when a prior run created the job but was interrupted before emitting a
+    contract. It re-reads the durable job record and re-derives source facts
+    from the media on disk; it never creates or mutates the job, so the
+    downstream EDL/render/verify/contract steps behave identically to a first
+    run.
+    """
+    job = _pilot.read_job(job_id, jobs_dir=jobs_dir)
+    report = report if report is not None else _pilot.validate_intake(intake, intake_root=intake_root)
+    media = intake.get("media", {})
+    source_path = media.get("local_file_path")
+    source_facts = probe_media(source_path)
+    return {
+        "job": job,
+        "job_id": job["job_id"],
+        "project_id": job.get("project_id"),
+        "reference_deployment": (intake.get("pilot") or {}).get("reference_deployment"),
+        "intake_manifest_path": job.get("intake_manifest_path"),
+        "current_state": job.get("current_state"),
+        "report": report,
+        "source": {
+            "source_id": media.get("source_id"),
+            "local_file_path": source_path,
+            "sha256": sha256_file(source_path),
+            **{k: source_facts[k] for k in (
+                "size_bytes", "duration_seconds", "video_codec", "audio_codec",
+                "width", "height", "frame_rate", "has_audio",
+            )},
+        },
+    }
+
+
+def _assert_resume_compatible(job: dict, intake: dict) -> None:
+    """Refuse to resume when durable job identity differs from this request."""
+    if job.get("current_state") != "READY":
+        raise LocalIngestError(
+            f"cannot safely resume job '{job.get('job_id')}': state is "
+            f"{job.get('current_state')!r}, expected 'READY'; use a new pilot id"
+        )
+    pilot = intake.get("pilot") or {}
+    media = intake.get("media") or {}
+    config = intake.get("configuration") or {}
+    expected = {
+        "pilot_id": pilot.get("pilot_id"),
+        "source_id": media.get("source_id"),
+        "project_id": config.get("project"),
+    }
+    mismatches = [key for key, value in expected.items() if job.get(key) != value]
+
+    prior_path = job.get("intake_manifest_path")
+    try:
+        prior = json.loads(Path(str(prior_path)).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        raise LocalIngestError(
+            "cannot safely resume: the existing job intake is missing or invalid; "
+            "use a new pilot id"
+        ) from exc
+
+    prior_pilot = prior.get("pilot") or {}
+    prior_media = prior.get("media") or {}
+    prior_config = prior.get("configuration") or {}
+    comparisons = (
+        ("pilot_id", prior_pilot.get("pilot_id"), pilot.get("pilot_id")),
+        ("pilot_project", prior_pilot.get("project"), pilot.get("project")),
+        ("reference_deployment", prior_pilot.get("reference_deployment"), pilot.get("reference_deployment")),
+        ("source_id", prior_media.get("source_id"), media.get("source_id")),
+        ("source_checksum", prior_media.get("checksum"), media.get("checksum")),
+        ("project", prior_config.get("project"), config.get("project")),
+    )
+    mismatches.extend(name for name, old, new in comparisons if old != new)
+    if prior_config != config:
+        mismatches.append("configuration")
+
+    old_source = prior_media.get("local_file_path")
+    new_source = media.get("local_file_path")
+    try:
+        same_source = Path(str(old_source)).expanduser().resolve() == Path(str(new_source)).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError):
+        same_source = False
+    if not same_source:
+        mismatches.append("local_file_path")
+
+    if mismatches:
+        fields = ", ".join(sorted(set(mismatches)))
+        raise LocalIngestError(
+            f"cannot safely resume job '{job.get('job_id')}': request differs in {fields}; "
+            "use a new pilot id"
+        )
+
+
 # ── EDL + render ─────────────────────────────────────────────────────────────
 
 
@@ -791,6 +890,7 @@ def run_local_ingest(
     source_start: float = 0.0,
     source_end: float = 2.0,
     dry_run: bool = False,
+    resume: bool = False,
     upload: bool = False,
     storage_adapter: "_integration.OORTAdapter | None" = None,
     storage_bucket: str | None = None,
@@ -805,6 +905,11 @@ def run_local_ingest(
     (optional OORT upload) → contract. When ``upload`` is set the artifact is
     pushed to OORT Storage and verified; the local artifact is always preserved
     even if the upload fails. Returns the full run result including the contract.
+
+    ``resume`` makes the run idempotent after an interruption: if the job record
+    already exists (a previous run registered the same ``pilot_id``/
+    ``source_id`` before failing), the existing job is reused instead of raising,
+    and the deterministic EDL/render/verify/contract steps are (re)executed.
     """
     resolved_source = Path(source_path)
     if not resolved_source.exists():
@@ -812,6 +917,7 @@ def run_local_ingest(
 
     sid = source_id or resolved_source.stem
     media = probe_media(resolved_source)
+    source_checksum = sha256_file(resolved_source)
     intake = build_test_intake(
         resolved_source,
         pilot_id=pilot_id,
@@ -821,18 +927,54 @@ def run_local_ingest(
         brand=brand,
         editorial_taxonomy=editorial_taxonomy,
         duration_seconds=media.get("duration_seconds"),
+        checksum=source_checksum,
     )
 
     jobs_root = Path(jobs_dir) if jobs_dir is not None else _pilot.default_jobs_dir()
     if intake_path is None:
-        intake_path = jobs_root / "intakes" / f"{pilot_id}.json"
+        intake_path = jobs_root / "intakes" / f"{pilot_id}_{sid}.json"
     intake_file = Path(intake_path)
+
+    job_id = _pilot.job_id_for_intake(intake)
+    existing_job = None
+    if job_id:
+        try:
+            existing_job = _pilot.read_job(job_id, jobs_dir=jobs_root)
+        except _pilot.JobNotFoundError:
+            pass
+
+    if existing_job is not None:
+        if not resume:
+            raise _pilot.JobExistsError(f"job '{job_id}' already exists")
+        try:
+            same_intake_path = (
+                Path(str(existing_job.get("intake_manifest_path"))).expanduser().resolve()
+                == intake_file.expanduser().resolve()
+            )
+        except (OSError, RuntimeError, TypeError):
+            same_intake_path = False
+        if not same_intake_path:
+            raise LocalIngestError(
+                f"cannot safely resume job '{job_id}': intake path differs; use a new pilot id"
+            )
+        report = _pilot.validate_intake(intake, intake_root=intake_root)
+        if not report["execution_ready"]:
+            raise LocalIngestNotReadyError(report)
+        _assert_resume_compatible(existing_job, intake)
+
     intake_file.parent.mkdir(parents=True, exist_ok=True)
     intake_file.write_text(json.dumps(intake, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    registration = register_local_source(
-        intake, intake_path=intake_file, jobs_dir=jobs_root, intake_root=intake_root, operator=operator,
-    )
+    if existing_job is None:
+        registration = register_local_source(
+            intake, intake_path=intake_file, jobs_dir=jobs_root, intake_root=intake_root, operator=operator,
+        )
+        resumed = False
+    else:
+        registration = _registration_from_existing_job(
+            intake, job_id=job_id, jobs_dir=jobs_root, report=report, intake_root=intake_root,
+        )
+        resumed = True
     job_id = registration["job_id"]
 
     edl_result = write_reference_edl(
@@ -877,4 +1019,5 @@ def run_local_ingest(
         "verification": verification,
         "storage": storage_block,
         "contract": contract,
+        "resumed": resumed,
     }

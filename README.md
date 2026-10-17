@@ -374,6 +374,27 @@ python3 server.py
 Guide and guardrails: `docs/phase-7/MEDIA_LIBRARY.md`. Schema:
 `docs/contracts/media_catalog.v1.json`.
 
+### Phase 7.4 - End-to-End Media Workflow
+
+Run registration, reference rendering, artifact verification, optional OORT
+storage, catalog generation, and Stadium Signal Lite import/playback
+verification through one operator command:
+
+```bash
+python3 scripts/media_workflow.py run \
+  --source ~/FootballArchive/TESTS/capture_test.mp4 \
+  --pilot-id ss_lite_wf_001 \
+  --lite-root ~/FootballArchive/ESPN/stadium-signal-lite \
+  --preview-enabled
+```
+
+The command is idempotent: it reuses a checksum-verified contract and artifact,
+or resumes an existing pilot job after an interrupted run. It writes a durable
+status under `<jobs-dir>/workflow/`, deduplicates the catalog by stable asset ID,
+keeps OORT upload opt-in, and never deletes a local source or artifact. Guide:
+`docs/phase-7/MEDIA_WORKFLOW.md`. Release assessment:
+`docs/phase-7/RELEASE_READINESS.md`.
+
 ## Validation
 
 ```bash
@@ -385,7 +406,9 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 1224 passed, 2 skipped, 2 warnings.
+- `pytest`: 1242 passed, 3 skipped, 2 warnings (standalone repository run).
+- `STADIUM_SIGNAL_LITE_ROOT=/path/to/stadium-signal-lite pytest`: 1243 passed,
+  2 skipped, 2 warnings (cross-repository case enabled).
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 

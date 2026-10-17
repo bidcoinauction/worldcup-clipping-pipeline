@@ -36,6 +36,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 # ── Identity ─────────────────────────────────────────────────────────────────
@@ -334,6 +335,7 @@ def asset_from_job(job: dict) -> dict | None:
     job_id = job["job_id"]
     state = job.get("current_state") or ""
     processing = PROCESSING_COMPLETE if state in ("DELIVERED", "COMPLETE") else PROCESSING_IN_PROGRESS
+    readiness = job.get("readiness_summary") or {}
     return {
         "asset_id": stable_asset_id(ASSET_TYPE_SOURCE, job_id),
         "asset_type": ASSET_TYPE_SOURCE,
@@ -349,7 +351,7 @@ def asset_from_job(job: dict) -> dict | None:
             "reference_deployment": job.get("reference_deployment"),
             "current_state": state,
         },
-        "source": {"source_id": None, "sha256": None, "duration_seconds": None, "width": None, "height": None},
+        "source": {"source_id": job.get("source_id") or None, "sha256": None, "duration_seconds": None, "width": None, "height": None},
         "artifact": {"path": None, "filename": None, "sha256": None, "size_bytes": None, "duration_seconds": None},
         "storage": _storage_summary(None),
         "processing": {
@@ -366,7 +368,7 @@ def asset_from_job(job: dict) -> dict | None:
             "container": None,
         },
         "provenance": {"links_to_source": False, "source_sha256": None, "artifact_sha256": None, "job_id": job_id},
-        "rights": {"status": None, "cleared": None},
+        "rights": {"status": readiness.get("rights_status"), "cleared": readiness.get("rights_cleared")},
     }
 
 
@@ -415,7 +417,16 @@ def _load_jobs(jobs, jobs_dir):
     if jobs_dir:
         from . import pilot as _pilot
 
-        found.extend(_pilot.list_jobs(jobs_dir))
+        for entry in _pilot.list_jobs(jobs_dir):
+            job_id = entry.get("job_id") if isinstance(entry, dict) else None
+            if not job_id:
+                continue
+            # ``list_jobs`` returns a summary; read the full record so the
+            # catalog carries project/rights/created_at facts when available.
+            try:
+                found.append(_pilot.read_job(job_id, jobs_dir=jobs_dir))
+            except _pilot.JobRecordError:
+                continue
     assets = []
     for job in found:
         asset = asset_from_job(job)
@@ -541,7 +552,14 @@ def write_catalog(path: str | Path, catalog: dict) -> Path:
         raise MediaCatalogError("refusing to write an invalid catalog: " + "; ".join(errors))
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
-    os.replace(str(tmp), str(target))
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(catalog, indent=2))
+        os.replace(tmp_name, str(target))
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
     return target
