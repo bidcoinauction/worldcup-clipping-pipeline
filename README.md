@@ -279,6 +279,36 @@ The existing match manifest (`data/manifests/*.json`), schedule CSV, and clip
 manifests are unchanged and remain independently usable. Full runbook and
 intake templates: `docs/pilot/PILOT_RUNBOOK.md`.
 
+## Phase 7 — Mac-Native Media Ingestion
+
+The first honest end-to-end loop between this Clipper and Stadium Signal Lite:
+one authorized local video → one project (managed pilot job) → one verified,
+FFmpeg-backed artifact → a versioned integration contract.
+
+```bash
+python3 scripts/local_ingest.py run \
+  --source ~/FootballArchive/TESTS/capture_test.mp4 \
+  --pilot-id ss_lite_local_001 \
+  --out data/pilot/contracts/ss_lite_local_001.contract.json
+```
+
+`pipeline/local_ingest.py` orchestrates existing services only —
+`pipeline.pilot` (intake validation, rights gate, job record),
+`pipeline.edl` (a deterministic single-segment timeline), and
+`pipeline.rendering` (the genuine FFmpeg reference render). It is additive:
+the World Cup reference deployment is untouched, the built-in test project is
+the non-production `basketball_sandbox` profile, and runtime stays under an
+explicit job root. It is **local-only** — no worker is exposed and OORT is not
+required.
+
+The output contract (`stadium_signal.local_ingest/v1`) references the project,
+the source (path + SHA-256), the exact processing operation (EDL + the
+`ffmpeg_argv`), the artifact (path + SHA-256 + duration), and a `provenance`
+block. Each contract carries an honest `stages[]` report marking every stage
+`real`, `mocked`, or `unavailable`. Schema:
+`docs/contracts/local_ingest_result.v1.json`. Workflow, guardrails, and the
+stage report: `docs/phase-7/LOCAL_INGESTION.md`.
+
 ## Validation
 
 ```bash
@@ -290,7 +320,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 770 passed, 1 skipped, 1 warning.
+- `pytest`: 1141 passed, 1 skipped, 2 warnings.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 
