@@ -38,6 +38,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+import re
 
 # ── Identity ─────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,11 @@ _SPORT_HINTS = {
     "american_football": "american_football",
     "nfl": "american_football",
 }
+
+_PUBLIC_PATH_RE = re.compile(
+    r"(?:^|[\s:=])/(?:Users|private|tmp|var|home|Volumes)/"
+    r"|(?:^|[\s:=])[A-Za-z]:[\\/]"
+)
 
 
 class MediaCatalogError(Exception):
@@ -484,6 +490,126 @@ def build_catalog(
     return catalog
 
 
+def _public_scalar(value: object):
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if "://" in candidate or _PUBLIC_PATH_RE.search(candidate):
+        return None
+    return value
+
+
+def _public_filename(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    # Keep a display basename without publishing the producer's directory.
+    filename = value.replace("\\", "/").rsplit("/", 1)[-1]
+    return _public_scalar(filename)
+
+
+def build_public_catalog(catalog: dict) -> dict:
+    """Project a catalog for explicit public metadata publication.
+
+    This is metadata-only: local paths, private storage references, and
+    playback sources are intentionally removed. Playback authorization remains
+    a separate future concern and is never implied by this catalog.
+    """
+    errors = validate_catalog(catalog)
+    if errors:
+        raise MediaCatalogError("cannot publish an invalid catalog: " + "; ".join(errors))
+
+    public_assets = []
+    for asset in catalog["assets"]:
+        project = asset.get("project") or {}
+        source = asset.get("source") or {}
+        artifact = asset.get("artifact") or {}
+        storage = asset.get("storage") or {}
+        processing = asset.get("processing") or {}
+        playback = asset.get("playback") or {}
+        provenance = asset.get("provenance") or {}
+        rights = asset.get("rights") or {}
+        public_assets.append({
+            "asset_id": _public_scalar(asset.get("asset_id")),
+            "asset_type": _public_scalar(asset.get("asset_type")),
+            "title": _public_scalar(asset.get("title")) or "Untitled asset",
+            "sport": _public_scalar(asset.get("sport")),
+            "event_name": _public_scalar(asset.get("event_name")),
+            "event_date": _public_scalar(asset.get("event_date")),
+            "duration_seconds": asset.get("duration_seconds"),
+            "created_at": _public_scalar(asset.get("created_at")),
+            "project": {
+                "job_id": _public_scalar(project.get("job_id")),
+                "project_id": _public_scalar(project.get("project_id")),
+                "reference_deployment": _public_scalar(project.get("reference_deployment")),
+                "current_state": _public_scalar(project.get("current_state")),
+            },
+            "source": {
+                "source_id": _public_scalar(source.get("source_id")),
+                "sha256": _public_scalar(source.get("sha256")),
+                "duration_seconds": source.get("duration_seconds"),
+                "width": source.get("width"),
+                "height": source.get("height"),
+            },
+            "artifact": {
+                "path": None,
+                "filename": _public_filename(artifact.get("filename")),
+                "sha256": _public_scalar(artifact.get("sha256")),
+                "size_bytes": artifact.get("size_bytes"),
+                "duration_seconds": artifact.get("duration_seconds"),
+            },
+            "storage": {
+                "status": _public_scalar(storage.get("status")),
+                "provider": _public_scalar(storage.get("provider")),
+                "sha256": _public_scalar(storage.get("sha256")),
+                "verified": bool(storage.get("verified")),
+            },
+            "processing": {
+                "state": _public_scalar(processing.get("state")),
+                "operation": _public_scalar(processing.get("operation")),
+                "render_mode": _public_scalar(processing.get("render_mode")),
+                "status": _public_scalar(processing.get("status")),
+                "verified": bool(processing.get("verified")),
+            },
+            "playback": {
+                "visibility": _public_scalar(playback.get("visibility")),
+                "previewable": False,
+                "media_kind": _public_scalar(playback.get("media_kind")),
+                "container": _public_scalar(playback.get("container")),
+            },
+            "provenance": {
+                "links_to_source": bool(provenance.get("links_to_source")),
+                "source_sha256": _public_scalar(provenance.get("source_sha256")),
+                "artifact_sha256": _public_scalar(provenance.get("artifact_sha256")),
+                "job_id": _public_scalar(provenance.get("job_id")),
+            },
+            "rights": {
+                "status": _public_scalar(rights.get("status")),
+                "cleared": rights.get("cleared") if isinstance(rights.get("cleared"), bool) else None,
+            },
+        })
+
+    public = {
+        "catalog_schema": catalog["catalog_schema"],
+        "catalog_version": catalog["catalog_version"],
+        "generated_at": _public_scalar(catalog.get("generated_at")),
+        "producer": catalog.get("producer"),
+        "reference_deployment": _public_scalar(catalog.get("reference_deployment")),
+        "publication": {
+            "visibility": "public_metadata",
+            "playback_authorized": False,
+            "source": "explicit_operator_export",
+        },
+        "asset_count": len(public_assets),
+        "assets": public_assets,
+    }
+    errors = validate_catalog(public)
+    if errors:
+        raise MediaCatalogError("public catalog is invalid: " + "; ".join(errors))
+    return public
+
+
 _REQUIRED_TOP = (
     "catalog_schema", "catalog_version", "generated_at", "producer",
     "reference_deployment", "asset_count", "assets",
@@ -563,3 +689,8 @@ def write_catalog(path: str | Path, catalog: dict) -> Path:
         except FileNotFoundError:
             pass
     return target
+
+
+def write_public_catalog(path: str | Path, catalog: dict) -> Path:
+    """Write an explicit public metadata projection atomically."""
+    return write_catalog(path, build_public_catalog(catalog))

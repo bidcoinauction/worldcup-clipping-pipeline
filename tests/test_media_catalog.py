@@ -227,3 +227,23 @@ def test_write_catalog_atomic_and_refuses_invalid(tmp_path):
     catalog["catalog_version"] = 5
     with pytest.raises(mc.MediaCatalogError):
         mc.write_catalog(tmp_path / "bad.json", catalog)
+
+
+def test_build_public_catalog_removes_paths_and_private_storage():
+    asset = mc.asset_from_contract(_contract())
+    catalog = mc.build_catalog([asset])
+    catalog["assets"][0]["artifact"]["filename"] = "/Users/private/render.mp4"
+    catalog["assets"][0]["storage"] = {
+        "status": "uploaded", "provider": "oort", "bucket": "private-bucket",
+        "region": "iad1", "object_uri": "s3://private/object", "sha256": "a" * 64,
+        "verified": True,
+    }
+    public = mc.build_public_catalog(catalog)
+    text = json.dumps(public)
+    assert "/Users/private" not in text
+    assert "s3://" not in text
+    assert "private-bucket" not in text
+    assert public["assets"][0]["artifact"]["path"] is None
+    assert public["assets"][0]["artifact"]["filename"] == "render.mp4"
+    assert public["assets"][0]["playback"]["previewable"] is False
+    assert public["publication"]["playback_authorized"] is False

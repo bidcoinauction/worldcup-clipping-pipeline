@@ -27,6 +27,9 @@ def _cmd_build(args) -> int:
         print("error: --out is required unless --dry-run")
         return 2
     media_catalog.write_catalog(out, catalog)
+    if args.public_out:
+        media_catalog.write_public_catalog(args.public_out, catalog)
+        print(f"wrote public metadata catalog -> {args.public_out}")
     print(f"wrote {catalog['asset_count']} asset(s) -> {out}")
     for asset in catalog["assets"]:
         print(f"  [{asset['asset_type']}] {asset['asset_id']}  {asset['title']}")
@@ -65,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--jobs-dir", help="Managed pilot job-record root")
     build.add_argument("--reference-deployment", default=media_catalog.DEFAULT_REFERENCE_DEPLOYMENT)
     build.add_argument("--out", help="Output catalog path")
+    build.add_argument(
+        "--public-out",
+        help="Explicitly write a sanitized metadata-only catalog for reviewed publication",
+    )
     build.add_argument("--dry-run", action="store_true", help="Print the catalog without writing")
     build.set_defaults(func=_cmd_build)
 
