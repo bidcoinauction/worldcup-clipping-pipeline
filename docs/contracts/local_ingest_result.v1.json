@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stadium-signal.local/contracts/local_ingest_result.v1.json",
+  "title": "Stadium Signal Lite local ingestion result contract",
+  "description": "Versioned handoff emitted by worldcup-clipping-pipeline (pipeline.local_ingest) describing one authorized local source, the project it was registered as, and one verified FFmpeg-backed processed artifact. Local-first: no public URLs, no publishing. An optional storage block records an opt-in OORT Storage upload (private s3:// object reference only).",
+  "type": "object",
+  "required": [
+    "contract_schema",
+    "contract_version",
+    "generated_at",
+    "producer",
+    "project",
+    "source",
+    "processing",
+    "artifact",
+    "provenance",
+    "rights",
+    "verification",
+    "stages"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "contract_schema": { "const": "stadium_signal.local_ingest/v1" },
+    "contract_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "producer": {
+      "type": "object",
+      "required": ["application", "component"],
+      "properties": {
+        "application": { "const": "worldcup-clipping-pipeline" },
+        "component": { "const": "pipeline.local_ingest" }
+      }
+    },
+    "project": {
+      "type": "object",
+      "required": ["job_id", "project_id", "current_state", "intake_manifest_path"],
+      "properties": {
+        "job_id": { "type": "string", "minLength": 1 },
+        "project_id": { "type": "string", "minLength": 1 },
+        "reference_deployment": { "type": ["string", "null"] },
+        "current_state": { "type": "string", "minLength": 1 },
+        "intake_manifest_path": { "type": ["string", "null"] }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["source_id", "local_file_path", "sha256"],
+      "properties": {
+        "source_id": { "type": ["string", "null"] },
+        "local_file_path": { "type": "string", "minLength": 1 },
+        "original_filename": { "type": ["string", "null"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "duration_seconds": { "type": ["number", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "video_codec": { "type": ["string", "null"] },
+        "audio_codec": { "type": ["string", "null"] },
+        "has_audio": { "type": ["boolean", "null"] }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "required": ["operation", "render_mode", "status", "story_id", "format"],
+      "properties": {
+        "operation": { "type": "string" },
+        "render_mode": { "enum": ["REFERENCE", "EDITORIAL"] },
+        "status": { "enum": ["COMPLETE", "FAILED", "NEEDS_ATTENTION", "WAITING", "VALIDATING", "CUTTING", "ASSEMBLING"] },
+        "story_id": { "type": "string" },
+        "format": { "type": "string" },
+        "segment_count": { "type": ["integer", "null"] },
+        "timeline_duration_seconds": { "type": ["number", "null"] },
+        "dry_run": { "type": "boolean" },
+        "edl_path": { "type": ["string", "null"] },
+        "render_state_path": { "type": ["string", "null"] },
+        "ffmpeg_argv": { "type": "array", "items": { "type": "string" } },
+        "applied_features": { "type": "array", "items": { "type": "string" } },
+        "deferred_features": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "filename": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": ["integer", "null"] },
+        "duration_seconds": { "type": ["number", "null"] }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["links_to_source", "source_sha256", "job_id"],
+      "properties": {
+        "links_to_source": { "type": "boolean" },
+        "source_sha256": { "type": ["string", "null"] },
+        "artifact_sha256": { "type": ["string", "null"] },
+        "job_id": { "type": "string", "minLength": 1 },
+        "intake_manifest_path": { "type": ["string", "null"] },
+        "edl_path": { "type": ["string", "null"] },
+        "storage_object_uri": { "type": ["string", "null"] },
+        "storage_object_sha256": { "type": ["string", "null"] }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "description": "Opt-in OORT Storage upload result. Additive and optional in v1; absent uploads report status 'skipped'. object_uri is a private s3:// reference, never a public URL.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "provider": { "type": ["string", "null"] },
+        "status": { "enum": ["skipped", "unavailable", "uploaded", "failed"] },
+        "endpoint": { "type": ["string", "null"] },
+        "region": { "type": ["string", "null"] },
+        "bucket": { "type": ["string", "null"] },
+        "object_key": { "type": ["string", "null"] },
+        "object_uri": { "type": ["string", "null"] },
+        "etag": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": ["integer", "null"] },
+        "storage_class": { "type": ["string", "null"] },
+        "uploaded_at": { "type": ["string", "null"], "format": "date-time" },
+        "verified": { "type": "boolean" },
+        "read_back_verified": { "type": "boolean" },
+        "checks": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "rights": {
+      "type": "object",
+      "properties": {
+        "status": { "type": ["string", "null"] },
+        "cleared": { "type": ["boolean", "null"] }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["verified", "checks"],
+      "properties": {
+        "verified": { "type": "boolean" },
+        "checks": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["stage", "status", "detail"],
+        "properties": {
+          "stage": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["real", "mocked", "unavailable"] },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

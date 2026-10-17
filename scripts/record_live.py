@@ -12,23 +12,34 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.configurator import resolve_archive_path, resolve_archive_root
+from pipeline.live_capture import (
+    build_full_argv as _engine_build_full_argv,
+    build_segment_argv as _engine_build_segment_argv,
+    build_synthetic_segment_argv as _engine_build_synthetic_segment_argv,
+    build_ace_url as _engine_build_ace_url,
+    build_list_path as _engine_build_list_path,
+    build_output_pattern as _engine_build_output_pattern,
+    read_segment_list as _engine_read_segment_list,
+    segment_number_from_path as _engine_segment_number_from_path,
+    write_completion_marker as _engine_write_completion_marker,
+)
 from pipeline.utils import slugify
 
 
 def build_ace_url(ace_id: str, ace_host: str = "http://localhost:6878") -> str:
-    return f"{ace_host}/ace/getstream?id={ace_id}"
+    return _engine_build_ace_url(ace_id, ace_host)
 
 
 def segment_number_from_path(path: Path) -> int:
-    return int(path.stem.split("_S")[-1])
+    return _engine_segment_number_from_path(path)
 
 
 def build_output_pattern(staging_dir: Path, match_id: str) -> str:
-    return str(staging_dir / f"{match_id}_S%04d.ts")
+    return _engine_build_output_pattern(staging_dir, match_id)
 
 
 def build_list_path(staging_dir: Path, match_id: str) -> str:
-    return str(staging_dir / f"{match_id}_list.txt")
+    return _engine_build_list_path(staging_dir, match_id)
 
 
 def build_ffmpeg_cmd(
@@ -37,17 +48,10 @@ def build_ffmpeg_cmd(
     segment_time: int,
     list_path: str,
 ) -> list[str]:
-    return [
-        "ffmpeg",
-        "-y",
-        "-i", ace_url,
-        "-c", "copy",
-        "-f", "segment",
-        "-segment_time", str(segment_time),
-        "-reset_timestamps", "1",
-        "-segment_list", list_path,
-        output_pattern,
-    ]
+    return _engine_build_segment_argv(
+        ace_url, output_pattern,
+        segment_seconds=segment_time, list_path=list_path, reconnect=False,
+    )
 
 
 def build_test_ffmpeg_cmd(
@@ -56,35 +60,14 @@ def build_test_ffmpeg_cmd(
     list_path: str,
     test_duration: int,
 ) -> list[str]:
-    return [
-        "ffmpeg",
-        "-y",
-        "-f", "lavfi",
-        "-i", f"testsrc2=duration={test_duration}:size=1280x720:rate=30",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-f", "segment",
-        "-segment_time", str(segment_time),
-        "-reset_timestamps", "1",
-        "-segment_list", list_path,
+    return _engine_build_synthetic_segment_argv(
         output_pattern,
-    ]
+        segment_seconds=segment_time, list_path=list_path, duration=test_duration,
+    )
 
 
 def build_full_ffmpeg_cmd(ace_url: str, output_path: str) -> list[str]:
-    return [
-        "ffmpeg",
-        "-y",
-        "-reconnect", "1",
-        "-reconnect_at_eof", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "4294",
-        "-err_detect", "ignore_err",
-        "-i", ace_url,
-        "-c", "copy",
-        output_path,
-    ]
+    return _engine_build_full_argv(ace_url, output_path, reconnect=True)
 
 
 def archive_root() -> str:
@@ -131,14 +114,14 @@ def finalize_segment(
     dest = ready_dir / src.name
     src.rename(dest)
     write_status_json(dest, match_id, acestream_id, segment_number, duration_seconds, None)
+    _engine_write_completion_marker(
+        dest, sha256=None, size_bytes=dest.stat().st_size if dest.exists() else 0,
+    )
     return dest
 
 
 def read_segment_list(list_path: Path) -> set[str]:
-    if not list_path.exists():
-        return set()
-    lines = list_path.read_text(encoding="utf-8").splitlines()
-    return {Path(line.strip().replace("\\", "/")).name for line in lines if line.strip()}
+    return _engine_read_segment_list(list_path)
 
 
 def main() -> None:

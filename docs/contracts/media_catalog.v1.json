@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stadium-signal.local/contracts/media_catalog.v1.json",
+  "title": "Stadium Signal unified media catalog",
+  "description": "Read-only, versioned catalog emitted by worldcup-clipping-pipeline (pipeline.media_catalog) unifying registered recordings, processed artifacts, and completed renders for Stadium Signal Lite. Local-first: no public URLs, no private source paths, private OORT references only.",
+  "type": "object",
+  "required": [
+    "catalog_schema",
+    "catalog_version",
+    "generated_at",
+    "producer",
+    "reference_deployment",
+    "asset_count",
+    "assets"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "catalog_schema": { "const": "stadium_signal.media_catalog/v1" },
+    "catalog_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "producer": {
+      "type": "object",
+      "required": ["application", "component"],
+      "properties": {
+        "application": { "const": "worldcup-clipping-pipeline" },
+        "component": { "const": "pipeline.media_catalog" }
+      }
+    },
+    "reference_deployment": { "type": ["string", "null"] },
+    "asset_count": { "type": "integer", "minimum": 0 },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "asset_id", "asset_type", "title", "project", "source", "artifact",
+          "storage", "processing", "playback", "provenance", "rights"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "asset_id": { "type": "string", "minLength": 1, "description": "Stable across exports for an unchanged asset." },
+          "asset_type": { "enum": ["processed_artifact", "live_recording", "registered_source"] },
+          "title": { "type": "string" },
+          "sport": { "type": ["string", "null"] },
+          "event_name": { "type": ["string", "null"] },
+          "event_date": { "type": ["string", "null"] },
+          "duration_seconds": { "type": ["number", "null"] },
+          "created_at": { "type": ["string", "null"] },
+          "project": {
+            "type": "object",
+            "properties": {
+              "job_id": { "type": ["string", "null"] },
+              "project_id": { "type": ["string", "null"] },
+              "reference_deployment": { "type": ["string", "null"] },
+              "current_state": { "type": ["string", "null"] }
+            }
+          },
+          "source": {
+            "type": "object",
+            "description": "Source media facts only. The private source file path is intentionally never emitted.",
+            "properties": {
+              "source_id": { "type": ["string", "null"] },
+              "sha256": { "type": ["string", "null"] },
+              "duration_seconds": { "type": ["number", "null"] },
+              "width": { "type": ["integer", "null"] },
+              "height": { "type": ["integer", "null"] }
+            }
+          },
+          "artifact": {
+            "type": "object",
+            "properties": {
+              "path": { "type": ["string", "null"] },
+              "filename": { "type": ["string", "null"] },
+              "sha256": { "type": ["string", "null"] },
+              "size_bytes": { "type": ["integer", "null"] },
+              "duration_seconds": { "type": ["number", "null"] }
+            }
+          },
+          "storage": {
+            "type": "object",
+            "description": "Private OORT storage status only; object_uri is a private s3:// reference.",
+            "properties": {
+              "status": { "enum": ["skipped", "unavailable", "uploaded", "failed"] },
+              "provider": { "type": ["string", "null"] },
+              "bucket": { "type": ["string", "null"] },
+              "region": { "type": ["string", "null"] },
+              "object_uri": { "type": ["string", "null"] },
+              "sha256": { "type": ["string", "null"] },
+              "verified": { "type": "boolean" }
+            }
+          },
+          "processing": {
+            "type": "object",
+            "required": ["state"],
+            "properties": {
+              "state": { "enum": ["complete", "in_progress", "failed"] },
+              "operation": { "type": ["string", "null"] },
+              "render_mode": { "type": ["string", "null"] },
+              "status": { "type": ["string", "null"] },
+              "verified": { "type": "boolean" }
+            }
+          },
+          "playback": {
+            "type": "object",
+            "required": ["visibility", "previewable"],
+            "properties": {
+              "visibility": { "enum": ["local_only", "private_remote", "public"] },
+              "previewable": { "type": "boolean" },
+              "media_kind": { "enum": ["video", "audio", "unknown"] },
+              "container": { "type": ["string", "null"] }
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "links_to_source": { "type": "boolean" },
+              "source_sha256": { "type": ["string", "null"] },
+              "artifact_sha256": { "type": ["string", "null"] },
+              "job_id": { "type": ["string", "null"] }
+            }
+          },
+          "rights": {
+            "type": "object",
+            "properties": {
+              "status": { "type": ["string", "null"] },
+              "cleared": { "type": ["boolean", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

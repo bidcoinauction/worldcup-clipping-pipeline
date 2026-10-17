@@ -219,6 +219,44 @@ Boundaries preserved:
 - No database, queue, auth, users, billing, publishing, or dashboards are
   added.
 
+## Local Media Ingestion (Phase 7)
+
+Phase 7 adds the first end-to-end media loop between this Clipper and Stadium
+Signal Lite. It is **additive**: it reuses the Phase 2 pilot intake/rights/job
+services, the EDL service, and the reference renderer, and it changes no World
+Cup manifest, schedule, clip manifest, command, or config value.
+
+- `pipeline/local_ingest.py` — orchestrates one authorized local video into one
+  project (managed pilot job), one deterministic EDL, one genuine FFmpeg
+  reference render, artifact verification, and a versioned integration
+  contract.
+- `scripts/local_ingest.py` — operator CLI (`run`, `register`, `verify`,
+  `storage-health`).
+- `docs/contracts/local_ingest_result.v1.json` — the `stadium_signal.local_ingest/v1`
+  contract schema consumed by Stadium Signal Lite.
+- `docs/phase-7/LOCAL_INGESTION.md` — workflow, guardrails, and the honest
+  real/mocked/unavailable stage report.
+- `pipeline/integration_service.py` (Phase 7.1) — the opt-in OORT Storage
+  adapter (stdlib SigV4), plus the additive `storage` contract block. See
+  `docs/phase-7/STORAGE_INTEGRATION.md`.
+
+Boundaries preserved:
+
+- The built-in test project is the registered, `production_capable=false`
+  `basketball_sandbox` profile; the `football` (World Cup) profile is never
+  selected by this workflow.
+- Runtime job records, EDLs, and renders stay under an explicit job root
+  (`data/pilot/`, gitignored) or a caller-supplied temporary directory.
+- Source media is read-only: it is never copied, moved, renamed, transcoded,
+  re-hosted, or uploaded.
+- Local-first: no worker process is exposed and no network requests are made by
+  default. The only subprocesses are `ffprobe` (read-only metadata) and `ffmpeg`
+  (the reference render), both with structured arguments and no shell. The
+  Phase 7.1 OORT upload is opt-in, private by default, and never deletes a local
+  artifact on failure.
+- Transcription, moment detection, and the editorial renderer are reported
+  `unavailable` rather than faked; delivery remains metadata-only (`mocked`).
+
 ## Anti-Patterns
 
 Avoid these in extraction work:

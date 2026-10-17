@@ -409,6 +409,122 @@ The existing match manifest (`data/manifests/*.json`), schedule CSV, and clip
 manifests are unchanged and remain independently usable. Full runbook and
 intake templates: `docs/pilot/PILOT_RUNBOOK.md`.
 
+## Phase 7 — Mac-Native Media Ingestion
+
+The first honest end-to-end loop between this Clipper and Stadium Signal Lite:
+one authorized local video → one project (managed pilot job) → one verified,
+FFmpeg-backed artifact → a versioned integration contract.
+
+```bash
+python3 scripts/local_ingest.py run \
+  --source ~/FootballArchive/TESTS/capture_test.mp4 \
+  --pilot-id ss_lite_local_001 \
+  --out data/pilot/contracts/ss_lite_local_001.contract.json
+```
+
+`pipeline/local_ingest.py` orchestrates existing services only —
+`pipeline.pilot` (intake validation, rights gate, job record),
+`pipeline.edl` (a deterministic single-segment timeline), and
+`pipeline.rendering` (the genuine FFmpeg reference render). It is additive:
+the World Cup reference deployment is untouched, the built-in test project is
+the non-production `basketball_sandbox` profile, and runtime stays under an
+explicit job root. It is **local-first** — no worker is exposed and OORT is not
+required.
+
+The output contract (`stadium_signal.local_ingest/v1`) references the project,
+the source (path + SHA-256), the exact processing operation (EDL + the
+`ffmpeg_argv`), the artifact (path + SHA-256 + duration), and a `provenance`
+block. Each contract carries an honest `stages[]` report marking every stage
+`real`, `mocked`, or `unavailable`. Schema:
+`docs/contracts/local_ingest_result.v1.json`. Workflow, guardrails, and the
+stage report: `docs/phase-7/LOCAL_INGESTION.md`.
+
+### Phase 7.1 — Optional OORT Storage
+
+An **opt-in** OORT Storage upload attaches a verified remote copy of the
+artifact and records a private `s3://` reference in an additive `storage` block.
+It is off by default, uses only stdlib SigV4 (no `boto3`), generates no public
+URLs, and never deletes a local file on failure.
+
+```bash
+python3 scripts/local_ingest.py storage-health        # connectivity/credentials only
+python3 scripts/local_ingest.py run --source ... --pilot-id ... --upload
+```
+
+Guide, provider findings, and security notes: `docs/phase-7/STORAGE_INTEGRATION.md`.
+
+### Phase 7.2 — Reliable Live Capture
+
+Record authorized live video (HLS/HTTP, local file, synthetic, or the optional
+Ace Stream) into durable, integrity-checked segments, recover from
+interruption, assemble a recording, and register it through the Phase 7
+local-ingestion service. Transport is separated from the recording engine;
+Ace Stream and Docker are both optional.
+
+```bash
+python3 scripts/live_capture.py start --match-id "demo" --url https://host/live.m3u8
+python3 scripts/live_capture.py recover  --manifest <staging>/<session>.manifest.json
+python3 scripts/live_capture.py assemble --manifest <staging>/<session>.manifest.json --out <recording>.mp4
+python3 scripts/live_capture.py register --recording <recording>.mp4 --pilot-id ss_lite_live_001
+```
+
+A session manifest is the durable source of truth; a segment is only finalized
+after a non-empty + readable-duration integrity check, partial writes are never
+treated as complete, and recovery is idempotent. Uploads stay opt-in and are
+never automatic. Guide: `docs/phase-7/LIVE_CAPTURE.md`.
+
+### Phase 7.3 — Unified Read-Only Media Library
+
+Project registered sources, live recordings, and processed artifacts into one
+read-only catalog (`stadium_signal.media_catalog/v1`) with stable, deterministic
+asset IDs. The catalog is a projection of existing runtime records — it never
+mutates or moves media, and it never emits a private source path or a public URL.
+
+```bash
+python3 scripts/media_catalog.py build \
+  --contracts-dir data/pilot/contracts \
+  --sessions-dir  data/live/segments \
+  --jobs-dir      data/pilot/jobs \
+  --out           data/library.catalog.json
+python3 scripts/media_catalog.py validate data/library.catalog.json
+```
+
+Stadium Signal Lite reads the catalog through `media_library.py` and lists it in
+a local-only `Library` view. Optional in-browser preview is explicitly enabled,
+loopback-only, allow-listed by root and extension, and `Range`-capable:
+
+```bash
+# In Stadium Signal Lite:
+export STADIUM_SIGNAL_MEDIA_CATALOG="$HOME/FootballArchive/ESPN/data/library.catalog.json"
+export STADIUM_SIGNAL_PREVIEW_ENABLED=1
+export STADIUM_SIGNAL_PREVIEW_ROOTS="$HOME/FootballArchive/ESPN/data"
+python3 server.py
+```
+
+Guide and guardrails: `docs/phase-7/MEDIA_LIBRARY.md`. Schema:
+`docs/contracts/media_catalog.v1.json`.
+
+### Phase 7.4 - End-to-End Media Workflow
+
+Run registration, reference rendering, artifact verification, optional OORT
+storage, catalog generation, and Stadium Signal Lite import/playback
+verification through one operator command:
+
+```bash
+python3 scripts/media_workflow.py run \
+  --source ~/FootballArchive/TESTS/capture_test.mp4 \
+  --pilot-id ss_lite_wf_001 \
+  --lite-root ~/FootballArchive/ESPN/stadium-signal-lite \
+  --preview-enabled
+```
+
+The command is idempotent: it reuses a checksum-verified contract and artifact,
+or resumes an existing pilot job after an interrupted run. It writes a durable
+status under `<jobs-dir>/workflow/`, deduplicates the catalog by stable asset ID,
+keeps OORT upload opt-in, and never deletes a local source or artifact. Guide:
+`docs/phase-7/MEDIA_WORKFLOW.md`. Release assessment:
+`docs/phase-7/RELEASE_READINESS.md`.
+
 ## Validation
 
 ```bash
@@ -420,7 +536,9 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Previously recorded baseline on macOS (not a fresh run for every documentation update):
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 1128 passed, 1 skipped, 1 warning.
+- `pytest`: 1242 passed, 3 skipped, 2 warnings (standalone repository run).
+- `STADIUM_SIGNAL_LITE_ROOT=/path/to/stadium-signal-lite pytest`: 1243 passed,
+  2 skipped, 2 warnings (cross-repository case enabled).
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 
