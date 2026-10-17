@@ -15,11 +15,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 import pytest
 
-from pipeline import local_ingest, pilot
+from pipeline import integration_service, local_ingest, pilot
 
 
 def _write_video(path: Path, duration: float = 2.0, size: str = "320x240") -> Path:
@@ -211,3 +212,145 @@ def test_contract_validation_rejects_bad_stage_status(synthetic_video, tmp_path)
     contract["stages"][0]["status"] = "super-real"
     errors = local_ingest.validate_integration_contract(contract)
     assert any("stages[0].status" in e for e in errors)
+
+
+# ── Phase 7.1: optional OORT storage upload ──────────────────────────────────
+
+
+class _FakeOORT:
+    """In-memory S3 transport so storage tests never touch the network."""
+
+    def __init__(self, *, fail_status: int | None = None) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.fail_status = fail_status
+
+    def __call__(self, method, url, headers, body, timeout):
+        if self.fail_status:
+            return self.fail_status, {}, b"<Error><Code>AccessDenied</Code></Error>"
+        parts = urllib.parse.urlsplit(url)
+        segments = [s for s in parts.path.split("/") if s]
+        if method == "GET" and not segments:
+            return 200, {}, b"<ListAllMyBucketsResult/>"
+        if method == "PUT":
+            self.objects["/".join(segments[1:])] = body
+            return 200, {"etag": '"e"'}, b""
+        if method == "HEAD":
+            data = self.objects["/".join(segments[1:])]
+            import hashlib
+
+            return 200, {
+                "content-length": str(len(data)),
+                "etag": '"e"',
+                "x-amz-meta-sha256": hashlib.sha256(data).hexdigest(),
+            }, b""
+        if method == "GET":
+            return 200, {}, self.objects["/".join(segments[1:])]
+        return 200, {}, b""
+
+
+def _storage_adapter(fake) -> integration_service.OORTAdapter:
+    config = integration_service.OORTConfig(
+        access_key_id="AKIA", secret_access_key="secret",
+        bucket="sandbox-bucket", region="us-east-1",
+    )
+    return integration_service.OORTAdapter(config, transport=fake)
+
+
+def test_run_with_upload_records_storage_block(synthetic_video, tmp_path):
+    fake = _FakeOORT()
+    result = _run(
+        synthetic_video, tmp_path / "jobs", pilot_id="ss_lite_upload",
+        upload=True, storage_adapter=_storage_adapter(fake),
+    )
+    contract = result["contract"]
+    storage = contract["storage"]
+
+    assert local_ingest.validate_integration_contract(contract) == []
+    assert storage["status"] == "uploaded"
+    assert storage["enabled"] is True
+    assert storage["provider"] == "oort"
+    assert storage["object_uri"].startswith("s3://sandbox-bucket/")
+    assert storage["verified"] is True
+    assert storage["read_back_verified"] is True
+    assert storage["sha256"] == contract["artifact"]["sha256"]
+    assert contract["provenance"]["storage_object_uri"] == storage["object_uri"]
+    assert contract["provenance"]["storage_object_sha256"] == storage["sha256"]
+
+    stages = {s["stage"]: s["status"] for s in contract["stages"]}
+    assert stages["oort_storage_upload"] == "real"
+    assert stages["network_worker_oort"] == "unavailable"
+
+    assert Path(contract["artifact"]["path"]).exists()
+
+
+def test_run_upload_without_credentials_degrades_gracefully(synthetic_video, tmp_path, monkeypatch):
+    for var in (
+        integration_service.ENV_ACCESS_KEY_ID, integration_service.ENV_SECRET_ACCESS_KEY,
+        integration_service.ENV_BUCKET,
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    result = _run(synthetic_video, tmp_path / "jobs", pilot_id="ss_lite_nocreds", upload=True)
+    contract = result["contract"]
+    storage = contract["storage"]
+
+    assert local_ingest.validate_integration_contract(contract) == []
+    assert storage["status"] == "unavailable"
+    assert storage["enabled"] is False
+    assert storage["error"]
+    assert contract["verification"]["verified"] is True
+    assert Path(contract["artifact"]["path"]).exists()
+
+    stages = {s["stage"]: s["status"] for s in contract["stages"]}
+    assert stages["oort_storage_upload"] == "unavailable"
+
+
+def test_run_require_storage_without_credentials_raises(synthetic_video, tmp_path, monkeypatch):
+    for var in (
+        integration_service.ENV_ACCESS_KEY_ID, integration_service.ENV_SECRET_ACCESS_KEY,
+        integration_service.ENV_BUCKET,
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    with pytest.raises(local_ingest.LocalIngestError, match="storage upload required"):
+        _run(synthetic_video, tmp_path / "jobs", pilot_id="ss_lite_required", upload=True, require_storage=True)
+
+
+def test_run_upload_failure_preserves_local_artifact(synthetic_video, tmp_path):
+    fake = _FakeOORT(fail_status=403)
+    result = _run(
+        synthetic_video, tmp_path / "jobs", pilot_id="ss_lite_failupload",
+        upload=True, storage_adapter=_storage_adapter(fake),
+    )
+    contract = result["contract"]
+
+    assert local_ingest.validate_integration_contract(contract) == []
+    assert contract["storage"]["status"] == "failed"
+    assert "AccessDenied" in contract["storage"]["error"]
+    assert contract["verification"]["verified"] is True
+    assert Path(contract["artifact"]["path"]).exists()
+
+    stages = {s["stage"]: s["status"] for s in contract["stages"]}
+    assert stages["oort_storage_upload"] == "unavailable"
+
+
+def test_run_require_storage_failure_raises_but_keeps_local_artifact(synthetic_video, tmp_path):
+    fake = _FakeOORT(fail_status=403)
+    jobs = tmp_path / "jobs"
+    with pytest.raises(local_ingest.LocalIngestError, match="storage upload required"):
+        _run(
+            synthetic_video, jobs, pilot_id="ss_lite_reqfail",
+            upload=True, storage_adapter=_storage_adapter(fake), require_storage=True,
+        )
+    # The local render survives a required-storage failure.
+    assert list(jobs.rglob("reference.mp4"))
+
+
+def test_dry_run_skips_upload(synthetic_video, tmp_path):
+    fake = _FakeOORT()
+    result = _run(
+        synthetic_video, tmp_path / "jobs", pilot_id="ss_lite_dryupload",
+        upload=True, storage_adapter=_storage_adapter(fake), dry_run=True,
+    )
+    assert result["contract"]["storage"]["status"] == "skipped"
+    assert result["contract"]["storage"]["enabled"] is False

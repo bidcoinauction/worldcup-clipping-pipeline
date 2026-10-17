@@ -298,7 +298,7 @@ python3 scripts/local_ingest.py run \
 `pipeline.rendering` (the genuine FFmpeg reference render). It is additive:
 the World Cup reference deployment is untouched, the built-in test project is
 the non-production `basketball_sandbox` profile, and runtime stays under an
-explicit job root. It is **local-only** — no worker is exposed and OORT is not
+explicit job root. It is **local-first** — no worker is exposed and OORT is not
 required.
 
 The output contract (`stadium_signal.local_ingest/v1`) references the project,
@@ -308,6 +308,20 @@ block. Each contract carries an honest `stages[]` report marking every stage
 `real`, `mocked`, or `unavailable`. Schema:
 `docs/contracts/local_ingest_result.v1.json`. Workflow, guardrails, and the
 stage report: `docs/phase-7/LOCAL_INGESTION.md`.
+
+### Phase 7.1 — Optional OORT Storage
+
+An **opt-in** OORT Storage upload attaches a verified remote copy of the
+artifact and records a private `s3://` reference in an additive `storage` block.
+It is off by default, uses only stdlib SigV4 (no `boto3`), generates no public
+URLs, and never deletes a local file on failure.
+
+```bash
+python3 scripts/local_ingest.py storage-health        # connectivity/credentials only
+python3 scripts/local_ingest.py run --source ... --pilot-id ... --upload
+```
+
+Guide, provider findings, and security notes: `docs/phase-7/STORAGE_INTEGRATION.md`.
 
 ## Validation
 

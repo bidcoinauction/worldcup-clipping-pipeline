@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://stadium-signal.local/contracts/local_ingest_result.v1.json",
   "title": "Stadium Signal Lite local ingestion result contract",
-  "description": "Versioned handoff emitted by worldcup-clipping-pipeline (pipeline.local_ingest) describing one authorized local source, the project it was registered as, and one verified FFmpeg-backed processed artifact. Local-only: no URLs, no network, no publishing.",
+  "description": "Versioned handoff emitted by worldcup-clipping-pipeline (pipeline.local_ingest) describing one authorized local source, the project it was registered as, and one verified FFmpeg-backed processed artifact. Local-first: no public URLs, no publishing. An optional storage block records an opt-in OORT Storage upload (private s3:// object reference only).",
   "type": "object",
   "required": [
     "contract_schema",
@@ -96,7 +96,35 @@
         "artifact_sha256": { "type": ["string", "null"] },
         "job_id": { "type": "string", "minLength": 1 },
         "intake_manifest_path": { "type": ["string", "null"] },
-        "edl_path": { "type": ["string", "null"] }
+        "edl_path": { "type": ["string", "null"] },
+        "storage_object_uri": { "type": ["string", "null"] },
+        "storage_object_sha256": { "type": ["string", "null"] }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "description": "Opt-in OORT Storage upload result. Additive and optional in v1; absent uploads report status 'skipped'. object_uri is a private s3:// reference, never a public URL.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "provider": { "type": ["string", "null"] },
+        "status": { "enum": ["skipped", "unavailable", "uploaded", "failed"] },
+        "endpoint": { "type": ["string", "null"] },
+        "region": { "type": ["string", "null"] },
+        "bucket": { "type": ["string", "null"] },
+        "object_key": { "type": ["string", "null"] },
+        "object_uri": { "type": ["string", "null"] },
+        "etag": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": ["integer", "null"] },
+        "storage_class": { "type": ["string", "null"] },
+        "uploaded_at": { "type": ["string", "null"], "format": "date-time" },
+        "verified": { "type": "boolean" },
+        "read_back_verified": { "type": "boolean" },
+        "checks": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        },
+        "error": { "type": ["string", "null"] }
       }
     },
     "rights": {

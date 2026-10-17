@@ -230,11 +230,15 @@ Cup manifest, schedule, clip manifest, command, or config value.
   project (managed pilot job), one deterministic EDL, one genuine FFmpeg
   reference render, artifact verification, and a versioned integration
   contract.
-- `scripts/local_ingest.py` — operator CLI (`run`, `register`, `verify`).
+- `scripts/local_ingest.py` — operator CLI (`run`, `register`, `verify`,
+  `storage-health`).
 - `docs/contracts/local_ingest_result.v1.json` — the `stadium_signal.local_ingest/v1`
   contract schema consumed by Stadium Signal Lite.
 - `docs/phase-7/LOCAL_INGESTION.md` — workflow, guardrails, and the honest
   real/mocked/unavailable stage report.
+- `pipeline/integration_service.py` (Phase 7.1) — the opt-in OORT Storage
+  adapter (stdlib SigV4), plus the additive `storage` contract block. See
+  `docs/phase-7/STORAGE_INTEGRATION.md`.
 
 Boundaries preserved:
 
@@ -245,10 +249,11 @@ Boundaries preserved:
   (`data/pilot/`, gitignored) or a caller-supplied temporary directory.
 - Source media is read-only: it is never copied, moved, renamed, transcoded,
   re-hosted, or uploaded.
-- Local-only: no worker process is exposed, no OORT is required, and no network
-  requests are made. The only subprocesses are `ffprobe` (read-only metadata)
-  and `ffmpeg` (the reference render), both with structured arguments and no
-  shell.
+- Local-first: no worker process is exposed and no network requests are made by
+  default. The only subprocesses are `ffprobe` (read-only metadata) and `ffmpeg`
+  (the reference render), both with structured arguments and no shell. The
+  Phase 7.1 OORT upload is opt-in, private by default, and never deletes a local
+  artifact on failure.
 - Transcription, moment detection, and the editorial renderer are reported
   `unavailable` rather than faked; delivery remains metadata-only (`mocked`).
 

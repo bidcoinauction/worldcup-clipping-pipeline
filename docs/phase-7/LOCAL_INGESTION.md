@@ -28,10 +28,12 @@ local authorized video
 - **Non-production test project.** The built-in project is the registered,
   `production_capable=false` `basketball_sandbox` profile. The `football`
   (World Cup) profile is never selected by this workflow.
-- **Local-only.** No worker process is exposed, no OORT is required, no network
-  requests are made. The only subprocesses are `ffprobe` (read-only metadata)
-  and `ffmpeg` (the render), both invoked with structured arguments, never a
-  shell.
+- **Local-first.** By default no worker process is exposed, no OORT is required,
+  and no network requests are made. The only subprocesses are `ffprobe`
+  (read-only metadata) and `ffmpeg` (the render), both invoked with structured
+  arguments, never a shell. Phase 7.1 adds an **opt-in** OORT Storage upload
+  (see [`STORAGE_INTEGRATION.md`](STORAGE_INTEGRATION.md)); it is off unless
+  explicitly requested and the run continues locally when OORT is unavailable.
 - **Runtime is isolated.** Job records, EDLs, and renders are written under an
   explicit job root (`data/pilot/`, gitignored, or a caller-provided `tmp`
   directory). Media files are never copied, moved, renamed, or re-hosted.
@@ -100,14 +102,17 @@ Every contract records a machine-readable `stages[]` block. The current state:
 | `transcription` | **unavailable** | requires a faster-whisper model; not run for ingestion |
 | `moment_detection` | **unavailable** | requires an LLM/Ollama detection provider; not run for ingestion |
 | `editorial_render` | **unavailable** | `mode=EDITORIAL` not selected; only the reference render is exercised |
-| `delivery` | **mocked** | delivery metadata recorded only; no upload, publish, or transfer |
-| `network_worker_oort` | **unavailable** | local-only integration by design |
+| `delivery` | **mocked** | delivery metadata recorded only; no publish to a downstream channel |
+| `network_worker_oort` | **unavailable** | no separate worker process; OORT upload is adapter-direct when enabled |
+| `oort_storage_upload` | **real / unavailable** | **real** only when an opt-in upload + verification succeeds; otherwise `unavailable` |
 
 In short: **registration, probing, the rights gate, EDL construction, the
 FFmpeg render, and provenance verification are genuinely real.** Transcription
 and moment detection are deliberately out of scope for ingestion and are
 reported `unavailable`, not faked. The editorial renderer exists but is not
-exercised here. Delivery is recorded as metadata only.
+exercised here. Delivery is recorded as metadata only. The optional OORT upload
+stage is `real` only when an upload actually happened and verified; it is
+`unavailable` when no upload was requested or OORT is not configured.
 
 ## Integration Contract
 
@@ -125,6 +130,31 @@ does not need the worker.
 `pipeline.local_ingest.validate_integration_contract` enforces the envelope
 before it is written, and the CLI `verify` subcommand re-checks a stored
 contract against the on-disk artifact and source.
+
+The contract also carries an additive, optional `storage` block (Phase 7.1) that
+records an OORT Storage upload when one was requested: a private `s3://` object
+reference, the artifact checksum, the ETag, the verified flags, and any error.
+It is `status: "skipped"` for the ordinary local-only run, so existing consumers
+are unaffected.
+
+## Optional OORT Storage (Phase 7.1)
+
+Uploading the verified artifact to OORT Storage is opt-in and off by default.
+See [`STORAGE_INTEGRATION.md`](STORAGE_INTEGRATION.md) for the full guide,
+provider findings, and health check.
+
+```bash
+# verify connectivity/credentials only (no upload)
+python3 scripts/local_ingest.py storage-health
+
+# opt-in upload + verification of the artifact
+python3 scripts/local_ingest.py run \
+    --source ~/FootballArchive/TESTS/capture_test.mp4 \
+    --pilot-id ss_lite_local_001 --upload \
+    --out data/pilot/contracts/ss_lite_local_001.contract.json
+```
+
+Local artifacts are always preserved, even when a required upload fails.
 
 ## Tests
 

@@ -18,9 +18,16 @@ runtime at an explicit job root (``data/pilot/`` by default, gitignored, or a
 test ``tmp_path``), and the built-in test project is the registered,
 non-production ``basketball_sandbox`` profile.
 
-Local-only by design: no network access, no worker process, no OORT, no
-publishing. The only subprocesses are ``ffprobe`` (read-only metadata) and
-``ffmpeg`` (the render), both invoked with structured arguments.
+Local-first by design: by default there is no network access, no worker
+process, no OORT, and no publishing. The only subprocesses are ``ffprobe``
+(read-only metadata) and ``ffmpeg`` (the render), both invoked with structured
+arguments.
+
+Phase 7.1 adds an *opt-in* OORT Storage upload (see
+:mod:`pipeline.integration_service`): when explicitly requested it uploads the
+verified artifact and re-verifies it, recording an honest ``storage`` block in
+the contract. Local artifacts are always preserved, and the run degrades
+gracefully when OORT is not configured.
 
 Public surface:
 
@@ -30,6 +37,7 @@ Public surface:
 * :func:`write_reference_edl` — write the smallest deterministic timeline plan.
 * :func:`render_reference` — run the genuine FFmpeg reference render.
 * :func:`verify_artifact` — existence, readable duration, provenance link.
+* :func:`upload_artifact_to_storage` — opt-in OORT upload + verification.
 * :func:`build_integration_contract` — the versioned Lite handoff envelope.
 * :func:`validate_integration_contract` — schema check for the consumer.
 * :func:`run_local_ingest` — the full one-source → one-project → one-artifact run.
@@ -45,6 +53,7 @@ import subprocess
 from pathlib import Path
 
 from . import edl as _edl
+from . import integration_service as _integration
 from . import pilot as _pilot
 from . import rendering as _rendering
 
@@ -66,6 +75,9 @@ DEFAULT_OPERATION = "reference_render"
 DEFAULT_RENDER_MODE = "REFERENCE"
 DEFAULT_STORY_ID = "ss_lite_story"
 DEFAULT_FORMAT = "SHORT"
+
+# Phase 7.1 — optional OORT storage upload (see pipeline.integration_service).
+DEFAULT_STORAGE_OBJECT_PREFIX = "stadium-signal/local-ingest"
 
 # Stage status vocabulary for the integration contract's honest stage report.
 STAGE_REAL = "real"
@@ -432,8 +444,26 @@ def verify_artifact(
 # ── Stage report ─────────────────────────────────────────────────────────────
 
 
-def stage_report(*, rendered: bool) -> list[dict]:
-    """Honest report of which pipeline stages were real, mocked, or unavailable."""
+def stage_report(*, rendered: bool, storage: dict | None = None) -> list[dict]:
+    """Honest report of which pipeline stages were real, mocked, or unavailable.
+
+    The optional *storage* block (Phase 7.1) drives the OORT upload stage so the
+    report reflects what actually happened rather than what is merely possible.
+    """
+    storage_status = (storage or {}).get("status")
+    if storage_status == _integration.STORAGE_STATUS_UPLOADED:
+        oort_status = STAGE_REAL
+        oort_detail = "OORTStorageAdapter.upload_file + verify (real HTTPS to the OORT S3 gateway)"
+    elif storage_status == _integration.STORAGE_STATUS_FAILED:
+        oort_status = STAGE_UNAVAILABLE
+        oort_detail = "OORT upload attempted but failed; local-only artifacts preserved"
+    elif storage_status == _integration.STORAGE_STATUS_UNAVAILABLE:
+        oort_status = STAGE_UNAVAILABLE
+        oort_detail = "OORT upload requested but unavailable (no credentials/config); local-only run preserved"
+    else:
+        oort_status = STAGE_UNAVAILABLE
+        oort_detail = "no storage upload requested; local-only integration by design"
+
     return [
         {"stage": "source_registration", "status": STAGE_REAL,
          "detail": "pipeline.pilot.validate_intake + create_job (structural, config, source, rights)"},
@@ -450,10 +480,146 @@ def stage_report(*, rendered: bool) -> list[dict]:
         {"stage": "editorial_render", "status": STAGE_UNAVAILABLE,
          "detail": "mode=EDITORIAL not selected; only the reference render is exercised"},
         {"stage": "delivery", "status": STAGE_MOCKED,
-         "detail": "delivery metadata recorded only; no upload, publish, or network transfer"},
+         "detail": "delivery metadata recorded only; no publish to a downstream channel"},
         {"stage": "network_worker_oort", "status": STAGE_UNAVAILABLE,
-         "detail": "local-only integration by design; no worker process, no OORT"},
+         "detail": "no separate worker process; OORT upload is adapter-direct when enabled"},
+        {"stage": "oort_storage_upload", "status": oort_status, "detail": oort_detail},
     ]
+
+
+def empty_storage_block() -> dict:
+    """Stable-shape ``storage`` block for runs that did not upload anything."""
+    return {
+        "enabled": False,
+        "provider": None,
+        "status": _integration.STORAGE_STATUS_SKIPPED,
+        "endpoint": None,
+        "region": None,
+        "bucket": None,
+        "object_key": None,
+        "object_uri": None,
+        "etag": None,
+        "sha256": None,
+        "size_bytes": None,
+        "storage_class": None,
+        "uploaded_at": None,
+        "verified": False,
+        "read_back_verified": False,
+        "checks": {},
+        "error": None,
+    }
+
+
+def upload_artifact_to_storage(
+    artifact: dict,
+    *,
+    job_id: str,
+    adapter: "_integration.OORTAdapter",
+    object_prefix: str = DEFAULT_STORAGE_OBJECT_PREFIX,
+    storage_class: str | None = None,
+    read_back: bool = True,
+    scratch_dir: str | Path | None = None,
+    project: str | None = None,
+    source_sha256: str | None = None,
+) -> dict:
+    """Upload a verified artifact to OORT and return a ``storage`` block.
+
+    Raises :class:`pipeline.integration_service.StorageIntegrationError` on any
+    failure; the caller decides whether to fail the run or degrade gracefully.
+    Local files are never modified or removed here.
+    """
+    artifact_path = artifact.get("path")
+    if not artifact_path:
+        block = empty_storage_block()
+        block["status"] = _integration.STORAGE_STATUS_SKIPPED
+        block["error"] = "no artifact to upload"
+        return block
+
+    filename = artifact.get("filename") or Path(artifact_path).name
+    object_key = f"{object_prefix.strip('/')}/{job_id}/{filename}"
+    result = adapter.upload_file(
+        artifact_path,
+        object_key,
+        storage_class=storage_class,
+        metadata={
+            "job-id": job_id,
+            "project": project or "",
+            "source-sha256": source_sha256 or "",
+        },
+    )
+    adapter.verify_upload(
+        result,
+        expected_sha256=artifact.get("sha256"),
+        expected_size=artifact.get("size_bytes"),
+        read_back=read_back,
+        scratch_dir=scratch_dir,
+    )
+    block = result.to_block()
+    block["enabled"] = True
+    return block
+
+
+def _resolve_storage_upload(
+    *,
+    upload: bool,
+    dry_run: bool,
+    verification: dict,
+    job_id: str,
+    adapter: "_integration.OORTAdapter | None",
+    bucket: str | None,
+    object_prefix: str,
+    storage_class: str | None,
+    require_storage: bool,
+    read_back: bool,
+    scratch_dir: str | Path | None,
+    project: str | None,
+    source_sha256: str | None = None,
+) -> dict:
+    """Select/validate a storage adapter and perform the optional upload."""
+    block = empty_storage_block()
+    if not upload:
+        return block
+    if dry_run:
+        block["error"] = "dry run: storage upload skipped"
+        return block
+
+    resolved = adapter or _integration.build_storage_adapter()
+    if resolved is None:
+        block["status"] = _integration.STORAGE_STATUS_UNAVAILABLE
+        block["error"] = (
+            "OORT storage not configured; set OORT_ACCESS_KEY_ID and OORT_SECRET_ACCESS_KEY "
+            "(and OORT_BUCKET) to enable uploads"
+        )
+        if require_storage:
+            raise LocalIngestError(f"storage upload required but unavailable: {block['error']}")
+        return block
+
+    if bucket and bucket != resolved.config.bucket:
+        resolved = resolved.with_bucket(bucket)
+
+    try:
+        return upload_artifact_to_storage(
+            verification.get("artifact") or {},
+            job_id=job_id,
+            adapter=resolved,
+            object_prefix=object_prefix,
+            storage_class=storage_class,
+            read_back=read_back,
+            scratch_dir=scratch_dir,
+            project=project,
+            source_sha256=source_sha256,
+        )
+    except _integration.StorageIntegrationError as exc:
+        block = empty_storage_block()
+        block["status"] = _integration.STORAGE_STATUS_FAILED
+        block["provider"] = _integration.OORT_STORAGE_PROVIDER
+        block["endpoint"] = resolved.config.endpoint
+        block["region"] = resolved.config.region
+        block["bucket"] = resolved.config.bucket
+        block["error"] = str(exc)
+        if require_storage:
+            raise LocalIngestError(f"storage upload required but failed: {exc}") from exc
+        return block
 
 
 # ── Integration contract ─────────────────────────────────────────────────────
@@ -473,12 +639,14 @@ def build_integration_contract(
     fmt: str = DEFAULT_FORMAT,
     operation: str = DEFAULT_OPERATION,
     jobs_dir: str | Path | None = None,
+    storage: dict | None = None,
 ) -> dict:
     """Assemble the versioned Stadium Signal Lite integration contract."""
     job = registration["job"]
     source = registration["source"]
     artifact = verification.get("artifact") or {}
     jobs_root = Path(jobs_dir) if jobs_dir is not None else _pilot.default_jobs_dir()
+    storage_block = storage if storage is not None else empty_storage_block()
 
     ffmpeg_argv: list[str] = []
     source_path = source.get("local_file_path")
@@ -546,6 +714,8 @@ def build_integration_contract(
             "job_id": job.get("job_id"),
             "intake_manifest_path": job.get("intake_manifest_path"),
             "edl_path": edl_result.get("edl_path"),
+            "storage_object_uri": storage_block.get("object_uri"),
+            "storage_object_sha256": storage_block.get("sha256"),
         },
         "rights": {
             "status": registration.get("report", {}).get("rights_status"),
@@ -555,7 +725,8 @@ def build_integration_contract(
             "verified": verification.get("verified"),
             "checks": verification.get("checks", {}),
         },
-        "stages": stage_report(rendered=render_result.get("status") == "COMPLETE"),
+        "storage": storage_block,
+        "stages": stage_report(rendered=render_result.get("status") == "COMPLETE", storage=storage_block),
     }
 
 
@@ -620,11 +791,20 @@ def run_local_ingest(
     source_start: float = 0.0,
     source_end: float = 2.0,
     dry_run: bool = False,
+    upload: bool = False,
+    storage_adapter: "_integration.OORTAdapter | None" = None,
+    storage_bucket: str | None = None,
+    storage_object_prefix: str = DEFAULT_STORAGE_OBJECT_PREFIX,
+    storage_class: str | None = None,
+    storage_read_back: bool = True,
+    require_storage: bool = False,
 ) -> dict:
     """One authorized local video → one project → one verified artifact.
 
     Deterministic ordering: register (validate + job) → EDL → render → verify →
-    contract. Returns the full run result including the integration contract.
+    (optional OORT upload) → contract. When ``upload`` is set the artifact is
+    pushed to OORT Storage and verified; the local artifact is always preserved
+    even if the upload fails. Returns the full run result including the contract.
     """
     resolved_source = Path(source_path)
     if not resolved_source.exists():
@@ -669,10 +849,25 @@ def run_local_ingest(
         )
         if not dry_run else {"verified": False, "checks": {}, "artifact": None}
     )
+    storage_block = _resolve_storage_upload(
+        upload=upload,
+        dry_run=dry_run,
+        verification=verification,
+        job_id=job_id,
+        adapter=storage_adapter,
+        bucket=storage_bucket,
+        object_prefix=storage_object_prefix,
+        storage_class=storage_class,
+        require_storage=require_storage,
+        read_back=storage_read_back,
+        scratch_dir=None,
+        project=project,
+        source_sha256=registration["source"]["sha256"],
+    )
     contract = build_integration_contract(
         registration=registration, edl_result=edl_result,
         render_result=render_result, verification=verification,
-        story_id=story_id, fmt=fmt, jobs_dir=jobs_root,
+        story_id=story_id, fmt=fmt, jobs_dir=jobs_root, storage=storage_block,
     )
     return {
         "job_id": job_id,
@@ -680,5 +875,6 @@ def run_local_ingest(
         "edl": edl_result,
         "render": render_result,
         "verification": verification,
+        "storage": storage_block,
         "contract": contract,
     }
