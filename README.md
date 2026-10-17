@@ -343,6 +343,37 @@ after a non-empty + readable-duration integrity check, partial writes are never
 treated as complete, and recovery is idempotent. Uploads stay opt-in and are
 never automatic. Guide: `docs/phase-7/LIVE_CAPTURE.md`.
 
+### Phase 7.3 — Unified Read-Only Media Library
+
+Project registered sources, live recordings, and processed artifacts into one
+read-only catalog (`stadium_signal.media_catalog/v1`) with stable, deterministic
+asset IDs. The catalog is a projection of existing runtime records — it never
+mutates or moves media, and it never emits a private source path or a public URL.
+
+```bash
+python3 scripts/media_catalog.py build \
+  --contracts-dir data/pilot/contracts \
+  --sessions-dir  data/live/segments \
+  --jobs-dir      data/pilot/jobs \
+  --out           data/library.catalog.json
+python3 scripts/media_catalog.py validate data/library.catalog.json
+```
+
+Stadium Signal Lite reads the catalog through `media_library.py` and lists it in
+a local-only `Library` view. Optional in-browser preview is explicitly enabled,
+loopback-only, allow-listed by root and extension, and `Range`-capable:
+
+```bash
+# In Stadium Signal Lite:
+export STADIUM_SIGNAL_MEDIA_CATALOG="$HOME/FootballArchive/ESPN/data/library.catalog.json"
+export STADIUM_SIGNAL_PREVIEW_ENABLED=1
+export STADIUM_SIGNAL_PREVIEW_ROOTS="$HOME/FootballArchive/ESPN/data"
+python3 server.py
+```
+
+Guide and guardrails: `docs/phase-7/MEDIA_LIBRARY.md`. Schema:
+`docs/contracts/media_catalog.v1.json`.
+
 ## Validation
 
 ```bash
@@ -354,7 +385,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 1205 passed, 2 skipped, 2 warnings.
+- `pytest`: 1224 passed, 2 skipped, 2 warnings.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 
