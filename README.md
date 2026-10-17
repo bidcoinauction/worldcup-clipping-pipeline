@@ -323,6 +323,26 @@ python3 scripts/local_ingest.py run --source ... --pilot-id ... --upload
 
 Guide, provider findings, and security notes: `docs/phase-7/STORAGE_INTEGRATION.md`.
 
+### Phase 7.2 — Reliable Live Capture
+
+Record authorized live video (HLS/HTTP, local file, synthetic, or the optional
+Ace Stream) into durable, integrity-checked segments, recover from
+interruption, assemble a recording, and register it through the Phase 7
+local-ingestion service. Transport is separated from the recording engine;
+Ace Stream and Docker are both optional.
+
+```bash
+python3 scripts/live_capture.py start --match-id "demo" --url https://host/live.m3u8
+python3 scripts/live_capture.py recover  --manifest <staging>/<session>.manifest.json
+python3 scripts/live_capture.py assemble --manifest <staging>/<session>.manifest.json --out <recording>.mp4
+python3 scripts/live_capture.py register --recording <recording>.mp4 --pilot-id ss_lite_live_001
+```
+
+A session manifest is the durable source of truth; a segment is only finalized
+after a non-empty + readable-duration integrity check, partial writes are never
+treated as complete, and recovery is idempotent. Uploads stay opt-in and are
+never automatic. Guide: `docs/phase-7/LIVE_CAPTURE.md`.
+
 ## Validation
 
 ```bash
@@ -334,7 +354,7 @@ python3 scripts/validate_config.py config/pipeline_config.json
 Verified baseline on macOS:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 1141 passed, 1 skipped, 2 warnings.
+- `pytest`: 1205 passed, 2 skipped, 2 warnings.
 
 No lint, format, type-check, tox, Makefile, or pre-commit commands are currently configured.
 
