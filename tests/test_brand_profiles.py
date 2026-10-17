@@ -97,6 +97,8 @@ def test_unsafe_asset_path_fails():
         validate_brand_profile({"id": "x", "assets": {"logo": "../../secrets/logo.png"}}, source="brand")
     with pytest.raises(ConfigurationError, match="repository-relative"):
         validate_brand_profile({"id": "x", "assets": {"font": "/etc/passwd"}}, source="brand")
+    with pytest.raises(ConfigurationError, match="repository-relative"):
+        validate_brand_profile({"id": "x", "assets": {"font": "C:/Windows/fonts/x.ttf"}}, source="brand")
 
 
 def test_required_brand_identifier():

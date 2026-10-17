@@ -11,9 +11,11 @@ No CLI invocation. No shell execution. No secrets exposure.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import importlib.util
 import shutil
+import time as _time
 from pathlib import Path
 
 from .clip_manifest import build_clip_manifest, write_clip_manifest
@@ -25,6 +27,63 @@ from .configurator import (
     resolve_project_profile,
 )
 from .prompt_generation import build_prompt
+
+logger = logging.getLogger("pipeline.detection")
+
+DETECTION_CATEGORIES = {"EMOTION", "AURA", "CHAOS", "AMERICA"}
+DETECTION_CLIP_FIELDS = {
+    "clip_id",
+    "category",
+    "start_time",
+    "end_time",
+    "virality_score",
+    "retention_reason",
+    "share_reason",
+    "hook_text",
+    "caption",
+    "editorial_thesis",
+    "emotional_angle",
+    "legacy_value",
+    "thumbnail_idea",
+    "manual_scrub_note",
+    "platform_notes",
+}
+DETECTION_JSON_SCHEMA = {
+    "type": "array",
+    "minItems": 3,
+    "maxItems": 5,
+    "items": {
+        "type": "object",
+        "required": sorted(DETECTION_CLIP_FIELDS),
+        "properties": {
+            "clip_id": {"type": "string"},
+            "category": {"type": "string", "enum": sorted(DETECTION_CATEGORIES)},
+            "start_time": {"type": "string", "pattern": "^[0-9]+$"},
+            "end_time": {"type": "string", "pattern": "^[0-9]+$"},
+            "virality_score": {"type": "integer", "minimum": 1, "maximum": 10},
+            "retention_reason": {"type": "string"},
+            "share_reason": {"type": "string"},
+            "hook_text": {"type": "string"},
+            "caption": {"type": "string"},
+            "editorial_thesis": {"type": "string"},
+            "emotional_angle": {"type": "string"},
+            "legacy_value": {"type": "integer", "minimum": 1, "maximum": 10},
+            "thumbnail_idea": {"type": "string"},
+            "manual_scrub_note": {"type": "string"},
+            "platform_notes": {
+                "type": "object",
+                "required": ["reels", "shorts", "tiktok"],
+                "properties": {
+                    "tiktok": {"type": "string"},
+                    "reels": {"type": "string"},
+                    "shorts": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "additionalProperties": False,
+    },
+}
 
 # ── Analysis stages (human-facing) ──────────────────────────────────────────
 
@@ -275,38 +334,196 @@ def _run_openai(prompt_text: str, *, model: str | None = None) -> list[dict]:
 def _run_ollama(prompt_text: str, *, model: str | None = None) -> list[dict]:
     import requests as _requests
     from .config import load_config
-    selected_model = model or os.getenv("OLLAMA_MODEL", "llama3.1")
+    from .provider_service import detection_model as _detection_model
+    selected_model = model or _detection_model()
     url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-    resp = _requests.post(
-        url,
-        json={
-            "model": selected_model,
-            "prompt": prompt_text,
-            "stream": False,
-            "options": {"temperature": 0.2},
-        },
-        timeout=load_config()["providers"]["timeout"],
-    )
-    resp.raise_for_status()
-    raw = resp.json()["response"]
-    return _parse_clips_json(raw)
+    request_options = {"temperature": 0.2}
+    payload = {
+        "model": selected_model,
+        "prompt": prompt_text,
+        "stream": False,
+        "format": DETECTION_JSON_SCHEMA,
+        "options": request_options,
+    }
+    timeout = load_config()["providers"]["timeout"]
+    started = _time.monotonic()
 
+    def _log(status: str, error: str = "") -> None:
+        logger.info(
+            "detection_request stage=detection provider=ollama model=%s prompt_chars=%d "
+            "options=%s timeout=%ss status=%s elapsed=%.2fs%s",
+            selected_model,
+            len(prompt_text),
+            sorted(request_options.keys()),
+            timeout,
+            status,
+            _time.monotonic() - started,
+            f" error={error}" if error else "",
+        )
 
-def _parse_clips_json(raw: str) -> list[dict]:
     try:
-        parsed = json.loads(raw)
+        resp = _requests.post(url, json=payload, timeout=timeout)
+        _log(str(resp.status_code))
+        resp.raise_for_status()
+        raw = resp.json()["response"]
+        return _parse_clips_json(raw, strict=True)
+    except _requests.HTTPError as exc:
+        body_error = _response_error_body(exc)
+        safe_error = _safe_error_message(body_error)
+        _log("HTTP_ERROR", safe_error)
+        raise _OllamaDetectionError(safe_error, status_code=getattr(exc.response, "status_code", None)) from exc
+    except Exception as exc:  # noqa: BLE001
+        _log("ERROR", _safe_error_message(str(exc)))
+        raise
+
+
+class _OllamaDetectionError(RuntimeError):
+    """Raised when the Ollama detection call fails.
+
+    Carries the safe model-level error text from the Ollama response body so
+    the operator sees the actual cause (e.g. a ggml device-lost) instead of
+    only the HTTP status line. Never includes request bodies or secrets.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        self.status_code = status_code
+        prefix = f"Ollama detection failed (HTTP {status_code}): " if status_code else "Ollama detection failed: "
+        super().__init__(f"{prefix}{message}")
+
+
+def _response_error_body(exc: Exception) -> str:
+    """Extract the safe ``error`` field from an Ollama HTTP error response.
+
+    Ollama returns ``{"error": "..."}`` bodies on 4xx/5xx; surfacing that text
+    makes detection failures diagnosable without exposing raw response bodies.
+    """
+    response = getattr(exc, "response", None)
+    body = getattr(response, "text", "")
+    if not isinstance(body, str) or not body:
+        return str(exc)
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return str(exc)
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+        return parsed["error"]
+    return str(exc)
+
+
+def _strip_markdown_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    first_newline = stripped.find("\n")
+    if first_newline < 0:
+        return text
+    body = stripped[first_newline + 1:]
+    if body.rstrip().endswith("```"):
+        return body.rstrip()[:-3].strip()
+    return text
+
+
+def _find_complete_json_value(text: str) -> str | None:
+    opening = {"[": "]", "{": "}"}
+    candidates: list[str] = []
+    start = 0
+    while start < len(text):
+        char = text[start]
+        if char not in opening:
+            start += 1
+            continue
+        stack = [opening[char]]
+        in_string = False
+        escaped = False
+        for index in range(start + 1, len(text)):
+            current = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+            elif current in opening:
+                stack.append(opening[current])
+            elif stack and current == stack[-1]:
+                stack.pop()
+                if not stack:
+                    candidate = text[start:index + 1]
+                    try:
+                        json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+                    candidates.append(candidate)
+                    start = index
+                    break
+        if len(candidates) > 1:
+            return None
+        start += 1
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _extract_json_text(raw: str) -> str:
+    text = _strip_markdown_fence(raw).strip()
+    try:
+        json.loads(text)
+        return text
     except json.JSONDecodeError:
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start >= 0 and end > start:
-            parsed = json.loads(raw[start:end + 1])
-        else:
-            raise ValueError("detection response is not valid JSON")
+        extracted = _find_complete_json_value(text)
+        if extracted is not None:
+            return extracted
+    raise ValueError("detection response is not valid JSON")
+
+
+def _parse_clips_json(raw: str, *, strict: bool = False) -> list[dict]:
+    try:
+        parsed = json.loads(_extract_json_text(raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError("detection response is not valid JSON") from exc
     if isinstance(parsed, list):
-        return parsed
-    if isinstance(parsed, dict) and "clips" in parsed:
-        return parsed["clips"]
-    raise ValueError("detection response is not a JSON array of clips")
+        clips = parsed
+    elif isinstance(parsed, dict) and "clips" in parsed:
+        clips = parsed["clips"]
+    else:
+        raise ValueError("detection response is not a JSON array of clips")
+    if not isinstance(clips, list) or not all(isinstance(item, dict) for item in clips):
+        raise ValueError("detection response is not a JSON array of clips")
+    if strict:
+        _validate_detection_clips(clips)
+    return clips
+
+
+def _validate_detection_clips(clips: list[dict]) -> None:
+    if not 3 <= len(clips) <= 5:
+        raise ValueError("detection response must contain 3-5 clips")
+    for index, clip in enumerate(clips, start=1):
+        missing = DETECTION_CLIP_FIELDS - set(clip)
+        if missing:
+            raise ValueError(f"detection clip {index} missing required fields: {', '.join(sorted(missing))}")
+        extra = set(clip) - DETECTION_CLIP_FIELDS
+        if extra:
+            raise ValueError(f"detection clip {index} has unsupported fields: {', '.join(sorted(extra))}")
+        if clip.get("category") not in DETECTION_CATEGORIES:
+            raise ValueError(f"detection clip {index} has invalid category")
+        for field in ("start_time", "end_time"):
+            value = clip.get(field)
+            if not isinstance(value, str) or not value.isdigit():
+                raise ValueError(f"detection clip {index} has invalid {field}")
+        if int(clip["end_time"]) <= int(clip["start_time"]):
+            raise ValueError(f"detection clip {index} has non-positive duration")
+        for field in ("virality_score", "legacy_value"):
+            value = clip.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 10:
+                raise ValueError(f"detection clip {index} has invalid {field}")
+        notes = clip.get("platform_notes")
+        if not isinstance(notes, dict) or set(notes) != {"tiktok", "reels", "shorts"}:
+            raise ValueError(f"detection clip {index} has invalid platform_notes")
+        string_fields = DETECTION_CLIP_FIELDS - {"virality_score", "legacy_value", "platform_notes"}
+        if any(not isinstance(clip.get(field), str) or not clip.get(field).strip() for field in string_fields):
+            raise ValueError(f"detection clip {index} has empty required text")
 
 
 # ── Full analysis orchestrator ──────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""Phase 7.1 — OORT Storage integration service.
+"""Optional integration boundary with a real OORT Storage service.
 
 An *optional* storage layer that connects the local Clipper artifact system to
 OORT Storage (a decentralized, S3-compatible object store) without making the
@@ -33,7 +33,13 @@ Public surface:
 * :class:`OORTConfig` / :class:`StorageResult` / :class:`StorageIntegrationError`.
 * :func:`storage_config_from_env` — read credentials/config from the environment.
 * :func:`build_storage_adapter` — construct an adapter, or ``None`` when unconfigured.
-* :class:`OORTAdapter` — health check, upload, head, download, verify.
+* :class:`OORTAdapter` — real health check, upload, head, download, verify.
+* :func:`integration_health_report` — capability-level health for the creator
+  platform's optional OORT, Airtable, and Slack boundaries.
+
+The real Phase 7.1 OORT service and the creator-platform capability registry
+coexist deliberately. Core runtime, analysis, Moments, Stories, Render, and
+Export behavior never depends on either surface.
 """
 
 from __future__ import annotations
@@ -49,7 +55,9 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as _ET
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
+
+from .integration_models import AdapterHealth, IntegrationResult
 
 try:  # pragma: no cover - dotenv is a declared dependency but stay resilient
     from dotenv import load_dotenv
@@ -598,3 +606,83 @@ class OORTAdapter:
         result.read_back_verified = bool(verification["checks"].get("read_back_sha256_matches"))
         result.etag = result.etag or verification["head"].get("etag")
         return result
+class IntegrationAdapter:
+    """Minimal adapter interface. Subclasses declare capabilities."""
+
+    adapter_id: str = ""
+    display_name: str = ""
+    capabilities: tuple[str, ...] = ()
+    _config_keys: tuple[str, ...] = ()
+
+    def is_configured(self) -> bool:
+        return all(os.environ.get(key) for key in self._config_keys)
+
+    def _provider_available(self) -> bool:
+        return False
+
+    def health_check(self) -> AdapterHealth:
+        configured = self.is_configured()
+        if not configured:
+            return AdapterHealth(self.adapter_id, configured=False, available=False,
+                                 status="NOT_CONFIGURED", message="adapter is not configured",
+                                 capabilities=self.capabilities)
+        if not self._provider_available():
+            return AdapterHealth(self.adapter_id, configured=True, available=False,
+                                 status="UNAVAILABLE", message="provider is not available",
+                                 capabilities=self.capabilities)
+        return AdapterHealth(self.adapter_id, configured=True, available=True,
+                             status="READY", capabilities=self.capabilities)
+
+    def upload_artifact(self, path: str, **kwargs: Any) -> IntegrationResult:
+        return self._unavailable("upload_artifact")
+
+    def publish_record(self, payload: dict[str, Any], **kwargs: Any) -> IntegrationResult:
+        return self._unavailable("publish_record")
+
+    def send_notification(self, message: str, **kwargs: Any) -> IntegrationResult:
+        return self._unavailable("send_notification")
+
+    def _unavailable(self, operation: str) -> IntegrationResult:
+        return IntegrationResult(self.adapter_id, operation, ok=False, status="NOT_AVAILABLE",
+                                 message="adapter is not configured")
+
+
+class OORTBoundaryAdapter(IntegrationAdapter):
+    adapter_id = "oort"
+    display_name = "OORT"
+    capabilities = ("ARTIFACT_STORAGE",)
+    _config_keys = ("OORT_API_KEY", "OORT_BUCKET")
+
+
+class AirtableAdapter(IntegrationAdapter):
+    adapter_id = "airtable"
+    display_name = "Airtable"
+    capabilities = ("RECORD_SYNC",)
+    _config_keys = ("AIRTABLE_API_TOKEN", "AIRTABLE_BASE_ID")
+
+
+class SlackAdapter(IntegrationAdapter):
+    adapter_id = "slack"
+    display_name = "Slack"
+    capabilities = ("NOTIFICATION", "REVIEW_CARD")
+    _config_keys = ("SLACK_WEBHOOK_URL",)
+
+
+_ADAPTERS: dict[str, IntegrationAdapter] = {
+    adapter.adapter_id: adapter for adapter in (OORTBoundaryAdapter(), AirtableAdapter(), SlackAdapter())
+}
+
+
+def registered_integration_adapters() -> list[IntegrationAdapter]:
+    return list(_ADAPTERS.values())
+
+
+def get_integration_adapter(adapter_id: str) -> IntegrationAdapter:
+    adapter = _ADAPTERS.get(adapter_id)
+    if adapter is None:
+        raise ValueError(f"unknown integration adapter: {adapter_id}")
+    return adapter
+
+
+def integration_health_report() -> list[dict[str, Any]]:
+    return [adapter.health_check().to_dict() for adapter in _ADAPTERS.values()]

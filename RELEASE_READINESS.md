@@ -1,74 +1,77 @@
-# Stadium Signal Release Readiness Audit
+# Stadium Signal Release Readiness
 
-Date: 2026-08-03
+Updated: 2026-10-05. Documentation review against `main` at `b30cd8e`.
 
-Branch: `main` tracking `origin/main`
+This replaces the current-status conclusions of the 2026-08-03 audit. Historical Phase 0 evidence remains in `planning/phase-0-verification/`; its 541-test count and then-missing pilot/configuration features are not the present release baseline.
 
-Verified baseline:
+## Current readiness
+
+Stadium Signal supports a managed, local-first football story and clipping workflow through CLI scripts and a working local browser Operator Console. Operators must provide cleared local media, Python dependencies, FFmpeg/ffprobe, and the selected model credentials or local services.
+
+The console supports project/source setup, rights confirmation, football analysis, moments, story suggestions, short-/medium-/long-form edit briefs, deterministic EDLs, and FFmpeg rough cuts. A rough cut is an editorial review artifact, not automatic approval or delivery.
+
+The repository is not a self-serve hosted platform. Authentication, billing, multi-tenancy, automated onboarding, direct publishing, and durable distributed/background execution are not included.
+
+## Validation evidence
+
+The README records the latest macOS baseline as:
 
 - `python3 scripts/validate_data.py`: passed.
-- `pytest`: 541 passed, 1 skipped, 1 warning.
+- `pytest`: 1128 passed, 1 skipped, 1 warning.
 
-Detailed Phase 0 evidence is recorded in `planning/phase-0-verification/`.
+This is a previously recorded baseline, not a claim that this documentation review reran the suite on macOS or validated a real-media production job. Reproduce checks in the intended operating environment with:
 
-## Current Readiness
+```bash
+python3 scripts/validate_data.py
+pytest
+python3 scripts/validate_config.py config/pipeline_config.json
+```
 
-The repository is ready to operate as a local-first World Cup clipping pipeline reference deployment when the operator has the required Python packages, FFmpeg/ffprobe, local media, and any selected model credentials or local services.
+Unit/service test results do not replace source-specific rights confirmation, environment readiness, or human review of real-media exports.
 
-The repository is not ready to be sold as a self-serve platform. It does not include authentication, billing, multi-tenancy, direct publishing, generalized client onboarding, or a hosted dashboard.
+## Implemented since the August audit
 
-## What Works
+| Former gap | Current implementation / evidence |
+| --- | --- |
+| No paid-pilot runbook or rights/brand/source intake templates | `docs/pilot/PILOT_RUNBOOK.md`, `RIGHTS_CONFIRMATION.md`, `BRAND_INTAKE.md`, and `SOURCE_INTAKE.md` |
+| No job log or pilot lifecycle | `pipeline.pilot`: durable job records, append-only events, revision-guarded transitions, output review, readiness reports, execution plans, manual run records, delivery packages/checklists/confirmations |
+| No config schema validation | `pipeline.config.validate_config_dict`, structured/profile validators in `pipeline.configurator`, and `scripts/validate_config.py` |
+| Generated FFmpeg commands executed through a shell | `pipeline.stadium_signal.execute_ffmpeg_commands` now uses parsed argument lists with `subprocess.run(..., check=True)`; the cited shell execution gap is closed |
+| CLI-only operator surface | `scripts/console.py`, `pipeline.console_server`, and `pipeline.operator_console` provide a local browser surface over reusable services |
+| Story/edit structure only proposed | Story suggestions, edit briefs, deterministic EDLs, and reference/editorial rough-cut services and tests exist |
 
-- CSV and JSON metadata validation passes.
-- The pytest suite passes after Phase 0 environment/test reliability fixes.
-- World Cup match, manifest, archive-root, transcription, detection, export, and static review workflows are represented in scripts and tests.
-- Dry-run behavior exists on several expensive workflows.
-- `.env.example` documents the environment variables used by current code.
-- `README.md`, `CONTRIBUTING.md`, and `SECURITY.md` now describe the current repository rather than unrelated or stale project state.
+The local pilot model is implemented; a generalized hosted organization/account/multi-tenant model is still outside scope. Execution plans and manual run records describe operations without executing them, while supported console analysis and rendering do execute their corresponding services.
 
-## Main Gaps
+## Operating scope
 
-Critical:
+Football/World Cup remains the reference deployment. Basketball is a registered additional profile for supported configuration/intake/prompt/planning workflows, with `production_capable=True` but `analysis_supported=False`. Do not sell registration as a working basketball detector or a validated multi-sport production service. The separate `basketball_sandbox` profile is non-production.
 
-- Commercial use requires source-by-source rights confirmation before processing or delivering clips.
+Windows is the established Ace Stream capture box; macOS is the development/post-processing box. Processing may remain on Windows or use recordings transferred to macOS. Archive/output/export/provenance paths have portable Windows/POSIX handling, but this does not prove every external dependency is installed or every media workflow has been exercised on both platforms.
 
-High:
+Use full-file live recording (`--mode full`), stop with `q`, validate with ffprobe, and avoid reopening Play while FFmpeg owns the stream. The Mexico–South Africa capture is recorded as a validated workflow in `AGENTS.md`; segment mode remains experimental, not a guaranteed live-processing offer.
 
-- A generated FFmpeg command execution path still uses shell execution in `pipeline/stadium_signal.py`.
-- API and subprocess error handling is inconsistent across scripts.
-- Paid work depends on local environment readiness: FFmpeg/ffprobe, optional curl, local media, optional Ace Stream, optional Ollama, and hosted API credentials.
-- No paid-pilot runbook, rights checklist, brand intake, or job log exists yet.
+## Remaining release gates and limitations
 
-Medium:
+- Confirm permitted source-by-source processing and delivery uses before commercial work. Public availability, possession, or stream access does not establish permission; the pilot readiness gate requires current confirmed rights.
+- Verify required tools, dependencies, source readability, model availability, and credentials on the actual processing machine. Console analysis preflight reuses valid transcripts or checks FFmpeg and the selected faster-whisper dependency before new transcription.
+- Review real-media narrative accuracy, clip bounds, audio, framing, effect execution, and final outputs. Automated tests and model suggestions do not establish editorial quality.
+- Keep full live capture operator-controlled; segment automation remains experimental.
+- Respect renderer capability reports: partial/deferred effects, music, typography, stem separation, and shot-aware selection are not complete editing automation.
+- Treat console disconnect handling and interrupted-analysis recovery as local resilience. They do not provide durable workers, automatic partial-run resumption, or multi-user operation. Error handling across legacy scripts still needs evaluation per workflow.
+- Preserve football-specific prompts/defaults where appropriate; universal event normalization, complete basketball analysis, and full channel packaging remain future work.
 
-- Football and World Cup assumptions remain in prompts, config, categories, and workflow defaults.
-- Integration coverage with real media is limited in this workspace; one media-duration test is skipped when the sample file is absent.
-- No schema validation exists for `config/pipeline_config.json`.
-- No generic organization, project, workflow, source, brand, or job model exists yet.
+## Responsible managed pilot
 
-## Responsible Paid Pilot Offer
+1. Accept client-supplied local media and record source/rights/brand requirements.
+2. Validate intake and execution readiness; create the durable job.
+3. Run supported console services or the existing CLI workflow, preserving provenance.
+4. Review moments, story treatment, edit structure, and rendered outputs manually.
+5. Register/review outputs, create the delivery package/checklist, and confirm the manual/shared-folder handoff.
 
-The responsible offer is a managed pilot, not a product launch:
+The commercial boundary remains a managed sports pilot with explicit review and delivery. Do not promise self-serve accounts, automated billing, client portals, autonomous publishing, guaranteed live capture, or broad non-sports support.
 
-- Client supplies local media files.
-- Client confirms rights and permitted delivery use.
-- Operator runs the local pipeline.
-- Outputs are reviewed manually.
-- Delivery happens through a shared folder or manual handoff.
-- Scope stays close to sports/game highlight production, where the current World Cup deployment is strongest.
+## Next verification priorities
 
-Do not offer self-serve onboarding, automated billing, multi-client portals, direct publishing, guaranteed live capture, or broad non-sports workflows yet.
+Run and document a representative cleared-media pilot on the intended Windows/macOS setup, recording actual dependency/model versions, artifacts, review results, and handoff. Use that evidence to address specific failures before expanding scope. Extend new sport, rendering, or console capabilities behind tested services and report their actual capability flags.
 
-## Recommended Next Sprint
-
-Build only the minimum viable paid pilot layer:
-
-- Pilot runbook.
-- Source intake template.
-- Rights checklist.
-- Brand intake template.
-- Basic job log.
-- Local-file source manifest.
-- Safer FFmpeg command execution and clearer operator-facing errors.
-
-Keep the World Cup implementation working as the reference deployment.
+[README](README.md) is the operator overview; [console architecture](docs/OPERATOR_CONSOLE_ARCHITECTURE.md) describes implementation; [AGENTS.md](AGENTS.md) defines development/agent rules. Dated planning audits remain historical evidence.

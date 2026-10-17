@@ -1,0 +1,5 @@
+# Hosted Clipper demo dependencies.
+#
+# The Vercel entrypoint serves the read-only creator console using Python's
+# standard library plus repository modules. Local media/ML/provider stacks stay
+# in requirements.txt and pyproject optional dependencies.

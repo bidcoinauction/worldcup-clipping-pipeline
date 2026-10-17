@@ -29,6 +29,28 @@ from tests.test_pilot_intake import build_intake
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_gpt_detection.py"
 
 
+def _valid_detection_clip(**overrides):
+    clip = {
+        "clip_id": "001",
+        "category": "EMOTION",
+        "start_time": "10",
+        "end_time": "30",
+        "virality_score": 8,
+        "retention_reason": "crowd emotion",
+        "share_reason": "historic moment",
+        "hook_text": "the stadium turns",
+        "caption": "A decisive emotional swing.",
+        "editorial_thesis": "This moment carries the match mythology.",
+        "emotional_angle": "tension and release",
+        "legacy_value": 7,
+        "thumbnail_idea": "player reaction close-up",
+        "manual_scrub_note": "find the crowd cutaway",
+        "platform_notes": {"tiktok": "tight hook", "reels": "cinematic", "shorts": "direct"},
+    }
+    clip.update(overrides)
+    return clip
+
+
 @pytest.fixture
 def jobs_root(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "jobs"
@@ -166,6 +188,26 @@ def test_run_detection_call_ollama(mock_ollama):
     clips = run_detection_call("test prompt", provider="ollama")
     assert len(clips) == 1
     mock_ollama.assert_called_once()
+    assert mock_ollama.call_args.kwargs["model"] is None
+
+
+@patch("requests.post")
+def test_run_ollama_uses_configured_detection_model_not_global_fallback(mock_post, monkeypatch):
+    from pipeline import detection
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3.1")
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.raise_for_status.return_value = None
+    ok.json.return_value = {"response": json.dumps([_valid_detection_clip() for _ in range(3)])}
+    mock_post.return_value = ok
+
+    detection._run_ollama("real prompt")
+
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["model"] == "qwen2.5:3b"
+    assert payload["model"] != "llama3.1"
+    assert payload["format"]["type"] == "array"
+    assert payload["format"]["items"]["additionalProperties"] is False
 
 
 def test_run_detection_call_unknown_provider():
@@ -193,9 +235,123 @@ def test_parse_clips_json_markdown_wrapped():
     assert result == [{"clip_id": "001"}]
 
 
+def test_parse_clips_json_extracts_prose_wrapped_json():
+    raw = 'Here are the moments:\n[{"clip_id": "001"}]\nNo other notes.'
+    assert _parse_clips_json(raw) == [{"clip_id": "001"}]
+
+
+def test_parse_clips_json_rejects_ambiguous_prose_json():
+    raw = 'First [{"clip_id": "001"}] then [{"clip_id": "002"}]'
+    with pytest.raises(ValueError, match="not valid JSON"):
+        _parse_clips_json(raw)
+
+
+def test_parse_clips_json_strict_rejects_wrong_schema_object():
+    raw = json.dumps({"transcript": "model summarized instead of detecting"})
+    with pytest.raises(ValueError, match="JSON array of clips"):
+        _parse_clips_json(raw, strict=True)
+
+
+def test_parse_clips_json_strict_rejects_wrong_clip_schema():
+    raw = json.dumps([_valid_detection_clip(category="sports") for _ in range(3)])
+    with pytest.raises(ValueError, match="invalid category"):
+        _parse_clips_json(raw, strict=True)
+
+
+def test_parse_clips_json_strict_rejects_truncated_json():
+    raw = json.dumps([_valid_detection_clip()])[:-5]
+    with pytest.raises(ValueError, match="not valid JSON"):
+        _parse_clips_json(raw, strict=True)
+
+
 def test_parse_clips_json_invalid():
     with pytest.raises(ValueError, match="not valid JSON"):
         _parse_clips_json("not json at all")
+
+
+# ── _run_ollama diagnostics (real Ollama 500 / device-lost failure) ────────
+
+
+class _FakeOllamaResponse:
+    """Minimal requests-style response used to exercise the Ollama error path."""
+
+    def __init__(self, status_code: int, body: str) -> None:
+        self.status_code = status_code
+        self.text = body
+
+    def raise_for_status(self):
+        import requests
+        raise requests.HTTPError(f"{self.status_code} Server Error", response=self)
+
+
+def _ollama_device_lost_error() -> _FakeOllamaResponse:
+    body = json.dumps({
+        "error": "an error was encountered while running the model: "
+                 "read tcp 127.0.0.1:1->127.0.0.1:2: wsarecv: "
+                 "An existing connection was forcibly closed by the remote host."
+    })
+    return _FakeOllamaResponse(500, body)
+
+
+@patch("requests.post")
+def test_run_ollama_500_surfaces_safe_model_error(mock_post):
+    """A real Ollama 500 (e.g. ggml device-lost) must surface the model error
+    text from the response body, not the raw HTTP boilerplate."""
+    from pipeline import detection
+    mock_post.return_value = _ollama_device_lost_error()
+
+    with pytest.raises(Exception) as excinfo:
+        detection._run_ollama("A" * 100)
+
+    message = str(excinfo.value)
+    assert "Ollama detection failed" in message
+    assert "HTTP 500" in message
+    assert "forcibly closed" in message
+    assert "sk-" not in message
+
+
+@patch("requests.post")
+def test_run_ollama_logs_diagnostic_fields(mock_post, caplog):
+    """The diagnostic log line must capture stage, provider, model, prompt
+    size, request options, HTTP status, safe error, and elapsed time."""
+    import logging
+    from pipeline import detection
+    from pipeline.provider_service import detection_model as _detection_model
+    mock_post.return_value = _ollama_device_lost_error()
+
+    with caplog.at_level(logging.INFO, logger="pipeline.detection"):
+        with pytest.raises(Exception):
+            detection._run_ollama("X" * 5000)
+
+    assert any("detection_request" in record.message for record in caplog.records)
+    assert any("provider=ollama" in record.message for record in caplog.records)
+    assert any(f"model={_detection_model()}" in record.message for record in caplog.records)
+    assert any("prompt_chars=5000" in record.message for record in caplog.records)
+    assert any("options=['temperature']" in record.message for record in caplog.records)
+    assert any("status=" in record.message for record in caplog.records)
+    assert any("elapsed=" in record.message for record in caplog.records)
+    assert any("forcibly closed" in record.message for record in caplog.records)
+    assert all("sk-" not in record.message for record in caplog.records)
+
+
+@patch("requests.post")
+def test_run_ollama_success_logs_status(mock_post, caplog):
+    """A successful Ollama detection call logs the 200 status with prompt size."""
+    import logging
+    from pipeline import detection
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.raise_for_status.return_value = None
+    expected = [_valid_detection_clip() for _ in range(3)]
+    ok.json.return_value = {"response": json.dumps(expected)}
+    mock_post.return_value = ok
+
+    with caplog.at_level(logging.INFO, logger="pipeline.detection"):
+        clips = detection._run_ollama("probe prompt")
+
+    assert clips == expected
+    assert any("status=200" in record.message for record in caplog.records)
+    assert any("prompt_chars=12" in record.message for record in caplog.records)
 
 
 # ── _safe_error_message ────────────────────────────────────────────────────

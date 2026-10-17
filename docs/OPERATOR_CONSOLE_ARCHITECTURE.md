@@ -1,176 +1,97 @@
 # Operator Console Architecture
 
-## Purpose
+Updated: 2026-10-05. Describes the implementation on `main`; future extensions are marked explicitly.
 
-The future Operator Console is a non-technical control surface for the sports
-story engine. It should let an operator create projects, select a sport and
-channel, provide source media, start analysis, review moments and stories,
-approve outputs, and export packages without editing JSON, running Python,
-using Terminal, knowing environment variables, reading execution-plan manifests,
-or manually locating generated files.
+## Purpose and current implementation
 
-The console is not an editing program. It is an operator workflow over the same
-engine artifacts the CLI uses today.
+The Operator Console is a working local browser control surface for the sports story engine. Start it with `python3 scripts/console.py` and open `http://127.0.0.1:8420`. The launcher supports `--host` and `--port`; the default is loopback. The server uses Python's standard-library HTTP server, HTML templates, and CSS, without React or FastAPI.
 
-## Conceptual Architecture
+Operators can create/select projects, provide local media paths, confirm rights, run supported analysis, inspect moments, generate story suggestions and edit briefs, build timelines, and request rough cuts. This is an operator workflow over engine artifacts, not a general-purpose video editor or hosted multi-tenant product. Runtime dependencies and model configuration still need to be installed/configured outside the UI.
 
-```text
-Operator Console
-      ↓
-Application / Service Layer
-      ↓
-Job + Story Engine
-      ↓
-Sport Adapter
-      ↓
-Detection / Research / Editing
-      ↓
-Artifact Store
-```
+## Application / service boundary
 
-The CLI and the future frontend should be two clients of the same application
-layer. CLI scripts remain supported, but new pipeline capabilities should expose
-reusable Python functions first, then adapt those functions to CLI commands.
+Both CLI adapters and the console use reusable Python services. The browser calls `pipeline.console_server`, which delegates to `pipeline.operator_console`; that facade calls the engine and pilot services rather than shelling into CLI scripts.
 
-## UI Language
+| Module | Responsibility |
+| --- | --- |
+| `pipeline.configurator` | Registered profiles, configuration, brands, taxonomy, templates, and portable archive/output paths |
+| `pipeline.pilot` | Intake/source/rights validation, durable jobs and events, transitions, readiness, run/plan/output/delivery records |
+| `pipeline.transcription` | Transcript discovery, reuse, and source transcription |
+| `pipeline.prompt_generation`, `pipeline.detection`, `pipeline.clip_manifest` | Profile-aware prompts, analysis orchestration, moments JSON, and compatible clip-manifest CSV |
+| `pipeline.story_engine` | Story suggestions grounded in detected moment identifiers |
+| `pipeline.edit_brief` | Editorial briefs for `SHORT`, `MEDIUM`, and `LONG` treatments |
+| `pipeline.edl` | Deterministic source windows and contiguous timeline construction from briefs and moments |
+| `pipeline.rendering` | FFmpeg rough cuts and render capability/status records |
 
-The UI should translate engine terms into operator terms:
+Services return structured results, artifact references, status, and validation issues. New capabilities should extend these services first, receive direct tests, and then expose thin CLI/console adapters.
+
+## Operator language
 
 | Engine term | Operator term |
 | --- | --- |
 | Job | Project |
 | Intake manifest | Source |
 | Detection | Analyze |
-| Event manifest | Moments |
+| Clip-manifest rows / moments JSON | Moments |
 | Mythology/archetype | Story |
-| Edit Decision List | Edit |
+| Edit brief / Edit Decision List | Edit / Timeline |
 | Execution plan | Processing |
 | Output manifest | Videos |
 | Delivery package | Export |
 
-Technical identifiers such as `JOB_ID`, `PLAN_ID`, stage IDs, manifest paths,
-environment variable names, and generated file locations should be hidden by
-default. They can appear in an advanced details/logs drawer for technical review.
+These are naming guidelines, not a claim that every technical detail is hidden today. The current UI still exposes identifiers and local media paths. Advanced details should retain provenance without requiring operators to interpret raw engine files for routine actions.
 
-## Application / Service Boundary
+## Sport registry and capability gates
 
-Reusable pipeline behavior should live under `pipeline/` modules. CLI scripts
-under `scripts/` should parse arguments, call service functions, print concise
-results, and exit.
+The explicit registry in `pipeline.configurator` is intentionally small, not a plugin framework.
 
-Current service examples:
+| Profile | Default | Production-capable registry flag | Console analysis |
+| --- | --- | --- | --- |
+| `football` | Yes | Yes | Supported |
+| `basketball` | No | Yes | Not implemented (`analysis_supported=False`) |
+| `basketball_sandbox` | No | No | Not supported |
 
-- `pipeline.configurator` resolves registered sport/project profiles, brand
-  profiles, editorial taxonomies, templates, export profiles, and output roots.
-- `pipeline.pilot` manages intake validation, job records, execution-plan
-  manifests, run records, output manifests, delivery manifests, and readiness.
-- `pipeline.prompt_generation` builds and writes profile-aware detection prompts.
-- `pipeline.clip_manifest` builds and writes the existing clip manifest CSV
-  artifact from detected clip candidates and returns structured status for UI
-  callers.
+Basketball can be selected for supported configuration, intake, prompt-generation, and execution-planning surfaces. Its registered profile references `config/examples/basketball.json`, the basketball brand/taxonomy, and its registered detection template. Registration does not establish basketball detection or an end-to-end validated basketball workflow. Non-production profiles are rejected by production prompt/planning surfaces.
 
-Future console-facing services should return structured dictionaries containing
-operator-safe status, artifact references, validation issues, and next actions.
-They should not require callers to shell into individual scripts.
+Add future sports through registered profiles and minimal sport-specific configuration, keeping the shared services rather than cloning script trees.
 
-## Sport Registry
+## Analysis, transcription, and recovery
 
-The sport/project registry is explicit and intentionally small. It is not a
-plugin framework. A registered profile describes:
+Analysis checks the profile capability and performs preflight before entering `RUNNING`: readable intake, current execution readiness including source and rights, and a readable local source file.
 
-- profile identifier
-- sport
-- production-capable flag
-- default flag
-- profile/configuration references
-- brand reference
-- editorial taxonomy reference
-- export profile references
-- command-preview league label
+If a valid existing transcript is found, it is reused. Otherwise preflight checks FFmpeg on `PATH` and checks `faster-whisper` importability when that transcription provider is selected. The service then transcribes, generates the profile-aware prompt, calls the configured detector, builds clip-manifest rows, and persists moments JSON plus CSV artifacts.
 
-Football remains the default reference deployment. Basketball is the first
-explicitly selectable additional production-capable profile. Registered
-non-production profiles are allowed for validation/modeling, but production
-execution-plan and prompt-generation surfaces reject them.
+Operator stages are Preparing Source, Transcribing, Understanding Game, Finding Moments, and Preparing Results. Analysis states include `WAITING`, `RUNNING`, `COMPLETE`, `NEEDS ATTENTION`, and `FAILED`. An orphaned in-process analysis is recovered as failed when project/status reads detect it, enabling an explicit retry; recovery does not resume partial processing automatically.
 
-Future sports should be added by registering another profile and adding the
-minimum sport-specific configuration needed by the shared services. Do not clone
-the pipeline into sport-specific script trees.
+The HTTP handler catches broken-pipe, aborted-connection, and reset-connection errors so a disconnected browser does not prevent subsequent requests. This does not provide a durable background-worker queue, resumable distributed jobs, or multi-user concurrency guarantees.
 
-## Future Universal Event Manifest
+## Story, edit, and render artifacts
 
-Not implemented yet.
+The implemented workflow is source → transcript → moments → story suggestions → edit brief → EDL → rough cut → human review.
 
-The future event manifest should be the sport-normalized output of detection.
-It should allow downstream scoring and story selection to consume consistent
-moment data regardless of sport. A future basketball detector could emit dunks,
-blocks, turnovers, runs, buzzer beaters, and technical fouls; a football detector
-could emit goals, saves, cards, penalties, fouls, and crowd spikes. The shared
-story engine should receive normalized moments rather than raw sport-specific
-detector output.
+Story suggestions reference detected moments. Edit briefs describe narrative beats, pacing, intensity, transitions, audio strategy, and text intent for short-, medium-, or long-form treatment. EDL construction deterministically derives source windows and contiguous timeline segments, validates moment references and timeline bounds, and checks source bounds when duration is supplied. EDLs are implemented; they are not a future-only design.
 
-## Future Edit Decision List
+The renderer supports two modes:
 
-Not implemented yet.
+- `REFERENCE`: clean assembly, cuts, ordering, concatenation, and source audio.
+- `EDITORIAL`: supported effects such as flash cuts, fades, audio drops, and silence, with partial freeze-push and audio-bridge support.
 
-The future Edit Decision List should sit downstream of moments and upstream of
-export. It should describe an operator-readable story structure such as hook,
-setup, escalation, climax, and aftermath. FFmpeg or a later editing renderer
-should render the edit; the story engine should decide the structure.
+The capability registry in `pipeline.rendering` distinguishes applied, partially applied, and deferred features. Music selection, animated hook text, audio-stem separation, shot-aware crowd/reaction selection, and other deferred effects are not promised as executed merely because a brief requests them. Rough cuts require editorial review before delivery.
 
-## Future Channel Package
+## Persistence and operator lifecycle
 
-Not implemented yet.
+Durable pilot job records and append-only events live under the gitignored `data/pilot/jobs/` root by default. Analysis, story, brief, EDL, and render services retain generated artifacts and status references. These artifacts complement the existing match manifests, schedule CSV, and clip manifests rather than replacing them.
 
-The channel package should separate sport identity from channel identity. The
-same source moment may become a different treatment depending on brand, channel,
-series, format, and target platform. Channel packages should collect approved
-videos, captions, thumbnails, metadata, rights notes, and delivery/export
-instructions into an operator-safe artifact.
+Job lifecycle state and stage-specific analysis/story/brief/EDL/render status are separate. A completed analysis or render does not itself mean an output is approved, delivered, or published. Pilot output review, delivery package/checklist creation, and delivery confirmation remain explicit operator steps; see [the pilot runbook](pilot/PILOT_RUNBOOK.md). The `pilot_job.py` CLI records and validates operations; its execution plans and manual run records do not execute media processing.
 
-## Artifact And Status Model
+## Future extensions and boundaries
 
-The console should present high-level status while preserving provenance:
+A universal, sport-normalized event manifest is still future work. Today's moments JSON and clip-manifest CSV are implemented compatibility artifacts, not a complete universal event contract.
 
-- Project created
-- Source validated
-- Rights confirmed
-- Processing planned
-- Analysis running
-- Moments found
-- Stories suggested
-- Edit ready
-- Rough cut generated
-- Review required
-- Approved
-- Export ready
-- Delivered
+A full channel package covering channel/series identity, approved videos, captions, thumbnails, metadata, and publishing instructions is also future work. Existing pilot delivery packages are implemented handoff records and should not be confused with autonomous channel packaging or publishing.
 
-Underneath, the engine may store intake manifests, readiness reports,
-execution-plan manifests, pipeline-run records, transcripts, research files,
-moment/event manifests, clip manifests, edit plans, output manifests, and
-delivery packages. The UI should not require operators to understand or locate
-those files.
+Authentication, billing, multi-tenancy, hosted operation, direct publishing, durable workers, and complete basketball analysis are outside the current implementation. The next changes should preserve local operation, Windows compatibility, provenance, explicit review, and tested service boundaries.
 
-Today, clip manifests remain CSV artifacts for compatibility with review and
-export workflows. The application service returns profile, sport, input path,
-output path, clip-window count, field names, coverage derived from available
-timestamps, warnings, and rows so a future console can show progress without
-parsing terminal text.
+## Documentation authority
 
-## Current Boundary
-
-This repository still has substantial CLI-first behavior. The current direction
-is to move reusable logic behind service functions incrementally while preserving
-existing CLI workflows and tests.
-
-The next capabilities should follow this rule:
-
-1. Add or extend a `pipeline/` service function.
-2. Cover it with tests directly.
-3. Keep or add a thin CLI adapter.
-4. Let a future API/frontend call the service function, not the CLI script.
-
-Do not build React, FastAPI, authentication, publishing APIs, autonomous
-execution, basketball detection, universal event manifests, or EDLs until the
-service boundary for the relevant slice exists and is tested.
+Use [README.md](../README.md) for setup and operator overview, [AGENTS.md](../AGENTS.md) for development/agent rules and capture operations, this document for console architecture, and [RELEASE_READINESS.md](../RELEASE_READINESS.md) for release scope and remaining gates. Runtime behavior is governed by code and `config/`; match state/provenance lives in `data/manifests/`, and media belongs in the external archive. Historical `planning/` evidence describes its dated phase rather than overriding current implementation.
